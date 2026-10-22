@@ -1,0 +1,110 @@
+Spec 22 Part E: one table of client objects for every pseudo-process. A user handle slot
+remembers which pseudo-process put its object there (client_owners); get_user_handle_ptr and
+next_thread_user_object return an object only to that process and, for a window, only while the
+object's own full handle is the window's full handle (w32ios_client_object_ok, w32ios_pure.c).
+A window the server made for a process itself (desktop, message window) has no client object,
+and its slot may still hold an ended process's freed one: dispatch and enumeration skip it.
+Applied after spec 12's and spec 17's patches.
+
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -3,6 +3,7 @@
+  *
+  * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  * Changed for MYIOSDECK (iOS, spec 17 G1, G2): see out/12-win32u-ios/CHANGES.md
++ * Changed for MYIOSDECK (iOS, spec 22 Part E): see out/12-win32u-ios/CHANGES.md
+  *
+  * Copyright 1993, 1994 Alexandre Julliard
+  *
+@@ -42,6 +43,38 @@
+ 
+ static void *client_objects[MAX_USER_HANDLES];
+ 
++#ifdef WINE_IOS
++#include "w32ios_pure.h"
++
++/* MYIOSDECK (spec 22 Part E): every pseudo-process shares this one table, and a window the server
++ * made for a process itself (its desktop, its message window) has no client object, so its slot
++ * may still hold an ended process's freed one. Each slot remembers which process put its object
++ * there; an object counts only for that process, and a window's only while its own full handle
++ * is the window's (w32ios_client_object_ok). */
++static DWORD client_owners[MAX_USER_HANDLES];
++
++static void ios_set_client_object( WORD index, void *ptr )
++{
++    WriteRelease( (LONG *)&client_owners[index], ptr ? GetCurrentProcessId() : 0 );
++    InterlockedExchangePointer( &client_objects[index], ptr );
++}
++
++static void *ios_client_object( WORD index, HANDLE full, unsigned short type )
++{
++    void *ptr = ReadPointerAcquire( &client_objects[index] );
++    DWORD owner = ReadAcquire( (LONG *)&client_owners[index] );
++    BOOL window = type == NTUSER_OBJ_WINDOW;
++
++    if (!ptr) return NULL;
++    /* the owner first: only the calling process's own objects are read */
++    if (owner != GetCurrentProcessId()) return NULL;
++    if (!w32ios_client_object_ok( owner, GetCurrentProcessId(), window,
++                                  window ? HandleToULong( ((WND *)ptr)->handle ) : 0, HandleToULong( full )))
++        return NULL;
++    return ptr;
++}
++#endif
++
+ #define SWP_AGG_NOGEOMETRYCHANGE \
+     (SWP_NOSIZE | SWP_NOCLIENTSIZE | SWP_NOZORDER)
+ #define SWP_AGG_NOPOSCHANGE \
+@@ -102,7 +135,11 @@
+         UINT index = USER_HANDLE_TO_INDEX( handle );
+ 
+         assert( index < MAX_USER_HANDLES );
++#ifdef WINE_IOS
++        ios_set_client_object( index, ptr );  /* MYIOSDECK (spec 22 Part E) */
++#else
+         InterlockedExchangePointer( &client_objects[index], ptr );
++#endif
+     }
+     return handle;
+ }
+@@ -213,7 +250,11 @@
+ 
+     if (!get_user_entry( handle, type, &entry, &handle )) ptr = NULL;
+     else if (entry.pid != GetCurrentProcessId()) ptr = OBJ_OTHER_PROCESS;
++#ifdef WINE_IOS
++    else ptr = ios_client_object( index, handle, type );  /* MYIOSDECK (spec 22 Part E) */
++#else
+     else ptr = client_objects[index];
++#endif
+ 
+     if (!ptr || ptr == OBJ_OTHER_PROCESS) user_unlock();
+     return ptr;
+@@ -235,7 +276,16 @@
+         if (!get_user_entry_at( i, type, &entry, handle )) continue;
+         if (entry.pid != GetCurrentProcessId()) continue;
+         if (tid != -1 && entry.tid != tid) continue;
++#ifdef WINE_IOS
++        /* MYIOSDECK (spec 22 Part E): enumeration skips an object that isn't this window's */
++        {
++            void *ptr = ios_client_object( i, *handle, type );
++            if (ptr) return ptr;
++            continue;
++        }
++#else
+         return client_objects[i];
++#endif
+     }
+ 
+     return NULL;
+@@ -248,7 +298,11 @@
+ {
+     WORD index = USER_HANDLE_TO_INDEX(handle);
+     assert( index < MAX_USER_HANDLES );
++#ifdef WINE_IOS
++    ios_set_client_object( index, ptr );  /* MYIOSDECK (spec 22 Part E) */
++#else
+     InterlockedExchangePointer( &client_objects[index], ptr );
++#endif
+ }
+ 
+ /***********************************************************************

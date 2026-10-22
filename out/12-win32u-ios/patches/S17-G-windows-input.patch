@@ -1,0 +1,177 @@
+Spec 17 Part G: windows, clicks and the DIB driver. G1: a shared window object whose id reads 0
+fails with STATUS_INVALID_HANDLE (window.c, spec 12 B8's rule for windows). G2: GetAncestor
+GA_ROOT walks up with GA_PARENT while WS_CHILD when the parent list can't be read
+(w32ios_s17_root_walk). G3: a button-down whose top window can't be activated is delivered
+(message.c). G4: NtUserActivateKeyboardLayout's unsupported flags are logged once (input.c).
+G5: the source-bits hook only for a visible rectangle of at least 640 x 400, weak (replaces
+spec 12's unconditional call in dibdrv/bitblt.c). Applied after spec 12's patches.
+
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -2,6 +2,7 @@
+  * Window related functions
+  *
+  * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
++ * Changed for MYIOSDECK (iOS, spec 17 G1, G2): see out/12-win32u-ios/CHANGES.md
+  *
+  * Copyright 1993, 1994 Alexandre Julliard
+  *
+@@ -172,6 +173,11 @@
+         shared_object_acquire_seqlock( object, &lock->seq );
+         *window_shm = &object->shm.window;
+         lock->id = object->id;
++#ifdef WINE_IOS
++        /* MYIOSDECK (spec 17 G1): id 0 is a window object freed with a dead pseudo-process; the
++         * caller's retry loop holds user_lock, so fail instead of retrying for ever */
++        if (!lock->id) return STATUS_INVALID_HANDLE;
++#endif
+         return STATUS_PENDING;
+     }
+ 
+@@ -856,6 +862,23 @@
+     return list;
+ }
+ 
++#ifdef WINE_IOS
++/* MYIOSDECK (spec 17 G2): the steps of the GA_ROOT walk (w32ios_s17_root_walk); the desktop
++ * window ends it */
++static uint64_t ios_root_walk_parent( void *ctx, uint64_t hwnd )
++{
++    HWND parent = NtUserGetAncestor( (HWND)(ULONG_PTR)hwnd, GA_PARENT );
++
++    if (!parent || is_desktop_window( parent )) return 0;
++    return (ULONG_PTR)parent;
++}
++
++static int ios_root_walk_is_child( void *ctx, uint64_t hwnd )
++{
++    return (get_window_long( (HWND)(ULONG_PTR)hwnd, GWL_STYLE ) & WS_CHILD) != 0;
++}
++#endif
++
+ /*****************************************************************
+  *           NtUserGetAncestor (win32u.@)
+  */
+@@ -890,7 +913,26 @@
+         break;
+ 
+     case GA_ROOT:
++#ifdef WINE_IOS
++        /* MYIOSDECK (spec 17 G2): when the parent list can't be read, walk up with GA_PARENT
++         * while the window is WS_CHILD (a dialog's buttons otherwise have no top window, and a
++         * click on them loses its button-down) */
++        if (!(list = list_window_parents( hwnd )))
++        {
++            static LONG logged;
++
++            if (!is_window( hwnd )) return 0;
++            ret = (HWND)(ULONG_PTR)w32ios_s17_root_walk( (ULONG_PTR)hwnd, ios_root_walk_parent,
++                                                         ios_root_walk_is_child, NULL, 64 );
++            ret = get_full_window_handle( ret );
++            if (!InterlockedExchange( &logged, 1 ))
++                w32ios_log( "GetAncestor(%p, GA_ROOT): no parent list, root %p from the GA_PARENT walk",
++                            hwnd, ret );
++            return ret;
++        }
++#else
+         if (!(list = list_window_parents( hwnd ))) return 0;
++#endif
+ 
+         if (!list[0] || !list[1]) ret = get_full_window_handle( hwnd );  /* top-level window */
+         else
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -2,6 +2,7 @@
+  * Window messaging support
+  *
+  * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
++ * Changed for MYIOSDECK (iOS, spec 17 G3): see out/12-win32u-ios/CHANGES.md
+  *
+  * Copyright 2001 Alexandre Julliard
+  * Copyright 2008 Maarten Lankhorst
+@@ -2833,7 +2834,20 @@
+                     /* fall through */
+                 case MA_ACTIVATE:
+                 case 0:
++#ifdef WINE_IOS
++                    /* MYIOSDECK (spec 17 G3): Windows gives a clicked window the foreground;
++                     * when activating it fails here, deliver the click anyway (an *ANDEAT answer
++                     * is still eaten) */
++                    if (!set_foreground_window( hwndTop, TRUE, FALSE ))
++                    {
++                        static LONG logged;
++                        if (!InterlockedExchange( &logged, 1 ))
++                            w32ios_log( "click on %p: top window %p not activated, click delivered",
++                                        msg->hwnd, hwndTop );
++                    }
++#else
+                     if (!set_foreground_window( hwndTop, TRUE, FALSE )) eat_msg = TRUE;
++#endif
+                     break;
+                 default:
+                     WARN( "unknown WM_MOUSEACTIVATE code %d\n", ret );
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -2,6 +2,7 @@
+  * USER Input processing
+  *
+  * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
++ * Changed for MYIOSDECK (iOS, spec 17 G4): see out/12-win32u-ios/CHANGES.md
+  *
+  * Copyright 1993 Bob Amstadt
+  * Copyright 1993 David Metcalfe
+@@ -1322,7 +1323,17 @@
+ 
+     TRACE_(keyboard)( "layout %p, flags %x\n", layout, flags );
+ 
++#ifdef WINE_IOS
++    /* MYIOSDECK (spec 17 G4): some programs call this continuously; say it once per app run */
++    if (flags)
++    {
++        static LONG logged;
++        if (!InterlockedExchange( &logged, 1 ))
++            FIXME_(keyboard)( "flags %x not supported (logged once)\n", flags );
++    }
++#else
+     if (flags) FIXME_(keyboard)( "flags %x not supported\n", flags );
++#endif
+ 
+     if (layout == (HKL)HKL_NEXT || layout == (HKL)HKL_PREV)
+     {
+--- a/dlls/win32u/dibdrv/bitblt.c
++++ b/dlls/win32u/dibdrv/bitblt.c
+@@ -2,6 +2,7 @@
+  * DIB driver blitting
+  *
+  * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
++ * Changed for MYIOSDECK (iOS, spec 17 G5): see out/12-win32u-ios/CHANGES.md
+  *
+  * Copyright 2011 Huw Davies
+  *
+@@ -31,8 +32,8 @@
+ 
+ #include "wine/debug.h"
+ #ifdef WINE_IOS
+-/* interfaces/wine_unix_contract.h, Section B */
+-extern void winios_dump_srcbits( const void *bits, int w, int h, int stride );
++/* interfaces/wine_unix_contract.h, Section B; weak since spec 17 G5 */
++extern void winios_dump_srcbits( const void *bits, int w, int h, int stride ) __attribute__((weak));
+ #endif
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(dib);
+@@ -1019,7 +1020,14 @@
+     init_dib_info_from_bitmapinfo( &src_dib, info, bits->ptr );
+     src_dib.bits.is_copy = bits->is_copy;
+ #ifdef WINE_IOS
+-    winios_dump_srcbits( src_dib.bits.ptr, src_dib.width, src_dib.height, src_dib.stride );
++    /* MYIOSDECK (spec 17 G5): only a destination whose visible rectangle is at least 640 x 400,
++     * only with source bits, only if the app provides the hook; nothing else on this path */
++    if (winios_dump_srcbits && src_dib.bits.ptr &&
++        dst->visrect.right - dst->visrect.left >= 640 && dst->visrect.bottom - dst->visrect.top >= 400)
++    {
++        int w = dst->visrect.right - dst->visrect.left, h = dst->visrect.bottom - dst->visrect.top;
++        winios_dump_srcbits( src_dib.bits.ptr, w, h, w * 4 );
++    }
+ #endif
+ 
+     if (clip && pdev->clip)

@@ -1,0 +1,232 @@
+Spec 17 Part F: GDI objects that 32-bit programs share with the session. F1: one inline
+function in win32u_private.h answers the allocation ceiling (zero_bits expands to it), and
+NtGdiCreateDIBSection maps a caller's section with it. F4: the handle table is published in the
+caller's PEB before any handle-table operation (handle_entry, alloc_gdi_handle, alloc_dc_attr;
+w32ios_mem.c). F5/F6: DC attribute buckets and cache DCEs carry their creator, and in a 32-bit
+session serve only their own process when either side is 32-bit (w32ios_s17_pure.c).
+Applied after spec 12's patches.
+
+--- a/dlls/win32u/win32u_private.h
++++ b/dlls/win32u/win32u_private.h
+@@ -16,6 +16,8 @@
+  * You should have received a copy of the GNU Lesser General Public
+  * License along with this library; if not, write to the Free Software
+  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
++ *
++ * Changed for MYIOSDECK (iOS, spec 17 F1): see out/12-win32u-ios/CHANGES.md
+  */
+ 
+ #ifndef __WINE_WIN32U_PRIVATE
+@@ -353,7 +355,20 @@
+ extern const struct user_driver_funcs *user_driver;
+ extern struct client_surface *nulldrv_client_surface_create( HWND hwnd );
+ 
++#ifdef WINE_IOS
++/* MYIOSDECK (spec 17 F1): the calling thread's allocation ceiling (spec 12 B1), one function
++ * for every use of zero_bits in win32u. The macro comes after wine/server.h: the request
++ * structs of the server protocol have members of that name. syscall.c #undefs it to define the
++ * old global, which stays 0. */
++extern ULONG_PTR w32ios_zero_bits(void);
++static inline ULONG_PTR win32u_alloc_ceiling(void)
++{
++    return w32ios_zero_bits();
++}
++#define zero_bits win32u_alloc_ceiling()
++#else
+ extern ULONG_PTR zero_bits;
++#endif
+ 
+ static inline BOOL set_ntstatus( NTSTATUS status )
+ {
+--- a/dlls/win32u/dib.c
++++ b/dlls/win32u/dib.c
+@@ -1,6 +1,8 @@
+ /*
+  * GDI device-independent bitmaps
+  *
++ * Changed for MYIOSDECK (iOS, spec 17 F1): see out/12-win32u-ios/CHANGES.md
++ *
+  * Copyright 1993,1994  Alexandre Julliard
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -1539,9 +1541,17 @@
+ 
+         map_offset.QuadPart = offset - (offset % system_info.AllocationGranularity);
+         map_size = bmp->dib.dsBmih.biSizeImage + (offset - map_offset.QuadPart);
++#ifdef WINE_IOS
++        /* MYIOSDECK (spec 17 F1): the bits go back to the caller, so a 32-bit program needs
++         * them inside its guest window: the caller's ceiling (upstream passes none) */
++        if (NtMapViewOfSection( section, GetCurrentProcess(), &mapBits, zero_bits, 0, &map_offset,
++                                &map_size, ViewShare, 0, PAGE_READWRITE ))
++            goto error;
++#else
+         if (NtMapViewOfSection( section, GetCurrentProcess(), &mapBits, 0, 0, &map_offset,
+                                 &map_size, ViewShare, 0, PAGE_READWRITE ))
+             goto error;
++#endif
+         bmp->dib.dsBm.bmBits = (char *)mapBits + (offset - map_offset.QuadPart);
+     }
+     else
+--- a/dlls/win32u/gdiobj.c
++++ b/dlls/win32u/gdiobj.c
+@@ -2,6 +2,7 @@
+  * GDI functions
+  *
+  * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
++ * Changed for MYIOSDECK (iOS, spec 17 F4): see out/12-win32u-ios/CHANGES.md
+  *
+  * Copyright 1993 Alexandre Julliard
+  *
+@@ -64,6 +65,11 @@
+ {
+     unsigned int idx = LOWORD(handle);
+ 
++#ifdef WINE_IOS
++    /* MYIOSDECK (spec 17 F4): every lookup, free, delete, client pointer and stock object goes
++     * through here; the table must be in the caller's PEB first */
++    w32ios_gdi_publish();
++#endif
+     if (idx < GDI_MAX_HANDLE_COUNT && gdi_shared->Handles[idx].Type)
+     {
+         if (!HIWORD( handle ) || HIWORD( handle ) == gdi_shared->Handles[idx].Unique)
+@@ -735,6 +741,9 @@
+ 
+     assert( type );  /* type 0 is reserved to mark free entries */
+ 
++#ifdef WINE_IOS
++    w32ios_gdi_publish();   /* MYIOSDECK (spec 17 F4) */
++#endif
+     pthread_mutex_lock( &gdi_lock );
+ 
+     entry = next_free;
+--- a/dlls/win32u/dc.c
++++ b/dlls/win32u/dc.c
+@@ -2,6 +2,7 @@
+  * GDI Device Context functions
+  *
+  * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
++ * Changed for MYIOSDECK (iOS, spec 17 F4, F5): see out/12-win32u-ios/CHANGES.md
+  *
+  * Copyright 1993 Alexandre Julliard
+  *
+@@ -46,12 +47,19 @@
+ 
+ static pthread_mutex_t dc_attr_lock = PTHREAD_MUTEX_INITIALIZER;
+ 
++#ifdef WINE_IOS
++#include "w32ios_s17_pure.h"
++#endif
++
+ struct dc_attr_bucket
+ {
+     struct list entry;
+     DC_ATTR *entries;
+     DC_ATTR *next_free;
+     DC_ATTR *next_unused;
++#ifdef WINE_IOS
++    struct w32ios_s17_owner owner;   /* MYIOSDECK (spec 17 F5): who created it */
++#endif
+ };
+ 
+ static struct list dc_attr_buckets = LIST_INIT( dc_attr_buckets );
+@@ -94,11 +102,23 @@
+ {
+     struct dc_attr_bucket *bucket;
+     DC_ATTR *dc_attr = NULL;
++#ifdef WINE_IOS
++    /* MYIOSDECK (spec 17 F4, F5): the table in the caller's PEB first; in a 32-bit session a
++     * bucket serves only its owner when either side is 32-bit (64-bit processes share) */
++    struct w32ios_s17_owner caller;
++    BOOL session32 = w32ios_gdi_session_32bit();
++
++    w32ios_gdi_publish();
++    if (session32) w32ios_s17_caller( &caller );
++#endif
+ 
+     pthread_mutex_lock( &dc_attr_lock );
+ 
+     LIST_FOR_EACH_ENTRY( bucket, &dc_attr_buckets, struct dc_attr_bucket, entry )
+     {
++#ifdef WINE_IOS
++        if (session32 && !w32ios_s17_owner_ok( &caller, &bucket->owner )) continue;
++#endif
+         if (bucket->next_free)
+         {
+             dc_attr = bucket->next_free;
+@@ -123,6 +143,10 @@
+             bucket->next_free = NULL;
+             bucket->next_unused = bucket->entries + 1;
+             dc_attr = bucket->entries;
++#ifdef WINE_IOS
++            if (session32) bucket->owner = caller;   /* MYIOSDECK (spec 17 F5) */
++            else w32ios_s17_caller( &bucket->owner );
++#endif
+             list_add_head( &dc_attr_buckets, &bucket->entry );
+         }
+         else free( bucket );
+--- a/dlls/win32u/dce.c
++++ b/dlls/win32u/dce.c
+@@ -2,6 +2,7 @@
+  * Window painting functions
+  *
+  * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
++ * Changed for MYIOSDECK (iOS, spec 17 F6): see out/12-win32u-ios/CHANGES.md
+  *
+  * Copyright 1993, 1994, 1995, 2001, 2004, 2005, 2008 Alexandre Julliard
+  * Copyright 1996, 1997, 1999 Alex Korobka
+@@ -36,6 +37,10 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(win);
+ 
++#ifdef WINE_IOS
++#include "w32ios_s17_pure.h"
++#endif
++
+ struct dce
+ {
+     struct list entry;         /* entry in global DCE list */
+@@ -45,6 +50,9 @@
+     UINT        flags;
+     LONG        count;         /* usage count; 0 or 1 for cache DCEs, always 1 for window DCEs,
+                                   always >= 1 for class DCEs */
++#ifdef WINE_IOS
++    struct w32ios_s17_owner owner;   /* MYIOSDECK (spec 17 F6): who created it */
++#endif
+ };
+ 
+ static struct list dce_list = LIST_INIT(dce_list);
+@@ -983,6 +991,9 @@
+     dce->clip_rgn  = 0;
+     dce->flags     = 0;
+     dce->count     = 1;
++#ifdef WINE_IOS
++    w32ios_s17_caller( &dce->owner );   /* MYIOSDECK (spec 17 F6) */
++#endif
+ 
+     set_dc_dce( dce->hdc, dce );
+     return dce;
+@@ -1324,6 +1335,14 @@
+     {
+         struct dce *dceEmpty = NULL, *dceUnused = NULL, *found = NULL;
+         unsigned int count = 0;
++#ifdef WINE_IOS
++        /* MYIOSDECK (spec 17 F6): in a 32-bit session only the caller's own cache DCEs are
++         * recycled or counted (both 64-bit, or the same process id and PEB) */
++        struct w32ios_s17_owner caller;
++        BOOL session32 = w32ios_gdi_session_32bit();
++
++        if (session32) w32ios_s17_caller( &caller );
++#endif
+ 
+         /* Strategy: First, we attempt to find a non-empty but unused DCE with
+          * compatible flags. Next, we look for an empty entry. If the cache is
+@@ -1333,6 +1352,9 @@
+         LIST_FOR_EACH_ENTRY( dce, &dce_list, struct dce, entry )
+         {
+             if (!(dce->flags & DCX_CACHE)) break;
++#ifdef WINE_IOS
++            if (session32 && !w32ios_s17_owner_ok( &caller, &dce->owner )) continue;
++#endif
+             count++;
+             if (dce->count) continue;
+             dceUnused = dce;

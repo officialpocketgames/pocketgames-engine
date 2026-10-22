@@ -1,0 +1,32 @@
+Spec 12 Part B audit: the DCE cache and the window surfaces (and the time of the last idle
+flush) become per pseudo-process. A DC holds attributes in its process's memory, and a surface's
+bits belong to its process: neither may be used by another process, or after its own died.
+
+--- a/dlls/win32u/dce.c
++++ b/dlls/win32u/dce.c
+@@ -1,3 +1,5 @@
+ /*
+  * Window painting functions
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -52,4 +54,9 @@
+ static struct list window_surfaces = LIST_INIT( window_surfaces );
+ static pthread_mutex_t surfaces_lock = PTHREAD_MUTEX_INITIALIZER;
++#ifdef WINE_IOS
++#include "w32ios.h"
++#define dce_list        (w32ios_proc_current()->pp_dce_list)          /* per pseudo-process */
++#define window_surfaces (w32ios_proc_current()->pp_window_surfaces)
++#endif
+ 
+ /*******************************************************************
+@@ -750,5 +757,9 @@
+ void flush_window_surfaces( BOOL idle )
+ {
++#ifdef WINE_IOS
++#define last_idle (w32ios_proc_current()->pp_last_idle)   /* per pseudo-process */
++#else
+     static DWORD last_idle;
++#endif
+     DWORD now;
+     struct window_surface *surface;

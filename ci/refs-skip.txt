@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# refs/.gitignore folders ci/fetch-refs.sh does not fetch, because no build uses them any more.
+# Format: <name> <reason>.
+#
+# (GnuTLS 3.8.9, nettle 3.10.1 and GMP 6.3.0 are gone from refs/README.md and refs/.gitignore
+# since part 13's build stopped using them, spec 13 clarification 5, so they need no entry here.)

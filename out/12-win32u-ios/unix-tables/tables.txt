@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# Spec 12 clarifications 8 and 9: the unix libraries whose call tables are answered on iOS by
+# stand-ins (nothing behind them: no OpenGL, CUPS, Samba, Kerberos or ntlm_auth). One per line:
+#   <name> <header in the Wine 11.4 tree> <enum name> <count entry> [setup entry...]
+# <name>_ios.c in this folder holds the two tables; gen-entries.sh writes <name>_ios_entries.h from
+# the header. The setup entries return STATUS_SUCCESS, every other entry STATUS_NOT_SUPPORTED.
+# Every <name> must also be listed (as its DLL file name) in out/09-ntdll-processes/unixlibs.txt.
+opengl32  dlls/opengl32/unixlib.h      unix_funcs   funcs_count       unix_process_attach unix_thread_attach unix_process_detach
+winspool  dlls/winspool.drv/wspool.h   cups_funcs   unix_funcs_count  unix_process_attach
+netapi32  dlls/netapi32/unixlib.h      samba_funcs  unix_funcs_count  unix_netapi_init
+kerberos  dlls/kerberos/unixlib.h      unix_funcs   unix_funcs_count  unix_process_attach
+msv1_0    dlls/msv1_0/unixlib.h        ntlm_funcs   unix_funcs_count

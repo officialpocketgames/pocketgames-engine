@@ -1,0 +1,29 @@
+Spec 12 Part B audit: the process's startup information and its client surfaces become per
+pseudo-process.
+
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -1,3 +1,5 @@
+ /*
+  * Window related functions
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -55,4 +57,9 @@
+ static volatile unsigned int startup_info_flags;
+ static unsigned int startup_show_window;
++#ifdef WINE_IOS
++#include "w32ios.h"
++#define startup_info_flags  (w32ios_proc_current()->pp_startup_info_flags)    /* per pseudo-process */
++#define startup_show_window (w32ios_proc_current()->pp_startup_show_window)
++#endif
+ 
+ static unsigned int set_startup_info_flags( unsigned int mask, unsigned int flags )
+@@ -273,4 +280,7 @@
+ static pthread_mutex_t surfaces_lock = PTHREAD_MUTEX_INITIALIZER;
+ static struct list client_surfaces = LIST_INIT( client_surfaces );
++#ifdef WINE_IOS
++#define client_surfaces (w32ios_proc_current()->pp_client_surfaces)   /* per pseudo-process */
++#endif
+ 
+ void detach_client_surfaces( HWND hwnd )

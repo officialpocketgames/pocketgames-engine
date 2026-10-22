@@ -1,0 +1,13 @@
+.DS_Store
+*.xcodeproj/
+build/
+
+# App-side parts are private; never commit them here
+/specs/0[1-4]-*
+/specs/2[0-9]*
+/out/0[1-4]-*
+/out/2[0-9]-*
+/interfaces/app-api.md
+/interfaces/steam_*
+/interfaces/wine_bridge.h
+/interfaces/wine_host.h

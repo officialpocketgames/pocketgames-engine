@@ -1,0 +1,12 @@
+option('native_llvm_path', type : 'string', value: '/usr/local/opt/llvm@15')
+option('build_airconv_for_windows', type : 'boolean', value : false)
+option('dxmt_debug', type : 'boolean', value : false)
+option('dxmt_native', type : 'boolean', value : false)
+option('wine_build_path', type : 'string')
+option('wine_install_path', type : 'string')
+option('wine_builtin_dll', type : 'boolean', value : false)
+option('enable_tests', type : 'boolean', value : false)
+option('enable_nvapi', type : 'boolean', value : false)
+option('enable_nvngx', type : 'boolean', value : false)
+# Changed for MYIOSDECK (spec 05 Part A): fixed Metal language version for embedded shaders.
+option('metal_std', type : 'string', value : 'metal3.1')

@@ -1,0 +1,20 @@
+Spec 12 Part B audit: DC attribute buckets become per pseudo-process. They are allocated below
+the caller's ceiling (B1) in the caller's memory, so a 32-bit process gets attributes it can
+address and no process reuses a dead process's bucket.
+
+--- a/dlls/win32u/dc.c
++++ b/dlls/win32u/dc.c
+@@ -1,3 +1,5 @@
+ /*
+  * GDI Device Context functions
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -55,3 +57,7 @@
+ static struct list dc_attr_buckets = LIST_INIT( dc_attr_buckets );
++#ifdef WINE_IOS
++#include "w32ios.h"
++#define dc_attr_buckets (w32ios_proc_current()->pp_dc_attr_buckets)   /* per pseudo-process */
++#endif
+ 
+ static BOOL DC_DeleteObject( HGDIOBJ handle );

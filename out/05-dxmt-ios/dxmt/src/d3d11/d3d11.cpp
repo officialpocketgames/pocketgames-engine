@@ -1,0 +1,286 @@
+#include "dxmt_names.hpp"
+#include "com/com_object.hpp"
+#include "com/com_pointer.hpp"
+#include "d3d11_device.hpp"
+#include "log/log.hpp"
+#include "util_string.hpp"
+#include "dxmt_capture.hpp"
+#include <exception>
+#ifdef DXMT_IOS
+#include <atomic>
+#include <cstdio>
+#endif
+
+// Changed for MYIOSDECK (spec 05 B4, B5). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+
+namespace dxmt {
+Logger Logger::s_instance("d3d11.log");
+
+#ifdef DXMT_IOS
+
+// Spec 05 B4: device-creation failures are written with Wine's debug output
+// (ntdll's __wine_dbg_output), falling back to stderr, and not through the
+// DXMT logger, so a failure inside the logger itself can't hide them.
+static void
+RawFailureLog(const char *what, const char *reason) {
+  char line[1024];
+  snprintf(line, sizeof(line), "dxmt: %s: %s\n", what, reason ? reason : "(no reason given)");
+  typedef int(__cdecl * PFN_wine_dbg_output)(const char *);
+  static std::atomic<PFN_wine_dbg_output> output = nullptr;
+  static std::atomic<bool> resolved = false;
+  if (!resolved.load(std::memory_order_acquire)) {
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    output.store(
+        ntdll ? reinterpret_cast<PFN_wine_dbg_output>(GetProcAddress(ntdll, "__wine_dbg_output")) : nullptr,
+        std::memory_order_relaxed
+    );
+    resolved.store(true, std::memory_order_release);
+  }
+  if (auto fn = output.load(std::memory_order_relaxed)) {
+    fn(line);
+  } else {
+    fputs(line, stderr);
+    fflush(stderr);
+  }
+}
+
+// Spec 05 B5: one line about the GPU at the first device creation.
+static void
+LogGpuCapabilitiesOnce(WMT::Device device) {
+  static std::atomic<bool> logged = false;
+  if (logged.exchange(true))
+    return;
+  Logger::info(str::format(
+      "GPU capabilities: BC=", device.supportsBCTextureCompression() ? "yes" : "no",
+      " Apple7=", device.supportsFamily(WMTGPUFamilyApple7) ? "yes" : "no",
+      " Apple8=", device.supportsFamily(WMTGPUFamilyApple8) ? "yes" : "no",
+      " Apple9=", device.supportsFamily(WMTGPUFamilyApple9) ? "yes" : "no",
+      " Mac2=", device.supportsFamily(WMTGPUFamilyMac2) ? "yes" : "no"
+  ));
+}
+
+#endif
+
+extern "C" HRESULT WINAPI
+D3D11CoreCreateDevice(IDXGIFactory *pFactory, IDXGIAdapter *pAdapter,
+                      UINT Flags, const D3D_FEATURE_LEVEL *pFeatureLevels,
+                      UINT FeatureLevels, ID3D11Device **ppDevice) {
+  InitReturnPtr(ppDevice);
+
+  Com<IMTLDXGIAdapter> dxgi_adapter;
+
+  // Try to find the corresponding Metal device for the DXGI adapter
+  if (FAILED(pAdapter->QueryInterface(IID_PPV_ARGS(&dxgi_adapter)))) {
+    ERR("Not a DXMT adapter");
+    return E_INVALIDARG;
+  }
+
+  // Feature levels to probe if the
+  // application does not specify any.
+  std::array<D3D_FEATURE_LEVEL, 6> defaultFeatureLevels = {
+      D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_10_1, D3D_FEATURE_LEVEL_10_0,
+      D3D_FEATURE_LEVEL_9_3,  D3D_FEATURE_LEVEL_9_2,  D3D_FEATURE_LEVEL_9_1,
+  };
+
+  if (!pFeatureLevels || !FeatureLevels) {
+    pFeatureLevels = defaultFeatureLevels.data();
+    FeatureLevels = defaultFeatureLevels.size();
+  }
+
+  D3D_FEATURE_LEVEL maxFeatureLevel =
+      dxgi_adapter->GetMTLDevice().supportsFamily(WMTGPUFamilyApple7) ? D3D_FEATURE_LEVEL_11_1 : D3D_FEATURE_LEVEL_11_0;
+  D3D_FEATURE_LEVEL minFeatureLevel = D3D_FEATURE_LEVEL();
+  D3D_FEATURE_LEVEL devFeatureLevel = D3D_FEATURE_LEVEL();
+
+  Logger::info(
+      str::format("Maximum supported feature level: ", maxFeatureLevel));
+
+  for (uint32_t flId = 0; flId < FeatureLevels; flId++) {
+    minFeatureLevel = pFeatureLevels[flId];
+
+    if (minFeatureLevel <= maxFeatureLevel) {
+      devFeatureLevel = minFeatureLevel;
+      break;
+    }
+  }
+
+  if (!devFeatureLevel) {
+    Logger::err(str::format("Minimum required feature level ", minFeatureLevel,
+                            " not supported"));
+    return E_INVALIDARG;
+  }
+
+#ifdef DXMT_IOS
+  LogGpuCapabilitiesOnce(dxgi_adapter->GetMTLDevice());
+#endif
+
+  try {
+    Logger::info(str::format("Using feature level ", devFeatureLevel));
+
+    auto device = CreateD3D11Device(
+        CreateDXMTDevice({.device = dxgi_adapter->GetMTLDevice()}),
+        dxgi_adapter.ptr(), devFeatureLevel, Flags);
+
+    return device->QueryInterface(IID_PPV_ARGS(ppDevice));
+  } catch (const MTLD3DError &e) {
+#ifdef DXMT_IOS
+    RawFailureLog("D3D11CoreCreateDevice failed", e.what());
+#endif
+    Logger::err("D3D11CoreCreateDevice: Failed to create D3D11 device");
+    return E_FAIL;
+  }
+#ifdef DXMT_IOS
+  catch (const std::exception &e) {
+    RawFailureLog("D3D11CoreCreateDevice failed", e.what());
+    return E_FAIL;
+  }
+#endif
+}
+
+extern "C" HRESULT WINAPI D3D11CreateDeviceAndSwapChain(
+    IDXGIAdapter *pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software,
+    UINT Flags, const D3D_FEATURE_LEVEL *pFeatureLevels, UINT FeatureLevels,
+    UINT SDKVersion, const DXGI_SWAP_CHAIN_DESC *pSwapChainDesc,
+    IDXGISwapChain **ppSwapChain, ID3D11Device **ppDevice,
+    D3D_FEATURE_LEVEL *pFeatureLevel,
+    ID3D11DeviceContext **ppImmediateContext) {
+  InitReturnPtr(ppDevice);
+  InitReturnPtr(ppSwapChain);
+  InitReturnPtr(ppImmediateContext);
+
+  if (pFeatureLevel)
+    *pFeatureLevel = D3D_FEATURE_LEVEL(0);
+
+  Com<IDXGIFactory> dxgiFactory = nullptr;
+  Com<IDXGIAdapter> dxgiAdapter = pAdapter;
+  Com<ID3D11Device> device = nullptr;
+
+  HRESULT hr;
+
+  if (ppSwapChain && !pSwapChainDesc)
+    return E_INVALIDARG;
+
+  if (!pAdapter) {
+    // Ignore DriverType
+    if (DriverType != D3D_DRIVER_TYPE_HARDWARE)
+      WARN("D3D11CreateDevice: Unsupported driver type ", DriverType);
+    // We'll use the first adapter returned by a DXGI factory
+    hr = CreateDXGIFactory1(IID_PPV_ARGS(&dxgiFactory));
+
+    if (FAILED(hr)) {
+      Logger::err("D3D11CreateDevice: Failed to create a DXGI factory");
+      return hr;
+    }
+
+    hr = dxgiFactory->EnumAdapters(0, &dxgiAdapter);
+
+    if (FAILED(hr)) {
+      Logger::err("D3D11CreateDevice: No default adapter available");
+      return hr;
+    }
+  } else {
+    // We should be able to query the DXGI factory from the adapter
+    if (FAILED(dxgiAdapter->GetParent(IID_PPV_ARGS(&dxgiFactory)))) {
+      Logger::err(
+          "D3D11CreateDevice: Failed to query DXGI factory from DXGI adapter");
+      return E_INVALIDARG;
+    }
+
+    // In theory we could ignore these, but the Microsoft docs explicitly
+    // state that we need to return E_INVALIDARG in case the arguments are
+    // invalid. Both the driver type and software parameter can only be
+    // set if the adapter itself is unspecified.
+    // See:
+    // https://msdn.microsoft.com/en-us/library/windows/desktop/ff476082(v=vs.85).aspx
+    if (DriverType != D3D_DRIVER_TYPE_UNKNOWN || Software)
+      return E_INVALIDARG;
+  }
+  // Create the actual device
+  hr = D3D11CoreCreateDevice(dxgiFactory.ptr(), dxgiAdapter.ptr(), Flags,
+                             pFeatureLevels, FeatureLevels, &device);
+
+  if (FAILED(hr)) {
+#ifdef DXMT_IOS
+    char reason[64];
+    snprintf(reason, sizeof(reason), "HRESULT 0x%08x", (unsigned)hr);
+    RawFailureLog("D3D11CreateDevice failed", reason);
+#endif
+    return hr;
+  }
+
+  // Create the swap chain, if requested
+  if (ppSwapChain) {
+    DXGI_SWAP_CHAIN_DESC desc = *pSwapChainDesc;
+    hr = dxgiFactory->CreateSwapChain(device.ptr(), &desc, ppSwapChain);
+
+    if (FAILED(hr)) {
+      Logger::err("D3D11CreateDevice: Failed to create swap chain");
+      return hr;
+    }
+  }
+  // Write back whatever info the application requested
+  if (pFeatureLevel)
+    *pFeatureLevel = device->GetFeatureLevel();
+
+  if (ppDevice)
+    *ppDevice = device.ref();
+
+  if (ppImmediateContext)
+    device->GetImmediateContext(ppImmediateContext);
+
+  // If we were unable to write back the device and the
+  // swap chain, the application has no way of working
+  // with the device so we should report S_FALSE here.
+  if (!ppDevice && !ppImmediateContext && !ppSwapChain)
+    return S_FALSE;
+
+  return S_OK;
+}
+
+extern "C" HRESULT WINAPI D3D11CreateDevice(
+    IDXGIAdapter *pAdapter, D3D_DRIVER_TYPE DriverType, HMODULE Software,
+    UINT Flags, const D3D_FEATURE_LEVEL *pFeatureLevels, UINT FeatureLevels,
+    UINT SDKVersion, ID3D11Device **ppDevice, D3D_FEATURE_LEVEL *pFeatureLevel,
+    ID3D11DeviceContext **ppImmediateContext) {
+  return D3D11CreateDeviceAndSwapChain(pAdapter, DriverType, Software, Flags,
+                                       pFeatureLevels, FeatureLevels,
+                                       SDKVersion, nullptr, nullptr, ppDevice,
+                                       pFeatureLevel, ppImmediateContext);
+}
+
+extern "C" HRESULT __stdcall D3D11On12CreateDevice(
+    IUnknown *pDevice, UINT Flags, const D3D_FEATURE_LEVEL *pFeatureLevels,
+    UINT FeatureLevels, IUnknown *const *ppCommandQueues, UINT NumQueues,
+    UINT NodeMask, ID3D11Device **ppDevice,
+    ID3D11DeviceContext **ppImmediateContext,
+    D3D_FEATURE_LEVEL *pChosenFeatureLevel) {
+  InitReturnPtr(ppDevice);
+  InitReturnPtr(ppImmediateContext);
+  return E_NOTIMPL;
+}
+
+} // namespace dxmt
+
+#ifndef DXMT_NATIVE
+
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {  
+  if (reason != DLL_PROCESS_ATTACH)
+    return TRUE;
+
+  DisableThreadLibraryCalls(instance);
+  return TRUE;
+}
+
+#endif
+
+extern "C" void _massert(const char *_Message, const char *_File,
+                         unsigned _Line) {
+  dxmt::Logger::err(dxmt::str::format("Assertion failed: ", _Message,
+                                      "\nfile: ", _File, ":", _Line));
+  std::terminate();
+}
+
+extern "C" void __cxa_pure_virtual() {
+  dxmt::Logger::err(dxmt::str::format("Pure virtual function called"));
+  __builtin_trap();
+}

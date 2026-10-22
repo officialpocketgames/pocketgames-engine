@@ -1,0 +1,22 @@
+Spec 12 Part B1: the allocation ceiling is answered per thread (w32ios_zero_bits, through the
+zero_bits macro of w32ios_rename.h); the old global stays 0. Line numbers are those after
+A-01-syscall.patch.
+
+--- a/dlls/win32u/syscall.c
++++ b/dlls/win32u/syscall.c
+@@ -37,5 +37,8 @@
+ #include "win32syscalls.h"
+ 
++#ifdef WINE_IOS
++#undef zero_bits   /* uses go through w32ios_zero_bits() (w32ios_rename.h); the global stays 0 */
++#endif
+ ULONG_PTR zero_bits = 0;
+ 
+ #if defined(__aarch64__) && defined(__APPLE__)
+@@ -173,5 +176,5 @@
+ NTSTATUS __wine_unix_lib_init(void)
+ {
+-#ifdef _WIN64
++#if defined(_WIN64) && !defined(WINE_IOS)   /* iOS: the ceiling is per thread (spec 12 B1) */
+     if (NtCurrentTeb()->WowTebOffset)
+     {

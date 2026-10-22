@@ -1,0 +1,18 @@
+; SPDX-License-Identifier: LGPL-2.1-or-later
+; From David Acevedo's DXMT fork (github.com/dacevedo12/dxmt), tag v0.4-d3d9,
+; commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
+; and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
+LIBRARY D3D9.DLL
+EXPORTS
+    Direct3DCreate9 @16
+    Direct3DCreate9Ex @20
+    D3DPERF_BeginEvent @23
+    D3DPERF_EndEvent @24
+    D3DPERF_GetStatus @25
+    D3DPERF_QueryRepeatFrame @26
+    D3DPERF_SetMarker @27
+    D3DPERF_SetOptions @28
+    D3DPERF_SetRegion @29
+    DebugSetLevel @30
+    DebugSetMute @31
+    Direct3DShaderValidatorCreate9 @32

@@ -1,0 +1,21 @@
+Spec 12 Part D3: EnumAdapters2 lists the D3DKMT adapter and OpenAdapterFromDeviceName opens it
+when MADEIRA_KMT_ADAPTER is on (w32ios_kmt.c). Line numbers are those after C-01-sysparams.patch.
+
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -7943,4 +7943,7 @@
+ NTSTATUS WINAPI NtGdiDdDDIEnumAdapters2( D3DKMT_ENUMADAPTERS2 *desc )
+ {
++#ifdef WINE_IOS
++    if (w32ios_kmt_enabled()) return w32ios_kmt_enum_adapters2( desc );   /* spec 12 D3 */
++#endif
+     D3DKMT_OPENADAPTERFROMLUID open_adapter_from_luid;
+     struct gpu *gpu, *current_gpus[34];
+@@ -8049,4 +8052,7 @@
+ NTSTATUS WINAPI NtGdiDdDDIOpenAdapterFromDeviceName( D3DKMT_OPENADAPTERFROMDEVICENAME *desc )
+ {
++#ifdef WINE_IOS
++    if (w32ios_kmt_enabled()) return w32ios_kmt_open_adapter_from_device_name( desc );   /* spec 12 D3 */
++#endif
+     unsigned int status = STATUS_INVALID_PARAMETER;
+     D3DKMT_OPENADAPTERFROMLUID desc_luid;

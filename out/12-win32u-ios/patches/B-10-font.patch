@@ -1,0 +1,66 @@
+Spec 12 Part B audit: font.c's registry handles become per pseudo-process (font_ios.inc), and the
+code page tables it keeps for the whole session are copies, not pointers into the views of the
+process that ran font_init.
+
+--- a/dlls/win32u/font.c
++++ b/dlls/win32u/font.c
+@@ -1,3 +1,5 @@
+ /*
+  * GDI font objects
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -49,5 +51,11 @@
+ static HKEY wine_fonts_key;
+ static HKEY wine_fonts_cache_key;
+ HKEY hkcu_key;
++#ifdef WINE_IOS
++#include "w32ios.h"
++#define hkcu_key             (*w32ios_font_key( 0 ))   /* per pseudo-process (spec 12 B) */
++#define wine_fonts_key       (*w32ios_font_key( 1 ))
++#define wine_fonts_cache_key (*w32ios_font_key( 2 ))
++#endif
+ 
+ struct font_physdev
+@@ -3048,10 +3056,16 @@
+     RtlInitCodePageTable( utf8_hdr, &utf8_cp );
++#ifdef WINE_IOS
++#define RtlInitCodePageTable( data, info ) w32ios_init_cptable( data, info )   /* copies (spec 12 B) */
++#endif
+     if (NtCurrentTeb()->Peb->AnsiCodePageData)
+         RtlInitCodePageTable( NtCurrentTeb()->Peb->AnsiCodePageData, &ansi_cp );
+     else
+         ansi_cp = utf8_cp;
+     if (NtCurrentTeb()->Peb->OemCodePageData)
+         RtlInitCodePageTable( NtCurrentTeb()->Peb->OemCodePageData, &oem_cp );
+     else
+         oem_cp = utf8_cp;
++#ifdef WINE_IOS
++#undef RtlInitCodePageTable
++#endif
+     snprintf( cpbuf, sizeof(cpbuf), "%u,%u", ansi_cp.CodePage, oem_cp.CodePage );
+@@ -3539,4 +3553,7 @@
+         return NULL;
+     }
++#ifdef WINE_IOS
++    ptr = (USHORT *)w32ios_copy_nls( ptr, size );   /* outlive this process's view (spec 12 B) */
++#endif
+     RtlInitCodePageTable( ptr, &tables[i] );
+     return &tables[i];
+@@ -3573,5 +3590,8 @@
+             ERR( "Failed to load nls file\n" );
+             return NULL;
+         }
++#ifdef WINE_IOS
++        addr = w32ios_copy_view( addr, size.QuadPart );   /* outlive this process's view (spec 12 B) */
++#endif
+ 
+         if (InterlockedCompareExchangePointer( (void **)&header, addr, NULL ))
+@@ -7051,3 +7071,7 @@
+     free( params );
+     return ret;
+ }
++
++#ifdef WINE_IOS
++#include "font_ios.inc"
++#endif

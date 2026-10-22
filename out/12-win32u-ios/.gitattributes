@@ -1,0 +1,5 @@
+*.patch text eol=lf
+*.sh    text eol=lf
+*.c     text eol=lf
+*.h     text eol=lf
+*.inc   text eol=lf

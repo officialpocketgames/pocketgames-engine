@@ -1,0 +1,30 @@
+Spec 12 Part E2: the driver's ProcessEvents runs on every message poll (the server never raises
+QS_DRIVER for the app's input queue); a pure poll skips its set_queue_mask request except once a
+second; message waits of a slicing thread wake every 16 ms to run ProcessEvents
+(w32ios_driver.c). Line numbers are those after B-11-message.patch.
+
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -3331,7 +3331,13 @@
+     BOOL drained = FALSE;
+ 
++#ifdef WINE_IOS
++    /* every poll: the server never raises QS_DRIVER for the app's input queue (spec 12 E2) */
++    drained = user_driver->pProcessEvents( events_mask );
++    if (drained || (!wake_mask && !changed_mask ? !w32ios_skip_queue_mask() : !check_queue_masks( wake_mask, changed_mask )))
++#else
+     if (check_internal_bits( QS_DRIVER )) drained = user_driver->pProcessEvents( events_mask );
+ 
+     if (drained || !check_queue_masks( wake_mask, changed_mask ))
++#endif
+     {
+         SERVER_START_REQ( set_queue_mask )
+@@ -3415,4 +3421,8 @@
+     if (!(changed_mask & QS_SMRESULT) && (event = get_user_thread_info()->idle_event)) NtSetEvent( event, NULL );
+ 
++#ifdef WINE_IOS
++    do ret = w32ios_wait_objects( count, handles, type, !!(flags & MWMO_ALERTABLE), abs );   /* E2 slices */
++#else
+     do ret = NtWaitForMultipleObjects( count, handles, type, !!(flags & MWMO_ALERTABLE), abs );
++#endif
+     while (ret == count - 1 && !process_driver_events( QS_ALLINPUT, wake_mask, changed_mask ));

@@ -1,0 +1,30 @@
+Spec 12 Part B9: KUSER_SHARED_DATA is read through spec 10's ios_get_real_usd(), never at
+0x7ffe0000 (each read there faults). Part B audit: the double-click tracking message and the
+thunk lock callback (set by each process's user32) become per pseudo-process.
+
+--- a/dlls/win32u/message.c
++++ b/dlls/win32u/message.c
+@@ -1,3 +1,5 @@
+ /*
+  * Window messaging support
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -48,3 +50,8 @@
+ static const struct _KUSER_SHARED_DATA *user_shared_data = (struct _KUSER_SHARED_DATA *)0x7ffe0000;
++#ifdef WINE_IOS
++#include "w32ios.h"
++#define user_shared_data    ((const struct _KUSER_SHARED_DATA *)w32ios_usd())   /* spec 12 B9 */
++#define thunk_lock_callback (w32ios_proc_current()->pp_thunk_lock_callback)     /* per pseudo-process */
++#endif
+ 
+ static LONG atomic_load_long( const volatile LONG *ptr )
+@@ -2586,4 +2593,8 @@
+                                    UINT first, UINT last, BOOL remove )
+ {
++#ifdef WINE_IOS
++#define clk_msg (w32ios_proc_current()->pp_clk_msg)   /* per pseudo-process */
++#else
+     static MSG clk_msg;
++#endif
+ 

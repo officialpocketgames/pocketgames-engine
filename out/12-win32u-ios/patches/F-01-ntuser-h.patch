@@ -1,0 +1,36 @@
+Spec 12 Part F1: NtUserCallTwoParam_GetGamepadState, appended after NtUserAllocWinProc (value 10:
+the prebuilt Windows DLLs already use it; never insert before it), and its inline wrapper. Not
+under WINE_IOS: an extra code changes nothing for a win32u that doesn't know it (it answers 0,
+"no controller").
+
+--- a/include/ntuser.h
++++ b/include/ntuser.h
+@@ -1,3 +1,5 @@
+ /*
+  * Copyright 2021 Jacek Caban for CodeWeavers
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -1221,4 +1223,6 @@
+     NtUserCallTwoParam_GetVirtualScreenRect,
+     /* temporary exports */
+     NtUserAllocWinProc,
++    /* MYIOSDECK, spec 12 F1: value 10, after NtUserAllocWinProc; never insert before it */
++    NtUserCallTwoParam_GetGamepadState,
+ };
+@@ -1290,4 +1294,15 @@
+     return virtual;
+ }
+ 
++/* MYIOSDECK, spec 12 F1: XInput through win32u. index: user index 0-3; op: 0 State
++ * (XINPUT_STATE), 1 Caps (XINPUT_CAPABILITIES), 2 SetVibration (XINPUT_VIBRATION). Returns 1, or
++ * 0 when there is no controller (or for a win32u that doesn't know the code). */
++enum { NTUSER_GAMEPAD_STATE = 0, NTUSER_GAMEPAD_CAPS = 1, NTUSER_GAMEPAD_SET_VIBRATION = 2 };
++
++static inline BOOL NtUserGetGamepadState( UINT index, UINT op, void *buffer )
++{
++    return NtUserCallTwoParam( (index & 0xff) | ((op & 0xff) << 8), (UINT_PTR)buffer,
++                               NtUserCallTwoParam_GetGamepadState );
++}
++
+ /* NtUserCallHwnd codes, not compatible with Windows */

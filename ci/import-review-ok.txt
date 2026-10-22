@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# Reviewed uses of the "review" imports of ci/forbidden-imports.txt: <symbol> <part>/<archive>:<member> <reason>.
+# ci/link-check.sh shows these as allowed and lists only the importers not named here.
+
+_vm_remap 12-win32u-ios/libwin32u_unix.a:w32ios_mach.o w32ios_vm_alias: a second read/write view of win32u's shared GDI tables inside a 32-bit program's guest window (w32ios_mem.c); never executable, so spec 00 A1 allows it (owner review, 2026-10-19)
+_sys_icache_invalidate 09-ntdll-processes/libntdll_unix.a:virtual.o NtFlushInstructionCache (spec 10 clarification 6): public <libkern/OSCacheControl.h>; only flushes memory that is already executable, never makes written memory executable (owner review, 2026-10-19)
