@@ -1,0 +1,107 @@
+Spec 12 Part C: the virtual monitor. The code is in sysparams_ios.inc. Line numbers are those
+after B-12-sysparams.patch.
+
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -1113,4 +1113,7 @@
+ static const char* driver_vendor_to_version( UINT16 vendor )
+ {
++#ifdef WINE_IOS
++    return w32ios_driver_version( vendor );   /* spec 12 C6 */
++#endif
+     /* The last seven digits are the driver number. */
+     switch (vendor)
+@@ -1635,5 +1638,9 @@
+     if (hkey)
+     {
++#ifdef WINE_IOS
++        UINT64 ver = w32ios_pack_version( driver_vendor_to_version( pci->vendor ) );   /* spec 12 C6 */
++#else
+         UINT64 ver = 0x230000000f1ff4; /* Some version in the future. */
++#endif
+ 
+         asciiz_to_unicode( bufferW, "AdapterLuid" );
+@@ -2389,5 +2396,8 @@
+     DEVMODEW *mode;
+ 
+     /* services do not have any adapters, only a virtual monitor */
++#ifdef WINE_IOS
++    if (!monitor->source) return w32ios_virtual_monitor_rect();   /* spec 12 C2 */
++#endif
+     if (!(source = monitor->source)) return rect;
+ 
+@@ -2417,4 +2427,8 @@
+         char buffer[CCHDEVICENAME];
+         if (monitor->source) snprintf( buffer, sizeof(buffer), "\\\\.\\DISPLAY%d", monitor->source->id + 1 );
++#ifdef WINE_IOS
++        else strcpy( buffer, "\\\\.\\DISPLAY1" );   /* the virtual monitor (spec 12 C3) */
++#else
+         else strcpy( buffer, "WinDisc" );
++#endif
+         asciiz_to_unicode( ((MONITORINFOEXW *)info)->szDevice, buffer );
+@@ -2850,3 +2864,6 @@
+     BOOL ret = TRUE;
+ 
++#ifdef WINE_IOS
++    return w32ios_lock_display_devices( force );   /* the virtual monitor (spec 12 C1) */
++#endif
+     init_display_driver(); /* make sure to load the driver before anything else */
+@@ -2889,4 +2906,7 @@
+ static void unlock_display_devices(void)
+ {
++#ifdef WINE_IOS
++    w32ios_display_lock_released();
++#endif
+     pthread_mutex_unlock( &display_lock );
+ }
+@@ -3369,3 +3389,6 @@
+ RECT get_display_rect( const WCHAR *display )
+ {
++#ifdef WINE_IOS
++    return w32ios_get_display_rect( display );   /* spec 12 C3 */
++#endif
+     struct monitor *monitor;
+@@ -3824,3 +3847,6 @@
+ static NTSTATUS d3dkmt_open_adapter_from_gdi_display_name( D3DKMT_OPENADAPTERFROMGDIDISPLAYNAME *desc )
+ {
++#ifdef WINE_IOS
++    return w32ios_open_adapter_from_gdi_name( desc );   /* spec 12 C7 */
++#endif
+     NTSTATUS status = STATUS_UNSUCCESSFUL;
+@@ -3854,4 +3880,7 @@
+ NTSTATUS WINAPI NtUserEnumDisplayDevices( UNICODE_STRING *device, DWORD index,
+                                           DISPLAY_DEVICEW *info, DWORD flags )
+ {
++#ifdef WINE_IOS
++    return w32ios_enum_display_devices( device, index, info, flags );   /* spec 12 C3 */
++#endif
+     struct monitor *monitor = NULL;
+@@ -4443,4 +4472,7 @@
+ LONG WINAPI NtUserChangeDisplaySettings( UNICODE_STRING *devname, DEVMODEW *devmode, HWND hwnd,
+                                          DWORD flags, void *lparam )
+ {
++#ifdef WINE_IOS
++    return w32ios_change_display_settings( devname, devmode, hwnd, flags, lparam );   /* spec 12 C5 */
++#endif
+     DEVMODEW full_mode = {.dmSize = sizeof(DEVMODEW)};
+@@ -4503,3 +4535,6 @@
+ BOOL WINAPI NtUserEnumDisplaySettings( UNICODE_STRING *device, DWORD index, DEVMODEW *devmode, DWORD flags )
+ {
++#ifdef WINE_IOS
++    return w32ios_enum_display_settings( device, index, devmode, flags );   /* spec 12 C4 */
++#endif
+     static const WCHAR wine_display_driverW[] = {'W','i','n','e',' ','D','i','s','p','l','a','y',' ','D','r','i','v','e','r',0};
+@@ -5440,3 +5475,6 @@
+     pncm->iSmCaptionHeight = max( pncm->iSmCaptionHeight, 2 + tm.tmHeight);
+     release_display_dc( hdc );
++#ifdef WINE_IOS
++    w32ios_fix_nonclient_metrics( pncm );   /* spec 12 C8 */
++#endif
+ }
+@@ -7139,3 +7177,6 @@
+     case SM_CXSCREEN:
++#ifdef WINE_IOS
++        w32ios_screen_metric_queried();   /* spec 12 C5: report the session default once */
++#endif
+         rect = get_primary_monitor_rect( get_thread_dpi() );
+         return rect.right - rect.left;

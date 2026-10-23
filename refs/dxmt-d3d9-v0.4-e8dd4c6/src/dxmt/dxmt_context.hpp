@@ -1,0 +1,1121 @@
+/*
+ * Copyright 2026 Feifan He for CodeWeavers
+ *
+ * This library is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU Lesser General Public
+ * License as published by the Free Software Foundation; either
+ * version 2.1 of the License, or (at your option) any later version.
+ *
+ * This library is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ * Lesser General Public License for more details.
+ *
+ * You should have received a copy of the GNU Lesser General Public
+ * License along with this library; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
+ */
+
+#pragma once
+
+#include "Metal.hpp"
+#include "dxmt_buffer.hpp"
+#include "dxmt_command.hpp"
+#include "dxmt_command_clear.hpp"
+#include "dxmt_counter.hpp"
+#include "dxmt_deptrack.hpp"
+#include "dxmt_occlusion_query.hpp"
+#include "dxmt_presenter.hpp"
+#include "dxmt_residency.hpp"
+#include "dxmt_sampler.hpp"
+#include "dxmt_scaler.hpp"
+#include "dxmt_statistics.hpp"
+#include "dxmt_texture.hpp"
+#include "log/log.hpp"
+#include "rc/util_rc_ptr.hpp"
+#include "airconv_public.h"
+#include <cassert>
+
+#define DXMT_IMPLEMENT_ME __builtin_unreachable();
+#define DXMT_UNREACHABLE __builtin_unreachable();
+
+namespace dxmt {
+
+constexpr size_t kCommandChunkCPUHeapSize = 0x400000;
+constexpr size_t kCommandChunkGPUHeapSize = 0x400000;
+constexpr size_t kEncodingContextCPUHeapSize = 0x100000;
+constexpr size_t kEncodingContextCPUHeapLifetime = 600;
+
+constexpr auto kIntrapassControlBitIgnoreUAVWaW = 1ull << 1;
+
+inline std::size_t
+align_forward_adjustment(const void *const ptr, const std::size_t &alignment) noexcept {
+  const auto iptr = reinterpret_cast<std::uintptr_t>(ptr);
+  const auto aligned = (iptr - 1u + alignment) & -alignment;
+  return aligned - iptr;
+}
+
+inline void *
+ptr_add(const void *const p, const std::uintptr_t &amount) noexcept {
+  return reinterpret_cast<void *>(reinterpret_cast<std::uintptr_t>(p) + amount);
+}
+
+enum class PipelineStage { Vertex = 0, Pixel = 1, Geometry = 2, Hull = 3, Domain = 4, Compute = 5 };
+
+enum class PipelineKind { Ordinary, Tessellation, Geometry };
+
+constexpr unsigned kStages = 6;
+constexpr unsigned kSRVBindings = 128;
+constexpr unsigned kUAVBindings = 64;
+constexpr unsigned kVertexBufferSlots = 32;
+constexpr unsigned kStreamOutputSlots = 4;
+
+struct VertexBufferBinding {
+  Rc<Buffer> buffer;
+  unsigned offset;
+  unsigned stride;
+};
+
+struct ConstantBufferBinding {
+  Rc<Buffer> buffer;
+  unsigned offset;
+};
+
+struct SamplerBinding {
+  Rc<Sampler> sampler;
+};
+
+struct ResourceViewBinding {
+  uint64_t viewId;
+  Rc<Buffer> buffer;
+  Rc<Texture> texture;
+  BufferSlice slice;
+};
+
+struct UnorderedAccessViewBinding {
+  uint64_t viewId;
+  Rc<Buffer> buffer;
+  Rc<Texture> texture;
+  Rc<Counter> counter;
+  BufferSlice slice;
+};
+
+struct StreamOutputBinding {
+  Rc<Buffer> buffer;
+  uint64_t offset;
+  Rc<Buffer> counter;
+};
+
+enum class EncoderType {
+  Null,
+  Render,
+  Compute,
+  Blit,
+  Clear,
+  Resolve,
+  StretchBlit,
+  Present,
+  SpatialUpscale,
+  SignalEvent,
+  TemporalUpscale,
+  WaitForEvent,
+  SampleTimestamp,
+  ResolveTimestamp,
+};
+
+struct EncoderData {
+  EncoderType type;
+  EncoderData *next = nullptr;
+  EncoderId id;
+  FenceSet fence_wait;
+  FenceSet fence_update;
+  EncoderBarrierState barrier_state;
+};
+
+struct GSDispatchArgumentsMarshal {
+  WMT::Reference<WMT::Buffer> draw_arguments;
+  uint64_t draw_arguments_va;
+  uint64_t max_object_threadgroups;
+  WMT::Buffer dispatch_arguments_buffer;
+  uint64_t dispatch_arguments_va;
+  uint32_t vertex_count_per_warp;
+};
+
+struct TSDispatchArgumentsMarshal {
+  WMT::Reference<WMT::Buffer> draw_arguments;
+  uint64_t draw_arguments_va;
+  uint64_t max_object_threadgroups;
+  WMT::Buffer dispatch_arguments_buffer;
+  uint64_t dispatch_arguments_va;
+  uint32_t control_point_count;
+  uint32_t patch_per_group;
+};
+
+struct RenderEncoderColorAttachmentData {
+  TextureViewRef attachment;
+  enum WMTLoadAction load_action;
+  enum WMTStoreAction store_action;
+  uint16_t level;
+  uint16_t slice;
+  uint32_t depth_plane;
+  struct WMTClearColor clear_color;
+  TextureViewRef resolve_attachment;
+  uint16_t resolve_level;
+  uint16_t resolve_slice;
+  uint32_t resolve_depth_plane;
+};
+
+struct RenderEncoderDepthAttachmentData {
+  TextureViewRef attachment;
+  enum WMTLoadAction load_action;
+  enum WMTStoreAction store_action;
+  uint16_t level;
+  uint16_t slice;
+  uint32_t depth_plane;
+  float clear_depth;
+};
+
+struct RenderEncoderStencilAttachmentData {
+  TextureViewRef attachment;
+  enum WMTLoadAction load_action;
+  enum WMTStoreAction store_action;
+  uint16_t level;
+  uint16_t slice;
+  uint32_t depth_plane;
+  uint8_t clear_stencil;
+};
+
+struct RenderEncoderData : EncoderData {
+  std::array<RenderEncoderColorAttachmentData, 8> colors;
+  RenderEncoderDepthAttachmentData depth;
+  RenderEncoderStencilAttachmentData stencil;
+  uint8_t default_raster_sample_count;
+  uint16_t render_target_array_length;
+  uint32_t render_target_height;
+  uint32_t render_target_width;
+  std::vector<GSDispatchArgumentsMarshal> gs_arg_marshal_tasks;
+  std::vector<TSDispatchArgumentsMarshal> ts_arg_marshal_tasks;
+  wmtcmd_render_nop cmd_head;
+  wmtcmd_base *cmd_tail;
+  WMT::Buffer allocated_argbuf;
+  uint64_t allocated_argbuf_offset;
+  uint64_t encoder_id_vertex;
+  FenceSet fence_wait_vertex;
+  FenceSet fence_update_vertex;
+  void *allocated_argbuf_mapping;
+  uint8_t dsv_planar_flags;
+  uint8_t dsv_readonly_flags;
+  uint8_t render_target_count;
+  bool use_visibility_result = 0;
+  bool use_tessellation = 0;
+  bool use_geometry = 0;
+  bool use_emulated_so = 0;
+  TileBarrierPSOKey tile_barrier_pso_key = {};
+  WMT::RenderPipelineState last_pso = {};
+};
+
+struct ComputeEncoderData : EncoderData {
+  wmtcmd_compute_nop cmd_head;
+  wmtcmd_base *cmd_tail;
+  WMT::Buffer allocated_argbuf;
+  uint64_t allocated_argbuf_offset;
+  void *allocated_argbuf_mapping;
+};
+
+struct BlitEncoderData : EncoderData {
+  wmtcmd_blit_nop cmd_head;
+  wmtcmd_base *cmd_tail;
+};
+
+struct ClearEncoderData : EncoderData {
+  union {
+    WMTClearColor color;
+    std::pair<float, uint8_t> depth_stencil;
+  };
+  TextureViewRef attachment;
+  unsigned clear_dsv;
+  unsigned array_length;
+  unsigned width;
+  unsigned height;
+
+  ClearEncoderData() {}
+};
+
+struct ResolveEncoderData : EncoderData {
+  TextureViewRef src;
+  TextureViewRef dst;
+  WMT::RenderPipelineState pso;
+  std::optional<WMTScissorRect> src_rect;
+  WMTOrigin dst_origin;
+  WMTSize resolve_size;
+  // Destination is a single-sample depth target reached through a depth
+  // attachment + depth-write pipeline rather than a colour one (see the
+  // Resolve case in the encoder executor).
+  bool is_depth = false;
+};
+
+// Render-pass sample/store blit for StretchRect when the fast blit-copy
+// path doesn't fit (size mismatch or format aliases that share storage
+// but use distinct Metal pixel formats). The PSO is built from
+// vs_blit_quad / fs_blit_quad (dxmt_command.metal); the fragment stage
+// samples `src` with `sampler` at slot 0 over the normalized sub-rect
+// `src_uv_origin` + `src_uv_size`. Viewport is set to (dst_origin,
+// dst_size) on the encoder side. Sibling of ResolveEncoderData: same
+// shape, different sampler-shaped shader.
+struct StretchBlitEncoderData : EncoderData {
+  TextureViewRef src;
+  TextureViewRef dst;
+  WMT::RenderPipelineState pso;
+  WMT::SamplerState sampler;
+  // Normalized [0,1] sub-rect within the bound source texture/view.
+  float src_uv_origin[2];
+  float src_uv_size[2];
+  WMTOrigin dst_origin;
+  WMTSize dst_size;
+};
+
+class Presenter;
+
+struct PresentData : EncoderData {
+  WMT::Reference<WMT::Texture> backbuffer;
+  Rc<Presenter> presenter;
+  double after;
+  DXMTPresentMetadata metadata;
+};
+
+struct SpatialUpscaleData : EncoderData {
+  WMT::Reference<WMT::Texture> backbuffer;
+  WMT::Reference<WMT::Texture> upscaled;
+  Rc<SpatialScaler> scaler;
+};
+
+struct SignalEventData : EncoderData {
+  WMT::Reference<WMT::Event> event;
+  uint64_t value;
+};
+
+struct WaitForEventData : EncoderData {
+  WMT::Reference<WMT::Event> event;
+  uint64_t value;
+};
+
+struct SampleTimestampData: EncoderData {
+  uint64_t readback_index;
+  // TODO: small_vector opt
+  std::vector<Rc<TimestampQuery>> queries;
+};
+
+struct TemporalUpscaleData : EncoderData {
+  WMT::Reference<WMT::Texture> input;
+  WMT::Reference<WMT::Texture> output;
+  WMT::Reference<WMT::Texture> depth;
+  WMT::Reference<WMT::Texture> motion_vector;
+  WMT::Reference<WMT::Texture> exposure;
+  Rc<TemporalScaler> scaler;
+  WMTFXTemporalScalerProps props;
+};
+
+template <PipelineKind kind>
+constexpr DXMT_RESOURCE_RESIDENCY
+GetResidencyMask(PipelineStage type, bool read, bool write) {
+  switch (type) {
+  case PipelineStage::Vertex:
+    if constexpr (kind == PipelineKind::Tessellation)
+      return (read ? DXMT_RESOURCE_RESIDENCY_OBJECT_READ : DXMT_RESOURCE_RESIDENCY_NULL) |
+             (write ? DXMT_RESOURCE_RESIDENCY_OBJECT_WRITE : DXMT_RESOURCE_RESIDENCY_NULL);
+    else if constexpr (kind == PipelineKind::Geometry)
+      return (read ? DXMT_RESOURCE_RESIDENCY_OBJECT_GS_READ : DXMT_RESOURCE_RESIDENCY_NULL) |
+             (write ? DXMT_RESOURCE_RESIDENCY_OBJECT_GS_WRITE : DXMT_RESOURCE_RESIDENCY_NULL);
+    else
+      return (read ? DXMT_RESOURCE_RESIDENCY_VERTEX_READ : DXMT_RESOURCE_RESIDENCY_NULL) |
+             (write ? DXMT_RESOURCE_RESIDENCY_VERTEX_WRITE : DXMT_RESOURCE_RESIDENCY_NULL);
+  case PipelineStage::Pixel:
+    return (read ? DXMT_RESOURCE_RESIDENCY_FRAGMENT_READ : DXMT_RESOURCE_RESIDENCY_NULL) |
+           (write ? DXMT_RESOURCE_RESIDENCY_FRAGMENT_WRITE : DXMT_RESOURCE_RESIDENCY_NULL);
+  case PipelineStage::Hull:
+    return (read ? DXMT_RESOURCE_RESIDENCY_OBJECT_READ : DXMT_RESOURCE_RESIDENCY_NULL) |
+           (write ? DXMT_RESOURCE_RESIDENCY_OBJECT_WRITE : DXMT_RESOURCE_RESIDENCY_NULL);
+  case PipelineStage::Geometry:
+    return (read ? DXMT_RESOURCE_RESIDENCY_MESH_GS_READ : DXMT_RESOURCE_RESIDENCY_NULL) |
+           (write ? DXMT_RESOURCE_RESIDENCY_MESH_GS_WRITE : DXMT_RESOURCE_RESIDENCY_NULL);
+  case PipelineStage::Domain:
+    return (read ? DXMT_RESOURCE_RESIDENCY_MESH_READ : DXMT_RESOURCE_RESIDENCY_NULL) |
+           (write ? DXMT_RESOURCE_RESIDENCY_MESH_WRITE : DXMT_RESOURCE_RESIDENCY_NULL);
+  case PipelineStage::Compute:
+    return (read ? DXMT_RESOURCE_RESIDENCY_READ : DXMT_RESOURCE_RESIDENCY_NULL) |
+           (write ? DXMT_RESOURCE_RESIDENCY_WRITE : DXMT_RESOURCE_RESIDENCY_NULL);
+  }
+  DXMT_UNREACHABLE;
+}
+
+enum DXMT_ENCODER_LIST_OP {
+  DXMT_ENCODER_LIST_OP_SWAP = 0,
+  DXMT_ENCODER_LIST_OP_SYNCHRONIZE = 1,
+};
+
+class CommandQueue;
+
+struct AllocatedTempBufferSlice {
+  WMT::Buffer gpu_buffer;
+  uint64_t offset;
+  uint64_t gpu_address;
+};
+
+class ArgumentEncodingContext {
+  friend struct SimpleCommandContext<ArgumentEncodingContext>;
+private:
+  template <PipelineStage stage> void track(GenericAccessTracker &tracker, int flags);
+
+public:
+  template <PipelineStage stage>
+  void
+  trackBuffer(BufferAllocation *allocation, int flags) {
+    retainAllocation(allocation);
+    if (allocation->flags().test(BufferAllocationFlag::GpuReadonly))
+      return;
+    auto &tracker = allocation->fenceTrackers[allocation->currentSuballocation()];
+    track<stage>(tracker, flags);
+  }
+
+public:
+  template<PipelineStage stage = PipelineStage::Compute>
+  std::pair<BufferAllocation *, uint64_t>
+  access(Rc<Buffer> const &buffer, unsigned offset, unsigned length, int flags) {
+    auto allocation = buffer->current();
+    trackBuffer<stage>(allocation, flags);
+    return {allocation, allocation->currentSuballocationOffset()};
+  }
+
+  // Track a specific allocation captured at draw-record time rather than
+  // re-reading current(). A BUFFER-mode buffer renames on Lock(DISCARD),
+  // so the calling thread freezes the allocation per draw and both the
+  // binding and this fence tracking must reference that same frozen
+  // allocation; re-reading current() on the encode thread would track a
+  // later rename.
+  template<PipelineStage stage = PipelineStage::Compute>
+  std::pair<BufferAllocation *, uint64_t>
+  access(Rc<BufferAllocation> const &allocation, unsigned offset, unsigned length, int flags) {
+    trackBuffer<stage>(allocation.ptr(), flags);
+    return {allocation.ptr(), allocation->currentSuballocationOffset()};
+  }
+
+  template<PipelineStage stage = PipelineStage::Compute>
+  std::pair<BufferView const &, uint32_t>
+  access(Rc<Buffer> const &buffer, uint64_t viewId, int flags) {
+    auto allocation = buffer->current();
+    trackBuffer<stage>(allocation, flags);
+    auto &view = buffer->view_(viewId, allocation);
+    return {view, allocation->currentSuballocationOffset(view.suballocation_texel)};
+  }
+
+  template<PipelineStage stage = PipelineStage::Compute>
+  WMT::Texture
+  access(Rc<Texture> const &texture, unsigned level, unsigned slice, int flags) {
+    auto allocation = texture->current();
+    retainAllocation(allocation);
+    if (!allocation->flags().test(TextureAllocationFlag::GpuReadonly)) {
+      if (likely(allocation->flags().test(TextureAllocationFlag::ShaderReadonly))) {
+        track<stage>(allocation->fenceTrackers[0], flags);
+      } else {
+        auto &tracker = allocation->fenceTrackers[slice * allocation->descriptor->miplevelCount() + level];
+        track<stage>(tracker, flags);
+      }
+    }
+    return allocation->texture();
+  }
+
+  template<PipelineStage stage = PipelineStage::Compute>
+  TextureView &
+  access(Rc<Texture> const &texture, uint64_t viewId, int flags) {
+    assert(viewId);
+    auto allocation = texture->current();
+    retainAllocation(allocation);
+    auto &view = texture->view(viewId, allocation);
+    if (!allocation->flags().test(TextureAllocationFlag::GpuReadonly)) {
+      if (likely(allocation->flags().test(TextureAllocationFlag::ShaderReadonly))) {
+        track<stage>(allocation->fenceTrackers[0], flags);
+      } else {
+        TextureViewKey view = viewId;
+        for (unsigned slice = view.array_start; slice < view.array_end; slice++) {
+          for (unsigned level = view.mip_start; level < view.mip_end; level++) {
+            auto &tracker = allocation->fenceTrackers[slice * view.mip_count + level];
+            track<stage>(tracker, flags);
+          }
+        }
+      }
+    }
+    return view;
+  }
+
+  CounterAllocation *getCounterAllocation(Rc<Counter> const &counter);
+
+  template <PipelineStage stage = PipelineStage::Compute>
+  std::pair<BufferAllocation *, uint64_t>
+  access(Rc<Counter> const &counter, Rc<Buffer> const &buffer_to_synchronize) {
+    auto allocation = getCounterAllocation(counter);
+    retainAllocation(allocation);
+    trackBuffer<stage>(buffer_to_synchronize->current(), ResourceAccess::All);
+    return {allocation->buffer(), allocation->offset()};
+  }
+
+  template <PipelineStage stage = PipelineStage::Compute>
+  std::pair<BufferAllocation *, uint64_t>
+  access(Rc<Counter> const &counter) {
+    auto allocation = getCounterAllocation(counter);
+    retainAllocation(allocation);
+    return {allocation->buffer(), allocation->offset()};
+  }
+
+  template <PipelineStage stage>
+  void
+  bindConstantBuffer(unsigned slot, unsigned offset, Rc<Buffer> &&buffer) {
+    unsigned idx = slot + 14 * unsigned(stage);
+    auto &entry = cbuf_[idx];
+    entry.offset = offset;
+    entry.buffer = std::move(buffer);
+  }
+
+  template <PipelineStage stage>
+  void
+  bindConstantBufferOffset(unsigned slot, unsigned offset) {
+    unsigned idx = slot + 14 * unsigned(stage);
+    auto &entry = cbuf_[idx];
+    entry.offset = offset;
+  }
+
+  template <PipelineStage stage>
+  void
+  bindSampler(unsigned slot, Rc<Sampler> sampler) {
+    unsigned idx = slot + 16 * unsigned(stage);
+    auto &entry = sampler_[idx];
+    entry.sampler = sampler;
+  }
+
+  template <PipelineStage stage>
+  void
+  bindBuffer(unsigned slot, Rc<Buffer> &&buffer, uint64_t viewId, BufferSlice slice) {
+    unsigned idx = slot + kSRVBindings * unsigned(stage);
+    auto &entry = resview_[idx];
+    entry.texture = {};
+    entry.buffer = std::move(buffer);
+    entry.viewId = viewId;
+    entry.slice = slice;
+  }
+
+  template <PipelineStage stage>
+  void
+  bindTexture(unsigned slot, Rc<Texture> &&texture, uint64_t viewId) {
+    unsigned idx = slot + kSRVBindings * unsigned(stage);
+    auto &entry = resview_[idx];
+    entry.buffer = {};
+    entry.texture = std::move(texture);
+    entry.viewId = viewId;
+  }
+
+  template <PipelineStage stage>
+  void bindOutputBuffer(unsigned slot, Rc<Buffer> &&buffer, uint64_t viewId, Rc<Counter> &&counter, BufferSlice slice);
+
+  template <PipelineStage stage> void bindOutputTexture(unsigned slot, Rc<Texture> &&texture, uint64_t viewId);
+
+  void bindStreamOutputBuffer(unsigned slot, unsigned offset, Rc<Buffer> &&buffer, Rc<Buffer> &&counter) {
+    auto &entry = so_[slot];
+    entry.buffer = std::move(buffer);
+    entry.offset = offset;
+    entry.counter = std::move(counter);
+  }
+  
+  void bindStreamOutputBufferOffset(unsigned slot, unsigned offset) {
+    auto &entry = so_[slot];
+    entry.offset = offset;
+  }
+
+  void
+  bindVertexBuffer(unsigned slot, unsigned offset, unsigned stride, Rc<Buffer> &&buffer) {
+    auto &entry = vbuf_[slot];
+    entry.buffer = std::move(buffer);
+    entry.offset = offset;
+    entry.stride = stride;
+  }
+
+  void
+  bindVertexBufferOffset(unsigned slot, unsigned offset, unsigned stride) {
+    auto &entry = vbuf_[slot];
+    entry.offset = offset;
+    entry.stride = stride;
+  }
+
+  void
+  bindIndexBuffer(Rc<Buffer> &&buffer) {
+    ibuf_ = std::move(buffer);
+  }
+
+  std::pair<WMT::Buffer, uint64_t>
+  currentIndexBuffer() {
+    // because of indirect draw, we can't predicate the accessed buffer range
+    auto [ibuf_alloc, offset] = access<PipelineStage::Vertex>(ibuf_, 0, ibuf_->length(), ResourceAccess::Read);
+    return {ibuf_alloc->buffer(), offset};
+  };
+
+  void clearState() {
+    vbuf_ = {{}};
+    ibuf_ = {};
+    cbuf_ = {{}};
+    sampler_ = {{}};
+    resview_ = {{}};
+    om_uav_ = {{}};
+    cs_uav_ = {{}};
+  }
+
+  template <PipelineKind kind> void encodeVertexBuffers(uint32_t ia_slot_mask, uint64_t argument_buffer_offset);
+  template <PipelineStage stage, PipelineKind kind>
+  void encodeConstantBuffers(
+      const MTL_SHADER_REFLECTION *reflection, const MTL_SM50_SHADER_ARGUMENT *constant_buffers,
+      uint64_t argument_buffer_offset
+  );
+  template <PipelineStage stage, PipelineKind kind>
+  void encodeShaderResources(
+      const MTL_SHADER_REFLECTION *reflection, const MTL_SM50_SHADER_ARGUMENT *arguments,
+      uint64_t argument_buffer_offset
+  );
+  template <PipelineKind kind> void encodeStreamOutputBuffers(uint64_t offset);
+
+  void retainAllocation(Allocation* allocation);
+
+  template <PipelineStage stage, PipelineKind kind>
+  void
+  makeResident(WMT::Resource resource, DXMT_RESOURCE_RESIDENCY requested) {
+    if constexpr (stage == PipelineStage::Compute) {
+      auto &cmd = encodeComputeCommand<wmtcmd_compute_useresource>();
+      cmd.type = WMTComputeCommandUseResource;
+      cmd.resource = resource;
+      cmd.usage = GetUsageFromResidencyMask(requested);
+    } else {
+      auto &cmd = encodeRenderCommand<wmtcmd_render_useresource>();
+      cmd.type = WMTRenderCommandUseResource;
+      cmd.resource = resource;
+      cmd.usage = GetUsageFromResidencyMask(requested);
+      cmd.stages = GetStagesFromResidencyMask(requested);
+    }
+  }
+  template <PipelineStage stage, PipelineKind kind>
+  void
+  makeResident(Counter *counter) {
+    auto allocation = getCounterAllocation(counter)->buffer();
+    uint64_t encoder_id = currentEncoder()->id;
+    DXMT_RESOURCE_RESIDENCY requested = GetResidencyMask<kind>(stage, true, true);
+    if (CheckResourceResidency(allocation->residencyState, encoder_id, requested)) {
+      makeResident<stage, kind>(allocation->buffer(), requested);
+    };
+  }
+  template <PipelineStage stage, PipelineKind kind>
+  void
+  makeResident(Buffer *buffer, bool read = true, bool write = false) {
+    auto allocation = buffer->current();
+    uint64_t encoder_id = currentEncoder()->id;
+    DXMT_RESOURCE_RESIDENCY requested = GetResidencyMask<kind>(stage, read, write);
+    if (CheckResourceResidency(allocation->residencyState, encoder_id, requested)) {
+      makeResident<stage, kind>(allocation->buffer(), requested);
+    };
+  }
+  template <PipelineStage stage, PipelineKind kind>
+  void
+  makeResident(Buffer *buffer, uint64_t viewId, bool read = true, bool write = false) {
+    auto allocation = buffer->current();
+    uint64_t encoder_id = currentEncoder()->id;
+    DXMT_RESOURCE_RESIDENCY requested = GetResidencyMask<kind>(stage, read, write);
+    if (CheckResourceResidency(buffer->residency(viewId, allocation), encoder_id, requested)) {
+      makeResident<stage, kind>(buffer->view(viewId, allocation), requested);
+    };
+  }
+  template <PipelineStage stage, PipelineKind kind>
+  void
+  makeResident(Texture *texture, uint64_t viewId, bool read = true, bool write = false) {
+    auto allocation = texture->current();
+    uint64_t encoder_id = currentEncoder()->id;
+    DXMT_RESOURCE_RESIDENCY requested = GetResidencyMask<kind>(stage, read, write);
+    auto &view = texture->view(viewId, allocation);
+    if (CheckResourceResidency(view.residency, encoder_id, requested)) {
+      makeResident<stage, kind>(view.texture, requested);
+    };
+  }
+
+  template <typename cmd_struct>
+  cmd_struct &
+  encodeRenderCommand() {
+    assert(encoder_current->type == EncoderType::Render);
+    auto encoder = static_cast<RenderEncoderData *>(encoder_current);
+    auto storage = (cmd_struct *)allocate_cpu_heap(sizeof(cmd_struct), 16);
+    encoder->cmd_tail->next.set(storage);
+    encoder->cmd_tail = (wmtcmd_base *)storage;
+    storage->next.set(nullptr);
+    return *storage;
+  }
+
+  void
+  encodeGSDispatchArgumentsMarshal(
+      WMT::Buffer draw_args, uint64_t draw_args_resource_id, uint32_t draw_args_offset, uint32_t vertex_count_per_warp,
+      WMT::Buffer dispatch_args, uint64_t dispatch_args_resource_id, uint32_t write_offset, uint64_t max_object_threadgroups
+  ) {
+    assert(encoder_current->type == EncoderType::Render);
+    auto data = static_cast<RenderEncoderData *>(encoder_current);
+    data->gs_arg_marshal_tasks.push_back(
+        {draw_args, draw_args_resource_id + draw_args_offset, max_object_threadgroups, dispatch_args,
+         dispatch_args_resource_id + write_offset, vertex_count_per_warp}
+    );
+  }
+
+  void
+  encodeTSDispatchArgumentsMarshal(
+      WMT::Buffer draw_args, uint64_t draw_args_resource_id, uint32_t draw_args_offset, uint32_t control_point_count,
+      uint32_t patch_per_group, WMT::Buffer dispatch_args, uint64_t dispatch_args_resource_id, uint32_t write_offset,
+      uint64_t max_object_threadgroups
+  ) {
+    assert(encoder_current->type == EncoderType::Render);
+    auto data = static_cast<RenderEncoderData *>(encoder_current);
+    data->ts_arg_marshal_tasks.push_back(
+        {draw_args, draw_args_resource_id + draw_args_offset, max_object_threadgroups, dispatch_args,
+         dispatch_args_resource_id + write_offset, control_point_count, patch_per_group}
+    );
+  }
+
+  template <typename cmd_struct>
+  cmd_struct &
+  encodeComputeCommand() {
+    assert(encoder_current->type == EncoderType::Compute);
+    auto encoder = static_cast<ComputeEncoderData *>(encoder_current);
+    auto storage = (cmd_struct *)allocate_cpu_heap(sizeof(cmd_struct), 16);
+    encoder->cmd_tail->next.set(storage);
+    encoder->cmd_tail = (wmtcmd_base *)storage;
+    storage->next.set(nullptr);
+    return *storage;
+  }
+
+  template <typename cmd_struct>
+  cmd_struct &
+  encodeBlitCommand() {
+    assert(encoder_current->type == EncoderType::Blit);
+    auto encoder = static_cast<BlitEncoderData *>(encoder_current);
+    auto storage = (cmd_struct *)allocate_cpu_heap(sizeof(cmd_struct), 16);
+    encoder->cmd_tail->next.set(storage);
+    encoder->cmd_tail = (wmtcmd_base *)storage;
+    storage->next.set(nullptr);
+    return *storage;
+  }
+
+  template <typename T>
+  T *
+  allocate() {
+    return (new (allocate_cpu_heap(sizeof(T), alignof(T))) T());
+  };
+
+  void present(Rc<Texture> &texture, Rc<Presenter> &presenter, double after, DXMTPresentMetadata metadata);
+
+  void upscale(Rc<Texture> &texture, Rc<Texture> &upscaled, Rc<SpatialScaler> &scaler);
+
+  void upscaleTemporal(
+      Rc<Texture> &input, Rc<Texture> &output, Rc<Texture> &depth, Rc<Texture> &motion_vector, TextureViewKey mvViewId,
+      Rc<Texture> &exposure, Rc<TemporalScaler> &scaler, const WMTFXTemporalScalerProps &props
+  );
+  // Depth variant of the shader resolve: the destination is a single-sample depth
+  // target driven through a depth attachment and a depth-write pipeline (the
+  // multisampled source binds as a fragment depth texture), so it needs its own
+  // render-pass shape rather than the colour path above.
+  void resolveDepthTexture(
+      Rc<Texture> &&src, TextureViewKey src_view, Rc<Texture> &&dst, TextureViewKey dst_view,
+      WMT::RenderPipelineState pso, std::optional<WMTScissorRect> src_rect, WMTOrigin dst_origin,
+      WMTSize resolve_size
+  );
+  // Stretch-blit via render-pass sample/store. The caller (typically
+  // StretchBlitContext) supplies the PSO + sampler; this method computes
+  // normalized uv from pixel-space src_origin/src_size against the bound
+  // src texture's level dimensions and records the encoder data. The
+  // execute-time encoder body lives in EncoderType::StretchBlit's case
+  // in the main encoder dispatch loop.
+  void stretchBlit(
+      Rc<Texture> &&src, TextureViewKey src_view, Rc<Texture> &&dst, TextureViewKey dst_view,
+      WMT::RenderPipelineState pso, WMT::SamplerState sampler,
+      WMTOrigin src_origin, WMTSize src_size,
+      WMTOrigin dst_origin, WMTSize dst_size
+  );
+
+  // Blit-encoder 1:1 texture-to-texture copy of one subresource region, in its
+  // own blit pass. Matched sample count (single-sample or MSAA alike, unlike the
+  // sampler-based stretchBlit which cannot source an MSAA texture), matched
+  // format. The access(src, Read) + access(dst, Write) register the pass in the
+  // fence trackers so the encoder scheduler orders it against prior/later readers
+  // and writers of the same subresource. Same primitive as the d3d9 StretchRect
+  // Copy path (EmitBlitOp_d9).
+  void copyTexture(
+      const Rc<Texture> &src, unsigned src_level, unsigned src_slice, WMTOrigin src_origin,
+      const Rc<Texture> &dst, unsigned dst_level, unsigned dst_slice, WMTOrigin dst_origin,
+      WMTSize size
+  );
+
+  // optimizeContentsForGPUAccess on one texture subresource, as its own blit
+  // pass. A DEFAULT-pool (Private, GPU-optimized) texture written by a blit or
+  // fill can be left in a GPU-compressed layout that a render-pass sampler
+  // misreads; this re-tiles that subresource for GPU access so a subsequent
+  // sample (the StretchRect render-pass scale) reads the real texels. The Metal
+  // analogue of Vulkan's TRANSFER_DST -> SHADER_READ_ONLY transition. It is a
+  // no-op when the contents are already GPU-optimal (e.g. a render-written
+  // source), so the scaled-blit path issues it unconditionally rather than
+  // tracking each source's last-write kind.
+  void optimizeTextureForGPUAccess(const Rc<Texture> &texture, unsigned level, unsigned slice);
+
+  void signalEvent(uint64_t value);
+  void signalEvent(WMT::Reference<WMT::Event> &&event, uint64_t value);
+  // Handle-only variant: keeps the retain (one wine_unix_call) off
+  // the calling thread by deferring the Reference construction to the
+  // encode-thread emit. Use it when the event lifetime is owned by an
+  // outer object that outlives every chunk that ends up signalling it
+  // (e.g. the d3d9 device's m_completionEvent across its own chunks).
+  // Named distinctly from the Reference overload because
+  // WMT::Reference<WMT::Event> implicitly converts to obj_handle_t,
+  // which would make `signalEvent(std::move(ref), v)` ambiguous.
+  void signalEventByHandle(obj_handle_t event_handle, uint64_t value);
+  void waitEvent(WMT::Reference<WMT::Event> &&event, uint64_t value);
+
+  uint64_t
+  nextEncoderId() {
+    return encoder_id_++;
+  };
+
+  void clearColor(Rc<Texture> &&texture, uint64_t viewId, unsigned arrayLength, WMTClearColor color);
+  void clearDepthStencil(
+      Rc<Texture> &&texture, uint64_t viewId, unsigned arrayLength, unsigned flag, float depth, uint8_t stencil
+  );
+  void resolveTexture(
+      Rc<Texture> &&src, TextureViewKey src_view, Rc<Texture> &&dst, TextureViewKey dst_view,
+      WMT::RenderPipelineState pso = {}, std::optional<WMTScissorRect> src_rect = std::nullopt,
+      WMTOrigin dst_origin = {}, WMTSize resolve_size = {}
+  );
+
+  RenderEncoderData *startRenderPass(
+      uint8_t dsv_planar_flags, uint8_t dsv_readonly_flags, uint8_t render_target_count, uint64_t argument_buffer_size
+  );
+  EncoderData *startComputePass(uint64_t argument_buffer_size);
+  EncoderData *startBlitPass();
+
+  void endPass();
+
+  constexpr EncoderData *
+  currentEncoder() {
+    assert(encoder_current);
+    return encoder_current;
+  }
+
+  constexpr uint64_t
+  currentEncoderId() {
+    assert(encoder_current);
+    return encoder_current->id;
+  }
+
+  constexpr RenderEncoderData *
+  currentRenderEncoder() {
+    assert(encoder_current && encoder_current->type == EncoderType::Render);
+    return static_cast<RenderEncoderData *>(encoder_current);
+  }
+
+  void *
+  allocate_cpu_heap(size_t size, size_t alignment) {
+    assert(size < kEncodingContextCPUHeapSize);
+    for (;;) {
+      std::size_t adjustment = align_forward_adjustment((void *)cpu_buffer_offset_, alignment);
+      auto aligned = cpu_buffer_offset_ + adjustment;
+      cpu_buffer_offset_ = aligned + size;
+      if (unlikely(cpu_buffer_offset_ >= kEncodingContextCPUHeapSize)) {
+        current_buffer_chunk_++;
+        while (current_buffer_chunk_ >= cpu_buffer_chunks_.size()) {
+          cpu_buffer_chunks_.emplace_back();
+        }
+        auto &chunk = cpu_buffer_chunks_[current_buffer_chunk_];
+        chunk.underused_times = 0;
+        cpu_buffer_ = chunk.ptr;
+        cpu_buffer_offset_ = 0;
+        continue;
+      }
+      return ptr_add(cpu_buffer_, aligned);
+    }
+  }
+
+  template <typename T, bool ComputeCommandEncoder = false>
+  T *
+  getMappedArgumentBuffer(size_t offset) {
+    if constexpr (ComputeCommandEncoder)
+      return reinterpret_cast<T *>(
+          (char *)static_cast<ComputeEncoderData *>(encoder_current)->allocated_argbuf_mapping + offset
+      );
+    return reinterpret_cast<T *>(
+        (char *)static_cast<RenderEncoderData *>(encoder_current)->allocated_argbuf_mapping + offset
+    );
+  }
+
+  template <bool ComputeCommandEncoder = false>
+  uint64_t
+  getFinalArgumentBufferOffset(size_t offset) {
+    if constexpr (ComputeCommandEncoder)
+      return static_cast<ComputeEncoderData *>(encoder_current)->allocated_argbuf_offset + offset;
+    return static_cast<RenderEncoderData *>(encoder_current)->allocated_argbuf_offset + offset;
+  }
+
+  template <bool ComputeCommandEncoder = false>
+  WMT::Buffer
+  getFinalArgumentBuffer() {
+    if constexpr (ComputeCommandEncoder)
+      return static_cast<ComputeEncoderData *>(encoder_current)->allocated_argbuf;
+    return static_cast<RenderEncoderData *>(encoder_current)->allocated_argbuf;
+  }
+
+  std::pair<WMT::Buffer , size_t> allocateTempBuffer(size_t size, size_t alignment);
+  
+  AllocatedTempBufferSlice allocateTempBuffer1(size_t size, size_t alignment);
+
+  QueryReadbacks flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId, uint64_t event_seq_id);
+
+  uint64_t currentSeqId() {return seq_id_;}
+
+  uint64_t currentFrameId() {return frame_id_;}
+
+  CommandQueue& queue() { return queue_;}
+
+  void
+  $$setEncodingContext(uint64_t seq_id, uint64_t frame_id);
+
+  void bumpVisibilityResultOffset();
+  void beginVisibilityResultQuery(Rc<VisibilityResultQuery> &&query);
+  void endVisibilityResultQuery(Rc<VisibilityResultQuery> &&query);
+  void
+  pushDeferredVisibilityQueries(Rc<VisibilityResultQuery> *list) {
+    deferred_visibility_query_stack_.push_back(list);
+  }
+  void
+  popDeferredVisibilityQueries() {
+    assert(!deferred_visibility_query_stack_.empty());
+    deferred_visibility_query_stack_.pop_back();
+  }
+  Rc<VisibilityResultQuery>
+  currentDeferredVisibilityQuery(uint32_t query_id) {
+    assert(!deferred_visibility_query_stack_.empty());
+    return deferred_visibility_query_stack_.back()[query_id];
+  }
+
+  void sampleTimestamp(Rc<TimestampQuery> &&query);
+
+  void barrierOnQueue(WMT::CommandBuffer cmdbuf) {
+    barrier_index_++;
+    cmdbuf.encodeSignalEvent(barrier_event_, barrier_index_);
+    cmdbuf.encodeWaitForEvent(barrier_event_, barrier_index_);
+  };
+
+  void resolveComputePassBarrier();
+
+  void resolveRenderPassBarrier();
+
+  FrameStatistics&
+  currentFrameStatistics();
+
+  void
+  setCompatibilityFlag(FeatureCompatibility flag) {
+    currentFrameStatistics().compatibility_flags.set(flag);
+  }
+
+  void
+  setIntrapassBarrierControl(uint64_t control_bits) {
+    intrapass_barrier_control_bits_ = control_bits;
+  }
+
+  ArgumentEncodingContext(CommandQueue &queue, WMT::Device device, InternalCommandLibrary &lib);
+  ~ArgumentEncodingContext();
+
+  uint32_t tess_num_output_control_point_element;
+  uint32_t tess_threads_per_patch;
+
+  InternalCommandLibrary &lib;
+  EmulatedCommandContext emulated_cmd;
+  ClearRenderTargetContext clear_rt_cmd;
+  ResolveTextureContext resolve_texture_cmd;
+  StretchBlitContext stretch_blit_cmd;
+  DepthStencilBlitContext blit_depth_stencil_cmd;
+  ClearUAV<ArgumentEncodingContext> clear_uav_cmd;
+  MTLFXMVScaleContext mv_scale_cmd;
+  TileBarrierContext tile_barrier_cmd;
+
+private:
+  DXMT_ENCODER_LIST_OP checkEncoderRelation(EncoderData* former, EncoderData* latter);
+  bool hasDataDependency(EncoderData* from, EncoderData* to);
+  bool isEncoderSignatureMatched(RenderEncoderData* former, RenderEncoderData* latter);
+  RenderEncoderColorAttachmentData *isClearColorSignatureMatched(ClearEncoderData* former, RenderEncoderData* latter);
+  RenderEncoderDepthAttachmentData *isClearDepthSignatureMatched(ClearEncoderData* former, RenderEncoderData* latter);
+  RenderEncoderStencilAttachmentData *isClearStencilSignatureMatched(ClearEncoderData* former, RenderEncoderData* latter);
+
+  class ResolveSignatureMatchResult {
+  public:
+    RenderEncoderColorAttachmentData *src{};
+    TextureViewRef dst{};
+  };
+  ResolveSignatureMatchResult isResolveSignatureMatched(RenderEncoderData *former, ResolveEncoderData *latter);
+
+  std::array<VertexBufferBinding, kVertexBufferSlots> vbuf_;
+  Rc<Buffer> ibuf_;
+
+  std::array<ConstantBufferBinding, 14 * kStages> cbuf_;
+  std::array<SamplerBinding, 16 * kStages> sampler_;
+  std::array<ResourceViewBinding, kSRVBindings * kStages> resview_;
+
+  std::array<UnorderedAccessViewBinding, kUAVBindings> om_uav_;
+  std::array<UnorderedAccessViewBinding, kUAVBindings> cs_uav_;
+
+  std::array<StreamOutputBinding, kStreamOutputSlots> so_;
+
+  WMT::Reference<WMT::SamplerState> dummy_sampler_;
+  WMTSamplerInfo dummy_sampler_info_;
+  WMT::Reference<WMT::Buffer> dummy_cbuffer_;
+  void *dummy_cbuffer_host_;
+  WMTBufferInfo dummy_cbuffer_info_ = {};
+
+  EncoderData encoder_head = {EncoderType::Null, nullptr, ~0ull};
+  EncoderData *encoder_last = &encoder_head;
+  EncoderData *encoder_current = nullptr;
+  unsigned encoder_count_ = 0;
+  
+  uint64_t encoder_id_ = kParityLane; // actually important to not start from 0
+  // First encoder id of the command buffer being encoded. Ids below it belong
+  // to command buffers whose fence bindings are already gone, so nothing can be
+  // emitted for them; see FenceSet::pruneBefore.
+  std::array<WMT::Reference<WMT::Fence>, kParityLane> fence_pool_;
+  FenceLocalityCheck fence_locality_;
+
+  uint64_t seq_id_;
+  uint64_t frame_id_;
+
+  struct chunk {
+    void *ptr;
+    size_t underused_times;
+
+    chunk() {
+      ptr = malloc(kEncodingContextCPUHeapSize);
+      underused_times = 0;
+    }
+    chunk(const chunk &copy) = delete;
+    chunk(chunk &&move) {
+      ptr = move.ptr;
+      underused_times = move.underused_times;
+      move.ptr = nullptr;
+    };
+    ~chunk() {
+      free(ptr);
+      ptr = nullptr;
+    }
+  };
+  std::vector<chunk> cpu_buffer_chunks_;
+  uint32_t current_buffer_chunk_ = 0;
+  void *cpu_buffer_;
+  uint64_t cpu_buffer_offset_;
+
+  VisibilityResultOffsetBumpState vro_state_;
+  std::vector<Rc<VisibilityResultQuery>> pending_queries_;
+  unsigned active_visibility_query_count_ = 0;
+  Flags<FeatureCompatibility> compatibility_flag_;
+  TimestampQueryState timestamp_state_;
+  std::vector<Rc<VisibilityResultQuery> *> deferred_visibility_query_stack_;
+
+  WMT::Reference<WMT::Event> barrier_event_;
+  uint64_t barrier_index_ = 0;
+
+  uint64_t intrapass_barrier_control_bits_ = 0;
+
+  WMT::Device device_;
+  CommandQueue& queue_;
+  bool persistent_residency_retired_ = false;
+  // Depth-write-always state for the depth resolve pass; created on first use.
+  WMT::Reference<WMT::DepthStencilState> depth_resolve_dss_;
+};
+
+template <>
+inline void
+ArgumentEncodingContext::bindOutputBuffer<PipelineStage::Compute>(
+    unsigned slot, Rc<Buffer> &&buffer, uint64_t viewId, Rc<Counter> &&counter, BufferSlice slice
+) {
+  auto &entry = cs_uav_[slot];
+  entry.texture = {};
+  entry.buffer = std::move(buffer);
+  entry.viewId = viewId;
+  entry.counter = std::move(counter);
+  entry.slice = slice;
+}
+template <>
+inline void
+ArgumentEncodingContext::bindOutputBuffer<PipelineStage::Pixel>(
+    unsigned slot, Rc<Buffer> &&buffer, uint64_t viewId, Rc<Counter> &&counter, BufferSlice slice
+) {
+  auto &entry = om_uav_[slot];
+  entry.texture = {};
+  entry.buffer = std::move(buffer);
+  entry.viewId = viewId;
+  entry.counter = std::move(counter);
+  entry.slice = slice;
+}
+
+template <>
+inline void
+ArgumentEncodingContext::bindOutputTexture<PipelineStage::Compute>(
+    unsigned slot, Rc<Texture> &&texture, uint64_t viewId
+) {
+  auto &entry = cs_uav_[slot];
+  entry.buffer = {};
+  entry.texture = std::move(texture);
+  entry.viewId = viewId;
+}
+template <>
+inline void
+ArgumentEncodingContext::bindOutputTexture<PipelineStage::Pixel>(
+    unsigned slot, Rc<Texture> &&texture, uint64_t viewId
+) {
+  auto &entry = om_uav_[slot];
+  entry.buffer = {};
+  entry.texture = std::move(texture);
+  entry.viewId = viewId;
+}
+
+template <PipelineStage stage>
+inline void
+ArgumentEncodingContext::track(GenericAccessTracker &tracker, int flags) {
+  auto current_encoder = currentRenderEncoder();
+  auto id = current_encoder->encoder_id_vertex;
+  EncoderBarrierState &barrier_state = current_encoder->barrier_state;
+  if (flags & ResourceAccess::Write)
+    tracker.accessExclusivePreRaster(
+        id, current_encoder->fence_wait_vertex, barrier_state, flags & ResourceAccess::UAV
+    );
+  else
+    tracker.accessSharedPreRaster(id, current_encoder->fence_wait_vertex, barrier_state);
+}
+
+template <>
+inline void
+ArgumentEncodingContext::track<PipelineStage::Compute>(GenericAccessTracker &tracker, int flags) {
+  auto current_encoder = currentEncoder();
+  EncoderBarrierState &barrier_state = current_encoder->barrier_state;
+  if (flags & ResourceAccess::Write)
+    tracker.accessExclusive(
+        currentEncoderId(), current_encoder->fence_wait, barrier_state, flags & ResourceAccess::UAV
+    );
+  else
+    tracker.accessShared(currentEncoderId(), current_encoder->fence_wait, barrier_state);
+}
+
+template <>
+inline void
+ArgumentEncodingContext::track<PipelineStage::Pixel>(GenericAccessTracker &tracker, int flags) {
+  auto current_encoder = currentRenderEncoder();
+  EncoderBarrierState &barrier_state = current_encoder->barrier_state;
+  if (flags & ResourceAccess::Write)
+    tracker.accessExclusiveFragment(
+        currentEncoderId(), current_encoder->fence_wait, barrier_state, flags & ResourceAccess::UAV
+    );
+  else
+    tracker.accessSharedFragment(currentEncoderId(), current_encoder->fence_wait, barrier_state);
+  return;
+}
+
+} // namespace dxmt

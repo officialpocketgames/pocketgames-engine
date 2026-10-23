@@ -1,0 +1,308 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# CI of the engine (the App Store rules): the reference sources, the host tests
+# with gcc and clang, the iOS static libraries of each part, one link of all of them with the
+# App Store import check, and the PE farms of spec 19. The helper scripts are in ci/; each says
+# what it does at its top.
+#
+# Caches: the reference tarballs (key: refs/README.md, refs/.gitignore, ci/refs-trees.sha256;
+# the trees are unpacked again in each job), the host Wine builds, the host FFmpeg of spec 14's
+# tests, and the iOS prerequisites (LLVM headers, BearSSL + LibTomCrypt, FFmpeg). Prerequisite caches are saved
+# even when a later step fails, so a failing part doesn't rebuild them on every run.
+
+name: engine
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: engine-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  # the reference tarballs; a relative path, so one cache entry serves the Linux and macOS jobs
+  REFS_DL: .refs-dl
+
+jobs:
+  # 1. refs/README.md's gitignored sources: download, SHA-256 (or tree digest) check, unpack, cache
+  refs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.REFS_DL }}
+          key: refs-v1-${{ hashFiles('refs/README.md', 'refs/.gitignore', 'ci/refs-trees.sha256') }}
+      - name: Fetch, check and unpack refs/
+        run: sh ci/fetch-refs.sh "$REFS_DL"
+      - name: List refs/
+        run: du -sh refs/* "$REFS_DL"/*
+
+  # 2. every out/*/tests/run-host-tests.sh with gcc and clang, and check-app-store.sh on out/
+  host-tests:
+    needs: refs
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.REFS_DL }}
+          key: refs-v1-${{ hashFiles('refs/README.md', 'refs/.gitignore', 'ci/refs-trees.sha256') }}
+      - name: Unpack refs/
+        run: sh ci/fetch-refs.sh "$REFS_DL"
+      - name: Install gcc 14, clang 21, flex, bison
+        run: |
+          set -eux
+          codename=$(lsb_release -cs)
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key | sudo tee /etc/apt/trusted.gpg.d/apt.llvm.org.asc >/dev/null
+          echo "deb http://apt.llvm.org/$codename/ llvm-toolchain-$codename-21 main" | sudo tee /etc/apt/sources.list.d/llvm-21.list
+          sudo apt-get update
+          sudo apt-get install -y gcc-14 g++-14 clang-21 lld-21 libclang-rt-21-dev flex bison make zlib1g-dev pkg-config
+          # the runners call gcc, clang and cc by name; these come first in PATH
+          mkdir -p "$RUNNER_TEMP/bin"
+          ln -sf "$(command -v gcc-14)" "$RUNNER_TEMP/bin/gcc"
+          ln -sf "$(command -v gcc-14)" "$RUNNER_TEMP/bin/cc"
+          ln -sf "$(command -v g++-14)" "$RUNNER_TEMP/bin/g++"
+          ln -sf "$(command -v g++-14)" "$RUNNER_TEMP/bin/c++"
+          ln -sf "$(command -v clang-21)" "$RUNNER_TEMP/bin/clang"
+          ln -sf "$(command -v clang++-21)" "$RUNNER_TEMP/bin/clang++"
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+          # ASan and the runners' high mmap randomisation don't mix (sporadic DEADLYSIGNAL)
+          sudo sysctl vm.mmap_rnd_bits=28
+      - name: Compiler versions
+        run: |
+          gcc --version | head -n 1
+          clang --version | head -n 1
+          cc --version | head -n 1
+      - id: wine-host
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/wine-host
+          key: wine-host-linux-v1-${{ hashFiles('ci/wine-host-build.sh', 'ci/refs-trees.sha256') }}-gcc14
+      - name: Host Wine build (configure + make include/all)
+        run: sh ci/wine-host-build.sh refs/wine-11.4 "$RUNNER_TEMP/wine-host"
+      - uses: actions/cache/save@v4
+        if: steps.wine-host.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/wine-host
+          key: wine-host-linux-v1-${{ hashFiles('ci/wine-host-build.sh', 'ci/refs-trees.sha256') }}-gcc14
+      - id: ffmpeg-host
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/myiosdeck/ffmpeg-7.1.1-host
+          key: ffmpeg-host-v1-${{ hashFiles('out/14-media-audio-ios/tests/build-host-ffmpeg.sh') }}-gcc14
+      - name: Host tests
+        run: sh ci/host-tests.sh refs/wine-11.4 "$RUNNER_TEMP/wine-host" "$RUNNER_TEMP/host-test-logs" gcc:g++ clang:clang++
+      - uses: actions/cache/save@v4
+        if: always() && steps.ffmpeg-host.outputs.cache-hit != 'true'
+        with:
+          path: ~/.cache/myiosdeck/ffmpeg-7.1.1-host
+          key: ffmpeg-host-v1-${{ hashFiles('out/14-media-audio-ios/tests/build-host-ffmpeg.sh') }}-gcc14
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: host-test-logs
+          path: ${{ runner.temp }}/host-test-logs
+          if-no-files-found: ignore
+
+  # 3a. the macOS host configure of Wine that every build-ios.sh takes as its Wine build dir
+  wine-host-macos:
+    needs: refs
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.REFS_DL }}
+          key: refs-v1-${{ hashFiles('refs/README.md', 'refs/.gitignore', 'ci/refs-trees.sha256') }}
+      - name: Unpack refs/wine-11.4
+        run: sh ci/fetch-refs.sh "$REFS_DL" wine-11.4
+      - name: Install bison and flex
+        run: brew install bison flex
+      - name: llvm-mingw (the pin of spec 19's build-pe.sh, through its own toolchain step)
+        # Wine's configure needs a PE cross compiler on an aarch64 host, even for include/all
+        run: |
+          bash out/19-pe-dlls-build/build-pe.sh --work "$RUNNER_TEMP/pe-tool" toolchain
+          bin=$(ls -d "$RUNNER_TEMP"/pe-tool/llvm-mingw-*/bin | head -n 1)
+          echo "MINGW_BIN=$bin" >> "$GITHUB_ENV"
+      - id: image
+        name: Runner image
+        run: |
+          echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+          xcodebuild -version
+      - id: wine-host
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/work/wine-host
+          key: wine-host-macos-v1-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('ci/wine-host-build.sh', 'ci/refs-trees.sha256') }}
+      - name: Host Wine build (configure + make include/all)
+        run: sh ci/wine-host-build.sh refs/wine-11.4 "$RUNNER_TEMP/work/wine-host"
+      - uses: actions/cache/save@v4
+        if: steps.wine-host.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/work/wine-host
+          key: wine-host-macos-v1-${{ runner.arch }}-${{ steps.image.outputs.version }}-${{ hashFiles('ci/wine-host-build.sh', 'ci/refs-trees.sha256') }}
+      - name: Pack
+        run: tar -C "$RUNNER_TEMP/work" -czf "$RUNNER_TEMP/wine-host-macos.tgz" wine-host
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wine-host-macos
+          path: ${{ runner.temp }}/wine-host-macos.tgz
+          retention-days: 3
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: wine-host-macos-logs
+          path: ${{ runner.temp }}/work/wine-host/ci-*.log
+          if-no-files-found: ignore
+
+  # 3b. each part's build-ios.sh, one matrix entry per part: every part is built and reported
+  #     even when another fails, and the job is marked failed if any part failed
+  ios-libs:
+    needs: [refs, wine-host-macos]
+    runs-on: macos-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - part: 05-dxmt-ios            # specs 05, 06, 07; needs LLVM 15.0.7's headers
+            prereq: llvm
+            prereq_script: ci/llvm-headers.sh
+          - part: 08-wineserver-ios      # with spec 16's and 17's server changes
+          - part: 09-ntdll-processes     # specs 09-11, with spec 16's src/ and spec 13's socket.c
+          - part: 12-win32u-ios          # with FreeType 2.13.3
+          - part: 13-net-crypto-ios      # BearSSL and LibTomCrypt first (build-crypto-deps-ios.sh);
+            prereq: cryptodeps           # its cache key hashes that script, which holds the
+            prereq_script: out/13-net-crypto-ios/build-crypto-deps-ios.sh   # BearSSL commit and the tomcrypt list
+          - part: 14-media-audio-ios     # FFmpeg 7.1.1 first (build-ffmpeg.sh)
+            prereq: ffmpeg
+            prereq_script: out/14-media-audio-ios/build-ffmpeg.sh
+          - part: 15-controllers         # with spec 17's additions
+    name: ios-libs (${{ matrix.part }})
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.REFS_DL }}
+          key: refs-v1-${{ hashFiles('refs/README.md', 'refs/.gitignore', 'ci/refs-trees.sha256') }}
+      - name: Unpack refs/
+        run: |
+          sh ci/fetch-refs.sh "$REFS_DL"
+          mkdir -p "$RUNNER_TEMP/work/dl"
+          cp "$REFS_DL"/* "$RUNNER_TEMP/work/dl/"
+      - uses: actions/download-artifact@v4
+        with:
+          name: wine-host-macos
+          path: ${{ runner.temp }}
+      - name: Unpack the Wine host build
+        run: tar -C "$RUNNER_TEMP/work" -xzf "$RUNNER_TEMP/wine-host-macos.tgz"
+      - id: image
+        name: Tools
+        run: |
+          brew install ninja pkg-config || true
+          echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+          xcodebuild -version
+          xcrun --sdk iphoneos --show-sdk-path
+      - id: prereq
+        if: matrix.prereq != ''
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/work/${{ matrix.prereq }}
+          key: ios-${{ matrix.prereq }}-v1-${{ steps.image.outputs.version }}-${{ hashFiles(matrix.prereq_script, 'refs/README.md') }}
+      - name: Build ${{ matrix.part }}
+        run: sh ci/ios-part.sh "${{ matrix.part }}" "$RUNNER_TEMP/work" "$RUNNER_TEMP/dist"
+      - uses: actions/cache/save@v4
+        if: always() && matrix.prereq != '' && steps.prereq.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/work/${{ matrix.prereq }}
+          key: ios-${{ matrix.prereq }}-v1-${{ steps.image.outputs.version }}-${{ hashFiles(matrix.prereq_script, 'refs/README.md') }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: ios-${{ matrix.part }}
+          path: ${{ runner.temp }}/dist
+          if-no-files-found: warn
+
+  # 4. all the static libraries in one arm64 iOS executable: duplicate and undefined symbols,
+  #    and `nm -u` against the App Store rules (ci/forbidden-imports.txt)
+  link-check:
+    needs: ios-libs
+    # also after failed parts (it reports what the others link to), not when none was built
+    if: ${{ !cancelled() && needs.ios-libs.result != 'skipped' }}
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ios-*
+          path: ${{ runner.temp }}/dist
+          merge-multiple: true
+      - name: Link check
+        run: sh ci/link-check.sh "$RUNNER_TEMP/dist" "$RUNNER_TEMP/link-report"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: link-report
+          path: |
+            ${{ runner.temp }}/link-report/*.md
+            ${{ runner.temp }}/link-report/*.txt
+            ${{ runner.temp }}/link-report/*.log
+          if-no-files-found: ignore
+
+  # 5. spec 19: the three PE farms with the Linux llvm-mingw build-pe.sh pins, and the LGPL
+  #    relinking kit
+  pe-farms:
+    needs: refs
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - name: Free disk space (three Wine build trees)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h / "$RUNNER_TEMP"
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.REFS_DL }}
+          key: refs-v1-${{ hashFiles('refs/README.md', 'refs/.gitignore', 'ci/refs-trees.sha256') }}
+      - name: Unpack refs/wine-11.4
+        run: sh ci/fetch-refs.sh "$REFS_DL" wine-11.4
+      - name: Install Wine's build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential flex bison gettext pkg-config xz-utils
+      - name: build-pe.sh all
+        run: bash out/19-pe-dlls-build/build-pe.sh --work "$RUNNER_TEMP/pe-work" all
+      - name: Disk use
+        if: always()
+        run: |
+          df -h /
+          du -sh "$RUNNER_TEMP/pe-work"/* 2>/dev/null || true
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pe-farms
+          path: ${{ runner.temp }}/pe-work/dest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pe-relink-kit
+          path: ${{ runner.temp }}/pe-work/pe-relink-kit.tar.xz
+          compression-level: 0
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pe-logs
+          path: ${{ runner.temp }}/pe-work/logs
+          if-no-files-found: ignore

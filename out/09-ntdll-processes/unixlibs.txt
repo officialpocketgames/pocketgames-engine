@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# Spec 09 clarification 6: the unix libraries linked into the app whose call tables the loader
+# looks up by name (ios_unixlib.c). One DLL file name per line; "init" after it when the library
+# also defines <name>_unix_lib_init. write-exports.sh turns this into exports.txt, and the build
+# check in TESTS.md compares that with `nm -gU` of the app. Add a line when a part adds a library.
+win32u.dll          init    # spec 12
+opengl32.dll                # spec 12 clarification 8 (in libwin32u_unix.a)
+winspool.drv                # spec 12 clarification 9 (in libwin32u_unix.a)
+netapi32.dll                # spec 12 clarification 9 (in libwin32u_unix.a)
+kerberos.dll                # spec 12 clarification 9 (in libwin32u_unix.a)
+msv1_0.dll                  # spec 12 clarification 9 (in libwin32u_unix.a)
+winemetal.dll               # spec 05/06 (dxmt_winemetal_*)
+ws2_32.dll                  # spec 13
+dnsapi.dll                  # spec 13
+bcrypt.dll                  # spec 13
+secur32.dll                 # spec 13
+crypt32.dll                 # spec 13
+nsi.dll                     # spec 13
+winegstreamer.dll           # spec 14
+dwrite.dll                  # spec 14
+winecoreaudio.drv           # spec 14 (loaded by name)

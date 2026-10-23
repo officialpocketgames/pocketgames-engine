@@ -1,0 +1,20 @@
+Spec 12 Part B audit: the cache of shared (LR_SHARED) icons and cursors becomes per pseudo-process.
+It is keyed by module address and resource, which two processes can share, and its handles
+belong to the process that loaded them.
+
+--- a/dlls/win32u/cursoricon.c
++++ b/dlls/win32u/cursoricon.c
+@@ -1,3 +1,5 @@
+ /*
+  * Cursor and icon support
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -64,3 +66,7 @@
+ static struct list icon_cache = LIST_INIT( icon_cache );
++#ifdef WINE_IOS
++#include "w32ios.h"
++#define icon_cache (w32ios_proc_current()->pp_icon_cache)   /* per pseudo-process */
++#endif
+ 
+ static struct cursoricon_object *get_icon_ptr( HICON handle )

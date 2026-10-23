@@ -1,0 +1,56 @@
+Spec 12 Part B4/B5 (get_desktop_window: w32ios_desktop.c), B8 (freed desktop and queue objects),
+and session views that outlive the process that mapped them (Part B audit).
+
+--- a/dlls/win32u/winstation.c
++++ b/dlls/win32u/winstation.c
+@@ -1,3 +1,5 @@
+ /*
+  * Window stations and desktops
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -37,5 +39,8 @@
+ #include "ntuser_private.h"
+ #include "wine/server.h"
+ #include "wine/debug.h"
++#ifdef WINE_IOS
++#include "w32ios.h"
++#endif
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(winstation);
+@@ -131,5 +136,8 @@
+         else
+         {
++#ifdef WINE_IOS
++            w32ios_detach_view( (void **)&block->data, block->size );   /* outlive this process */
++#endif
+             list_add_tail( &session_blocks, &block->entry );
+             block->offset = off.QuadPart;
+             assert( block->offset + block->size > block->offset );
+@@ -227,4 +235,8 @@
+         shared_object_acquire_seqlock( object, &lock->seq );
+         *desktop_shm = &object->shm.desktop;
+         lock->id = object->id;
++#ifdef WINE_IOS
++        /* id 0: freed with a dead process (spec 12 B8): drop it, fail instead of waiting */
++        if (!lock->id) { data->shared_desktop = NULL; return STATUS_INVALID_HANDLE; }
++#endif
+         return STATUS_PENDING;
+@@ -260,4 +272,7 @@
+         shared_object_acquire_seqlock( object, &lock->seq );
+         *queue_shm = &object->shm.queue;
+         lock->id = object->id;
++#ifdef WINE_IOS
++        if (!lock->id) { data->shared_queue = NULL; return STATUS_INVALID_HANDLE; }   /* B8 */
++#endif
+         return STATUS_PENDING;
+@@ -790,6 +805,9 @@
+ HWND get_desktop_window(void)
+ {
+     struct ntuser_thread_info *thread_info = NtUserGetThreadInfo();
+     BOOL is_service;
+ 
++#ifdef WINE_IOS
++    return w32ios_get_desktop_window();   /* spec 12 B4/B5 */
++#endif
+     if (thread_info->top_window) return UlongToHandle( thread_info->top_window );

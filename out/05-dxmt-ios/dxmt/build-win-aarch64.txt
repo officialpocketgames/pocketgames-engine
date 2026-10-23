@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# Meson cross file for the Windows half of DXMT on iOS (spec 05 Part A),
+# target aarch64-w64-mingw32 with an llvm-mingw toolchain.
+# Replace @LLVM_MINGW_DIR@ with the toolchain directory (the one that holds bin/),
+# for example: sed -i '' "s|@LLVM_MINGW_DIR@|$PWD/toolchains/llvm-mingw|" build-win-aarch64.txt
+
+[constants]
+toolchain = '@LLVM_MINGW_DIR@'
+triple = 'aarch64-w64-mingw32'
+
+[binaries]
+c = toolchain / 'bin' / (triple + '-clang')
+cpp = toolchain / 'bin' / (triple + '-clang++')
+ar = toolchain / 'bin' / (triple + '-ar')
+strip = toolchain / 'bin' / (triple + '-strip')
+windres = toolchain / 'bin' / (triple + '-windres')
+
+[properties]
+needs_exe_wrapper = true
+
+[host_machine]
+system = 'windows'
+cpu_family = 'aarch64'
+cpu = 'aarch64'
+endian = 'little'

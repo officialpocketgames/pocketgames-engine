@@ -1,0 +1,41 @@
+Spec 12 Part B audit: one GDI handle table for every pseudo-process, allocated outside any
+process's memory and published in each process's PEB (a 32-bit process's points at a second
+mapping inside its guest window): w32ios_mem.c.
+
+--- a/dlls/win32u/gdiobj.c
++++ b/dlls/win32u/gdiobj.c
+@@ -1,3 +1,5 @@
+ /*
+  * GDI functions
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -39,4 +41,7 @@
+ #include "ntgdi_private.h"
+ #include "wine/debug.h"
+ #include "wine/unixlib.h"
++#ifdef WINE_IOS
++#include "w32ios.h"
++#endif
+ 
+@@ -566,7 +571,12 @@
+     SIZE_T size = sizeof(*gdi_shared);
+ 
++#ifdef WINE_IOS
++    /* one table for every pseudo-process, outside any process's memory (spec 12 B) */
++    if (!(gdi_shared = w32ios_gdi_table( &size ))) return;
++#else
+     if (NtAllocateVirtualMemory( GetCurrentProcess(), (void **)&gdi_shared, zero_bits,
+                                  &size, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE ))
+         return;
++#endif
+     next_unused = gdi_shared->Handles + FIRST_GDI_HANDLE;
+ 
+@@ -582,3 +592,7 @@
+     /* NOTE: Windows uses 32-bit for 32-bit kernel */
++#ifdef WINE_IOS
++    w32ios_gdi_attach_proc( w32ios_proc_current() );   /* the caller's PEB (B) */
++#else
+     NtCurrentTeb()->Peb->GdiSharedHandleTable = gdi_shared;
++#endif
+ }

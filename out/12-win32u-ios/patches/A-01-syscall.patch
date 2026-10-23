@@ -1,0 +1,22 @@
+Spec 12 Part A2: run the iOS additions from the unix library's init (renamed to
+win32u_unix_lib_init by w32ios_rename.h).
+
+--- a/dlls/win32u/syscall.c
++++ b/dlls/win32u/syscall.c
+@@ -2,5 +2,7 @@
+  * Unix interface for Win32 syscalls
+  *
+  * Copyright (C) 2021 Alexandre Julliard
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -181,5 +183,8 @@
+ #endif
+     KeAddSystemServiceTable( syscalls, NULL, ARRAY_SIZE(syscalls), arguments, 1 );
+     ntdll_add_syscall_debug_info( 1, syscall_names, usercall_names );
++#ifdef WINE_IOS
++    w32ios_unix_lib_init();
++#endif
+     return STATUS_SUCCESS;
+ }

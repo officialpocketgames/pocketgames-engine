@@ -1,0 +1,85 @@
+Spec 12 Part D: the D3DKMT adapter (w32ios_kmt.c). Adapters remember the LUID they were opened
+for; OpenAdapterFromHdc, QueryAdapterInfo, QueryStatistics and QueryVideoMemoryInfo answer for
+the adapter when MADEIRA_KMT_ADAPTER is on.
+
+--- a/dlls/win32u/d3dkmt.c
++++ b/dlls/win32u/d3dkmt.c
+@@ -29,4 +29,8 @@
+ #include "ntgdi_private.h"
+ #include "win32u_private.h"
+ #include "ntuser_private.h"
++#ifdef WINE_IOS   /* Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md */
++#include "w32ios.h"
++#include "w32ios_kmt.h"
++#endif
+ 
+@@ -165,5 +169,8 @@
+ struct d3dkmt_adapter
+ {
+     struct d3dkmt_object obj;
+     struct vulkan_physical_device *physical_device;
++#ifdef WINE_IOS
++    LUID luid;   /* the LUID it was opened for (spec 12 D) */
++#endif
+ };
+@@ -184,3 +191,6 @@
+ static pthread_mutex_t d3dkmt_lock = PTHREAD_MUTEX_INITIALIZER;
+ static struct list d3dkmt_vidpn_sources = LIST_INIT( d3dkmt_vidpn_sources );   /* VidPN source information list */
++#ifdef WINE_IOS
++static BOOL w32ios_is_kmt_adapter( D3DKMT_HANDLE handle );   /* d3dkmt_ios.inc */
++#endif
+ 
+@@ -525,4 +535,7 @@
+ NTSTATUS WINAPI NtGdiDdDDIOpenAdapterFromHdc( D3DKMT_OPENADAPTERFROMHDC *desc )
+ {
++#ifdef WINE_IOS
++    if (w32ios_kmt_enabled()) return w32ios_kmt_open_adapter_from_hdc( desc );   /* spec 12 D3 */
++#endif
+     FIXME( "(%p): stub\n", desc );
+     return STATUS_NO_MEMORY;
+@@ -625,4 +638,7 @@
+     if (!adapter->physical_device) WARN( "Failed to find Vulkan physical device\n" );
+ 
++#ifdef WINE_IOS
++    adapter->luid = desc->AdapterLuid;
++#endif
+     desc->hAdapter = adapter->obj.local;
+     return STATUS_SUCCESS;
+@@ -688,4 +704,11 @@
+     if (!desc || !desc->hAdapter || !desc->pPrivateDriverData)
+         return STATUS_INVALID_PARAMETER;
+ 
++#ifdef WINE_IOS
++    {
++        NTSTATUS status;   /* spec 12 D4 */
++        if (w32ios_is_kmt_adapter( desc->hAdapter ) && w32ios_kmt_query_adapter_info( desc, &status ))
++            return status;
++    }
++#endif
+     switch (desc->Type)
+@@ -724,4 +747,10 @@
+ NTSTATUS WINAPI NtGdiDdDDIQueryStatistics( D3DKMT_QUERYSTATISTICS *stats )
+ {
++#ifdef WINE_IOS
++    {
++        NTSTATUS status;   /* spec 12 D5 */
++        if (w32ios_kmt_statistics( stats, &status )) return status;
++    }
++#endif
+     FIXME( "(%p): stub\n", stats );
+     return STATUS_SUCCESS;
+@@ -758,3 +787,6 @@
+     if (!(adapter = get_d3dkmt_object( desc->hAdapter, D3DKMT_ADAPTER ))) return STATUS_INVALID_PARAMETER;
++#ifdef WINE_IOS
++    if (w32ios_kmt_is_adapter_luid( &adapter->luid )) return w32ios_kmt_video_memory( desc );   /* D5 */
++#endif
+ 
+     desc->Budget = 0;
+@@ -2052,3 +2084,7 @@
+ 
+     return STATUS_SUCCESS;
+ }
++
++#ifdef WINE_IOS
++#include "d3dkmt_ios.inc"
++#endif

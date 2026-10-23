@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# Imports (Mach-O names, with the leading underscore) the linked app must not have, from
+# the App Store rules. ci/link-check.sh compares `nm -u` of the linked executable with this list.
+#   <name> fail     the import fails the job (a trailing * matches a prefix)
+#   <name> review   the import is listed for a person to look at (allowed API that is also a
+#                   JIT building block; the spec forbids only certain uses of it)
+
+# C1: one process
+_fork fail
+_vfork fail
+_forkpty fail
+_execve fail
+_execv fail
+_execvp fail
+_execvP fail
+_execl fail
+_execle fail
+_execlp fail
+_fexecve fail
+_posix_spawn* fail
+_system fail
+_popen fail
+# B3: nothing touches another process
+_ptrace fail
+_task_for_pid fail
+_task_name_for_pid fail
+_task_inspect_for_pid fail
+_processor_set_tasks fail
+_processor_set_tasks_with_flavor fail
+# A1: no JIT
+_pthread_jit_write_protect_np fail
+_pthread_jit_write_protect_supported_np fail
+_pthread_jit_write_with_callback_np fail
+_be_memory_inline_jit_restrict_rwx_to_rx_with_witness fail
+_be_memory_inline_jit_restrict_rwx_to_rx_with_witness_supported fail
+# B1: undocumented system calls and Mach traps, private Darwin calls
+_csops fail
+_csops_audittoken fail
+_mach_memory_entry_ownership fail
+___ulock_* fail
+___psynch_* fail
+# B1, review: declared in macOS's libproc.h, which the iPhoneOS SDK may not ship
+___proc_info review
+_proc_pidinfo review
+_proc_listpids review
+# A1, review: legitimate on their own, JIT only in combination
+_mach_vm_remap review
+_vm_remap review
+_mach_vm_protect review
+_vm_protect review
+_sys_icache_invalidate review
+_sys_dcache_flush review

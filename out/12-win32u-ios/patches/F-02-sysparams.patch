@@ -1,0 +1,15 @@
+Spec 12 Part F2: NtUserCallTwoParam answers NtUserCallTwoParam_GetGamepadState
+(w32ios_gamepad.c). Line numbers are those after D-02-sysparams.patch.
+
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -7680,5 +7680,9 @@
+     /* temporary exports */
+     case NtUserAllocWinProc:
+         return (UINT_PTR)alloc_winproc( (WNDPROC)arg1, arg2 );
+ 
++#ifdef WINE_IOS
++    case NtUserCallTwoParam_GetGamepadState:   /* spec 12 F */
++        return w32ios_gamepad_call( arg1, arg2 );
++#endif
+     default:

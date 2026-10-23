@@ -1,0 +1,77 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# Spec 19 Part B4 item 3: the i386-windows farm is every PE module the configured i386 tree has a
+# rule for (under dlls/ and programs/, file extensions .dll .exe .drv .cpl .acm .ax .ocx .tlb
+# .msstyles .com), minus the names below. A 32-bit program that imports one missing DLL never
+# starts, so this farm is everything that can work here. 16-bit modules (.dll16, .exe16, ...)
+# fall outside the extensions: WoW64 has no 16-bit loader.
+#
+# One name per line, compared without regard to case; a line may be a shell pattern (*.sys).
+
+# kernel drivers: under WoW64 they are 64-bit only, and there is no driver host
+*.sys
+ntoskrnl.exe
+winedevice.exe
+
+# the 64-bit side of WoW64, never i386
+wow64.dll
+wow64win.dll
+wow64cpu.dll
+xtajit.dll
+xtajit64.dll
+
+# host display, audio and printing drivers: none of their unix sides exists here (display: spec
+# 12; audio: spec 14). Upstream builds them only where the host has their libraries, so skipping
+# them also keeps the farm the same on every build host
+winemac.drv
+winex11.drv
+winewayland.drv
+wineandroid.drv
+winecoreaudio.drv
+winealsa.drv
+winepulse.drv
+wineoss.drv
+wineps.drv
+
+# wrappers of host libraries not built for iOS (and host-dependent in configure)
+winevulkan.dll
+vulkan-1.dll
+opencl.dll
+wpcap.dll
+winscard.dll
+capi2032.dll
+sane.ds
+gphoto2.ds
+
+# the 16-bit layer
+wow32.dll
+winevdm.exe
+vga.dll
+hal.dll
+w32skrnl.dll
+
+# writes host desktop menu entries; there is no host desktop
+winemenubuilder.exe
+
+# the host console; conhost is the console here
+wineconsole.exe
+
+# needs a GStreamer codec; winegstreamer's unix side here is FFmpeg-based
+ir50_32.dll
+
+# 7 MB of theme data nothing in the prefix selects
+aero.msstyles
+
+# a 4.5 MB debugger only the crash dialog starts, and it isn't shown
+winedbg.exe
+
+# DXMT's (specs 05-07); Wine's are wined3d front ends with no backend here
+d3d9.dll
+d3d10core.dll
+d3d11.dll
+dxgi.dll
+
+# need Vulkan
+d3d12.dll
+d3d12core.dll

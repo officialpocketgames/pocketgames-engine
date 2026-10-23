@@ -1,0 +1,183 @@
+Spec 12 Part B audit: per-process user interface state of upstream becomes per pseudo-process:
+menu tracking (menu.c), scroll bar tracking (scroll.c), the primary and last realized palettes
+(palette.c), registered raw input devices (rawinput.c), the F10 / system menu key state
+(defwnd.c), EnableMouseInPointer and the caret (input.c), the process-wide IME switch (imm.c).
+
+--- a/dlls/win32u/menu.c
++++ b/dlls/win32u/menu.c
+@@ -1,3 +1,5 @@
+ /*
+  * Menu functions
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -154,7 +156,13 @@
+ static HWND top_popup;
+ static HMENU top_popup_hmenu;
+ 
+ /* Flag set by NtUserEndMenu() to force an exit from menu tracking */
+ static BOOL exit_menu = FALSE;
++#ifdef WINE_IOS
++#include "w32ios.h"
++#define top_popup       (w32ios_proc_current()->pp_top_popup)   /* per pseudo-process */
++#define top_popup_hmenu (w32ios_proc_current()->pp_top_popup_hmenu)
++#define exit_menu       (w32ios_proc_current()->pp_exit_menu)
++#endif
+ 
+ static SIZE menucharsize;
+--- a/dlls/win32u/scroll.c
++++ b/dlls/win32u/scroll.c
+@@ -1,3 +1,5 @@
+ /*
+  * Scrollbar control
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -63,6 +65,12 @@
+ static BOOL scroll_moving_thumb = FALSE;
+ 
+ /* is there currently a running timer for scrolling delay ?*/
+ static BOOL scroll_timer_running = FALSE;
++#ifdef WINE_IOS
++#include "w32ios.h"
++#define g_tracking_info      (w32ios_proc_current()->pp_g_tracking_info)   /* per pseudo-process */
++#define scroll_moving_thumb  (w32ios_proc_current()->pp_scroll_moving_thumb)
++#define scroll_timer_running (w32ios_proc_current()->pp_scroll_timer_running)
++#endif
+ 
+ /* data for window that has (one or two) scroll bars */
+@@ -542,12 +550,19 @@
+ void handle_scroll_event( HWND hwnd, int bar, UINT msg, POINT pt )
+ {
++#ifdef WINE_IOS
++#define prev_pt         (w32ios_proc_current()->pp_prev_pt)   /* per pseudo-process */
++#define track_thumb_pos (w32ios_proc_current()->pp_track_thumb_pos)
++#define last_click_pos  (w32ios_proc_current()->pp_last_click_pos)
++#define last_mouse_pos  (w32ios_proc_current()->pp_last_mouse_pos)
++#else
+     /* Previous mouse position for timer events. */
+     static POINT prev_pt;
+     /* Thumb position when tracking started. */
+     static UINT track_thumb_pos;
+     /* Position in the scroll-bar of the last button-down event. */
+     static int last_click_pos;
+     /* Position in the scroll-bar of the last mouse event. */
+     static int last_mouse_pos;
++#endif
+ 
+     int arrow_size, thumb_size, thumb_pos;
+--- a/dlls/win32u/palette.c
++++ b/dlls/win32u/palette.c
+@@ -1,3 +1,5 @@
+ /*
+  * GDI palette objects
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -60,3 +62,8 @@
+ static HPALETTE hPrimaryPalette = 0; /* used for WM_PALETTECHANGED */
+ static HPALETTE hLastRealizedPalette = 0; /* UnrealizeObject() needs it */
++#ifdef WINE_IOS
++#include "w32ios.h"
++#define hPrimaryPalette      (w32ios_proc_current()->pp_hPrimaryPalette)   /* per pseudo-process */
++#define hLastRealizedPalette (w32ios_proc_current()->pp_hLastRealizedPalette)
++#endif
+ 
+--- a/dlls/win32u/rawinput.c
++++ b/dlls/win32u/rawinput.c
+@@ -1,3 +1,5 @@
+ /*
+  * Raw Input
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -64,4 +66,9 @@
+ static RAWINPUTDEVICE *registered_devices;
+ static unsigned int registered_device_count;
++#ifdef WINE_IOS
++#include "w32ios.h"
++#define registered_devices      (w32ios_proc_current()->pp_registered_devices)   /* per pseudo-process */
++#define registered_device_count (w32ios_proc_current()->pp_registered_device_count)
++#endif
+ static struct list devices = LIST_INIT( devices );
+ static pthread_mutex_t rawinput_mutex = PTHREAD_MUTEX_INITIALIZER;
+--- a/dlls/win32u/defwnd.c
++++ b/dlls/win32u/defwnd.c
+@@ -1,3 +1,5 @@
+ /*
+  * Default window procedure
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -40,3 +42,8 @@
+ static short f10_key = 0;
+ static short menu_sys_key = 0;
++#ifdef WINE_IOS
++#include "w32ios.h"
++#define f10_key      (w32ios_proc_current()->pp_f10_key)   /* per pseudo-process */
++#define menu_sys_key (w32ios_proc_current()->pp_menu_sys_key)
++#endif
+ 
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -1,3 +1,5 @@
+ /*
+  * USER Input processing
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -406,4 +408,8 @@
+ static LONG clipping_cursor; /* clipping thread counter */
+ static LONG enable_mouse_in_pointer = -1;
++#ifdef WINE_IOS
++#include "w32ios.h"
++#define enable_mouse_in_pointer (w32ios_proc_current()->pp_enable_mouse_in_pointer)   /* per pseudo-process */
++#endif
+ 
+ BOOL grab_pointer = TRUE;
+@@ -2246,6 +2252,9 @@
+ static struct
+ {
+     HBITMAP bitmap;
+     unsigned int timeout;
+ } caret = {0, 500};
++#ifdef WINE_IOS
++#define caret (w32ios_proc_current()->pp_caret)   /* per pseudo-process */
++#endif
+ 
+--- a/dlls/win32u/imm.c
++++ b/dlls/win32u/imm.c
+@@ -1,3 +1,5 @@
+ /*
+  * Input Context implementation
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -30,4 +32,7 @@
+ #include "ntuser_private.h"
+ #include "immdev.h"
+ #include "wine/debug.h"
++#ifdef WINE_IOS
++#include "w32ios.h"
++#endif
+ 
+@@ -291,5 +296,9 @@
+     TRACE( "(%p)\n", hwnd );
+ 
++#ifdef WINE_IOS
++    if (w32ios_proc_current()->pp_disable_ime || !needs_ime_window( hwnd ))   /* per pseudo-process */
++#else
+     if (disable_ime || !needs_ime_window( hwnd ))
++#endif
+         return FALSE;
+ 
+@@ -347,5 +356,9 @@
+     if (thread_id == -1)
+     {
++#ifdef WINE_IOS
++        w32ios_proc_current()->pp_disable_ime = TRUE;   /* per pseudo-process */
++#else
+         disable_ime = TRUE;
++#endif
+ 
+         pthread_mutex_lock( &imm_mutex );

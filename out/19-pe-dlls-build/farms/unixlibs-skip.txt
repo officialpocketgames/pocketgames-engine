@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# Spec 19 Part B4 and spec 09 clarification 6: every DLL of out/09-ntdll-processes/unixlibs.txt
+# (a unix call table linked into the app) must be in each farm: in the two 64-bit lists, and not
+# in the i386 skip list. tests/test-unixlibs.sh checks that. The exceptions, each with its reason:
+#
+#   <farm, or * for all three> <DLL> <reason>
+
+*               winemetal.dll       provided by DXMT (specs 05-07; B4 item 5), never built from Wine
+*               winecoreaudio.drv   mmdevapi reaches the audio driver's unix side by name only; no .drv PE is mapped (spec 14 Part A item 3, "the audio driver is loaded by name")
+aarch64-windows winegstreamer.dll   the 64-bit media path is the ARM64EC farm's (spec 14); the aarch64 farm runs Wine's own programs, which don't use it

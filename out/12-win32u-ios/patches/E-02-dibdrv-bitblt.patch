@@ -1,0 +1,28 @@
+Contract Section B: the DIB driver hands the source bits of every PutImage to the app's
+winios_dump_srcbits (a hard dependency; a no-op is enough). The stride is the DIB's: negative for
+a bottom-up source, whose bits pointer is then its first (top) row.
+
+--- a/dlls/win32u/dibdrv/bitblt.c
++++ b/dlls/win32u/dibdrv/bitblt.c
+@@ -1,3 +1,5 @@
+ /*
+  * DIB driver blitting
++ *
++ * Changed for MYIOSDECK (iOS, spec 12): see out/12-win32u-ios/CHANGES.md
+  *
+@@ -28,4 +30,8 @@
+ #include "dibdrv.h"
+ 
+ #include "wine/debug.h"
++#ifdef WINE_IOS
++/* interfaces/wine_unix_contract.h, Section B */
++extern void winios_dump_srcbits( const void *bits, int w, int h, int stride );
++#endif
+ 
+@@ -1013,3 +1019,6 @@
+     init_dib_info_from_bitmapinfo( &src_dib, info, bits->ptr );
+     src_dib.bits.is_copy = bits->is_copy;
++#ifdef WINE_IOS
++    winios_dump_srcbits( src_dib.bits.ptr, src_dib.width, src_dib.height, src_dib.stride );
++#endif
+ 
