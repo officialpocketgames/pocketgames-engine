@@ -281,9 +281,44 @@ static void test_window_hotplug(void)
     CHECK_STR(hid_window.msg[3].name, "\\\\?\\HID#VID_045E&PID_028E&IG_01#9&4d616465&1&0001#{4d1e55b2-f16f-11cf-88cb-001111000030}");
 }
 
+/* Clarification 8f: switching looks swaps player 1's device; a window sees the DualSense
+ * arrive and slot 0's device leave (and the reverse), slot 1 untouched. */
+static void test_look_switch(void)
+{
+    struct window hid_window;
+    struct window *windows[] = { &hid_window };
+    char path[IOS_PNP_NAME_MAX];
+
+    memset(&watch, 0, sizeof(watch));
+    memset(&channel, 0, sizeof(channel));
+    ios_hidpad_identity_select("dualsense", NULL, &id);
+    ios_hidpad_user_path(&id, path, sizeof(path));
+    register_window(&hid_window, &GUID_DEVINTERFACE_HID, 0);
+
+    /* Xbox look, pads in slots 0 and 1 */
+    server_poll(0, ios_hidpad_slot_listed(0, 1, 0), ios_hidpad_slot_listed(1, 1, 0), 0, 0);
+    /* PlayStation look */
+    server_poll(1, ios_hidpad_slot_listed(0, 1, 1), ios_hidpad_slot_listed(1, 1, 1), 0, 0);
+    sechost_dispatch(windows, 1);
+    CHECK_EQ(hid_window.count, 2);
+    CHECK_EQ(hid_window.msg[0].code, DBT_DEVICEARRIVAL);
+    CHECK_STR(hid_window.msg[0].name, path);
+    CHECK_EQ(hid_window.msg[1].code, DBT_DEVICEREMOVECOMPLETE);
+    CHECK_STR(hid_window.msg[1].name, "\\\\?\\HID#VID_045E&PID_028E&IG_00#9&4d616465&1&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}");
+    /* back to the Xbox look */
+    server_poll(0, ios_hidpad_slot_listed(0, 1, 0), ios_hidpad_slot_listed(1, 1, 0), 0, 0);
+    sechost_dispatch(windows, 1);
+    CHECK_EQ(hid_window.count, 4);
+    CHECK_EQ(hid_window.msg[2].code, DBT_DEVICEREMOVECOMPLETE);
+    CHECK_STR(hid_window.msg[2].name, path);
+    CHECK_EQ(hid_window.msg[3].code, DBT_DEVICEARRIVAL);
+    CHECK_STR(hid_window.msg[3].name, hid_window.msg[1].name);
+}
+
 int main(void)
 {
     test_watch();
+    test_look_switch();
     test_records();
     test_queue();
     test_broadcast();

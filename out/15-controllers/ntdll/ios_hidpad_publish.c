@@ -7,7 +7,8 @@
 // ios_hidpad_publish() is called by spec 09 (clarification 1) in the session's first program,
 // after the drive links and before the program's code runs. It publishes only the identity
 // whose \??\<link> symlink exists: the server read MADEIRA_HIDPAD when it started, and the
-// registry must name exactly the device that exists.
+// registry must name exactly the device that exists. Clarification 8a: the four XInput slot
+// devices are published the same way, in every session.
 //
 // Compiled into ntdll's unix library (spec 09) with Wine's headers.
 
@@ -143,16 +144,48 @@ static int write_key( const struct ios_hidpad_reg_key *k )
     return ok;
 }
 
+static struct ios_hidpad_reg_key keys[IOS_HIDPAD_REG_KEYS];
+
+static unsigned int write_plan( const struct ios_hidpad_identity *id )
+{
+    unsigned int i, count, written = 0;
+
+    count = ios_hidpad_registry_plan( id, keys );
+    for (i = 0; i < count; i++) written += write_key( &keys[i] );
+    return written;
+}
+
+/* Clarification 8a: each XInput slot's device, in every session (the server creates them
+ * whether or not a pad is in the slot; a slot without a pad refuses opens). */
+static void publish_slots(void)
+{
+    struct ios_hidpad_identity id;
+    unsigned int slot, written = 0, slots = 0;
+
+    for (slot = 0; slot < IOS_HIDPAD_SLOTS; slot++)
+    {
+        if (!ios_hidpad_identity_slot( slot, &id ) || !link_exists( &id )) continue;
+        written += write_plan( &id );
+        slots++;
+    }
+    if (slots)
+        PUBLISH_LOG( "[hidpad] xinput slots: %u of %u registry keys written for %u slot devices\n", written,
+                     slots * (unsigned int)IOS_HIDPAD_REG_KEYS, slots );
+    else
+        PUBLISH_LOG( "[hidpad] xinput slots: no slot device links exist in the server: no registry entries\n" );
+}
+
 void ios_hidpad_publish(void)
 {
     static const enum ios_hidpad_kind kinds[] = { IOS_HIDPAD_DUALSENSE, IOS_HIDPAD_GENERIC };
-    static struct ios_hidpad_reg_key keys[IOS_HIDPAD_REG_KEYS];
     struct ios_hidpad_identity id;
     const char *env = getenv( "MADEIRA_HIDPAD" );
-    unsigned int i, count, written = 0;
+    unsigned int i, written;
     int found = 0;
 
-    /* No HID pad: nothing at all. Publishing again (a later session in the same app run) is
+    publish_slots();
+
+    /* No HID pad: nothing more. Publishing again (a later session in the same app run) is
      * harmless: the keys are opened and the values rewritten. */
     if (!env || !*env) return;
 
@@ -167,8 +200,7 @@ void ios_hidpad_publish(void)
         return;
     }
 
-    count = ios_hidpad_registry_plan( &id, keys );
-    for (i = 0; i < count; i++) written += write_key( &keys[i] );
+    written = write_plan( &id );
     PUBLISH_LOG( "[hidpad] %s: %u of %u registry keys written for %s\\%s\n", id.name, written,
                  (unsigned int)IOS_HIDPAD_REG_KEYS, id.device_id, id.instance );
 }

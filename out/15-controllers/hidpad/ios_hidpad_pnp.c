@@ -6,7 +6,6 @@
 // DBT_DEVICEREMOVECOMPLETE) is Microsoft's documented WM_DEVICECHANGE contract and what Wine's
 // ntoskrnl sends through plugplay (refs/wine-11.4/dlls/ntoskrnl.exe/pnp.c); the code is our own.
 
-#include <stdio.h>
 #include <string.h>
 
 #include "ios_hidpad_pnp.h"
@@ -63,11 +62,10 @@ int ios_pnp_record_build(const struct ios_pnp_change *change, const struct ios_h
     }
     else
     {
-        int n = snprintf(name, sizeof(name),
-                         "\\\\?\\HID#VID_045E&PID_028E&IG_0%d#9&4d616465&1&000%d#%s",
-                         change->which, change->which, IOS_HIDPAD_HID_INTERFACE_GUID);
-        if (n <= 0 || (size_t)n >= sizeof(name)) return 0;
-        len = (size_t)n;
+        /* clarification 8: the slot's own device (ios_hidpad_identity_slot) */
+        struct ios_hidpad_identity slot;
+        if (!ios_hidpad_identity_slot((unsigned int)change->which, &slot)) return 0;
+        if (!(len = ios_hidpad_user_path(&slot, name, sizeof(name)))) return 0;
     }
 
     for (i = 0; i < len; i++) record->name[i] = (uint8_t)name[i];

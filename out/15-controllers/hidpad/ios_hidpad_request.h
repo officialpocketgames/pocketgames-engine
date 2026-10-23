@@ -57,6 +57,8 @@ extern "C" {
 
 /* B5: Wine's virtual mouse and keyboard use raw input handles 1 and 2. */
 #define IOS_HIDPAD_RAWINPUT_HANDLE      0x100u
+/* Clarification 8: XInput slot n's device is 0x101 + n (win32u keeps one device per handle). */
+#define IOS_HIDPAD_SLOT_RAWINPUT_HANDLE(n) (0x101u + (n))
 #define IOS_HIDPAD_MAX_POLL_INTERVAL    10000u   /* hidclass's limit for a set poll frequency */
 #define IOS_HIDPAD_DEFAULT_INPUT_BUFFERS 32u     /* hidclass's queue length for a new handle */
 
@@ -71,6 +73,7 @@ struct ios_hidpad_device
     struct ios_hidpad_report_state *report_state;
     struct winios_hidpad_output *output;    /* the last output snapshot (A6) */
     uint32_t poll_interval;
+    uint32_t rawinput_handle;               /* win32u's handle for the device; 0: the HID pad's */
     /* clarification 5: presence, from the store's samples */
     int published;                          /* the last sample saw the pad published */
     int was_published;                      /* some sample since start saw it published */

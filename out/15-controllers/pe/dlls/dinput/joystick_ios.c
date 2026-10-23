@@ -128,9 +128,28 @@ static void fill_instance( DIDEVICEINSTANCEW *instance, DWORD version )
     instance->wUsage = 0x05;                /* Game Pad */
 }
 
+/* Spec 15 clarification 8: slot 0's own HID device (the XInput HID collection), which dinput's
+ * HID joystick lists when it opens. While it does, this joystick would be a second one for the
+ * same pad, so it steps aside (logged once each way). */
+static BOOL slot0_device_listed(void)
+{
+    static const WCHAR path[] =
+        L"\\\\?\\HID#VID_045E&PID_028E&IG_00#9&4d616465&1&0000#{4d1e55b2-f16f-11cf-88cb-001111000030}";
+    static LONG logged = -1;
+    HANDLE file;
+    LONG listed;
+
+    file = CreateFileW( path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL );
+    if ((listed = file != INVALID_HANDLE_VALUE)) CloseHandle( file );
+    if (InterlockedExchange( &logged, listed ) != listed)
+        MESSAGE( "[dinput-ios] XInput slot 0's HID device is %s: the iOS joystick %s\n",
+                 listed ? "listed" : "not listed", listed ? "steps aside" : "is offered" );
+    return listed;
+}
+
 /* Checked on every enumeration and every CreateDevice, never cached: disabled, no pad in
- * slot 0, or on Wine's DirectInput joystick disable list reads as a PC with nothing
- * plugged in. */
+ * slot 0, slot 0's own HID device listed, or on Wine's DirectInput joystick disable list reads
+ * as a PC with nothing plugged in. */
 HRESULT ios_joystick_enum_device( DWORD type, DWORD flags, DIDEVICEINSTANCEW *instance, DWORD version )
 {
     XINPUT_STATE state;
@@ -138,6 +157,7 @@ HRESULT ios_joystick_enum_device( DWORD type, DWORD flags, DIDEVICEINSTANCEW *in
 
     if (!ios_joystick_enabled()) return DIERR_DEVICENOTREG;
     if (!host_slot0( &state )) return DIERR_DEVICENOTREG;
+    if (slot0_device_listed()) return DIERR_DEVICENOTREG;
 
     fill_instance( instance, version );
     if (device_instance_is_disabled( instance, &override )) return DIERR_DEVICENOTREG;

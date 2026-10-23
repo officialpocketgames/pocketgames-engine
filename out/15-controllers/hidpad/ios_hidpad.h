@@ -26,6 +26,7 @@ enum ios_hidpad_kind
     IOS_HIDPAD_NONE = 0,
     IOS_HIDPAD_DUALSENSE = 1,
     IOS_HIDPAD_GENERIC = 2,
+    IOS_HIDPAD_XINPUT = 3,          /* clarification 8: an XInput host slot's HID collection */
 };
 
 #define IOS_HIDPAD_STRING_MAX 127   /* product / manufacturer / serial, ASCII, without the NUL */
@@ -47,6 +48,7 @@ struct ios_hidpad_identity
     const uint8_t *descriptor;      /* A3 */
     size_t descriptor_len;
     size_t input_report_len;        /* A4, with the report id */
+    unsigned int slot;              /* IOS_HIDPAD_XINPUT: the XInput slot, 0-3 */
 };
 
 /* Fill `out` for the identity `hidpad_env` names ("dualsense" or "generic", exact match);
@@ -191,6 +193,41 @@ int ios_hidpad_effects_log_kind(uint32_t count);
  * A refusal adds one to `*refusals`; `*log_refusal` (may be NULL) is set to 1 for the first
  * IOS_HIDPAD_REFUSALS_LOGGED refusals, else 0. Handles already open are not affected. */
 int ios_hidpad_open_allowed(int connected, uint32_t *refusals, int *log_refusal);
+
+/* ---- clarification 8: the XInput host slots as HID devices (ios_hidpad_xinput.c) ------- */
+
+#define IOS_HIDPAD_SLOTS 4
+#define IOS_HIDPAD_XINPUT_INPUT_LEN 15      /* no report ids: byte 0 is 0, then 14 bytes */
+#define IOS_HIDPAD_XINPUT_PRODUCT "Controller (XBOX 360 For Windows)"
+#define IOS_HIDPAD_SLOT_DEVICE_OBJECT_FMT "\\Device\\MyiosdeckXInput%u"
+
+extern const uint8_t ios_hidpad_xinput_descriptor[];
+extern const size_t ios_hidpad_xinput_descriptor_len;
+
+/* Slot `slot`'s identity: HID\VID_045E&PID_028E&IG_0n, instance 9&4d616465&1&000n, the
+ * descriptor above. Returns 0 (kind IOS_HIDPAD_NONE) for a slot past 3. */
+int ios_hidpad_identity_slot(unsigned int slot, struct ios_hidpad_identity *out);
+
+/* The input report of the XInput HID collection into out[IOS_HIDPAD_XINPUT_INPUT_LEN], from a
+ * slot's state carried in a winios_hidpad (ios_hidpad_from_gamepad): X Y Rx Ry 0..65535 with
+ * Y and Ry growing downwards, Z = 0x8000 + (LT - RT) * 128, buttons 1-10 (A B X Y LB RB Back
+ * Start LS RS), hat 1-8 clockwise from north (0 centred). A disconnected snapshot is a pad at
+ * rest. */
+size_t ios_hidpad_build_xinput_input(const struct winios_hidpad *pad, uint8_t *out);
+
+/* A slot's store state as the snapshot the request rules and report builders take. */
+void ios_hidpad_from_gamepad(const struct winios_gamepad *gamepad, int connected,
+                             struct winios_hidpad *out);
+
+/* Clarification 8f: whether slot `slot`'s device is listed (opens allowed, raw input, WGI,
+ * events): the slot has a pad, and for slot 0 the HID pad isn't present (in the PlayStation
+ * look player 1 is the DualSense, not a second device). */
+int ios_hidpad_slot_listed(unsigned int slot, int slot_connected, int hid_present);
+
+/* Clarification 8c: whether a WM_INPUT report is due for a slot device on this raw input tick:
+ * the first tick after it is listed, then whenever the store's packet changed. `*have` and
+ * `*last_packet` are the slot's memory; an unlisted slot forgets. */
+int ios_hidpad_rawinput_due(int *have, uint32_t *last_packet, int listed, uint32_t packet);
 
 #ifdef __cplusplus
 }

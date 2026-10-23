@@ -20,7 +20,7 @@ extern "C" {
 #define IOS_PNP_POLL_US 100000u              /* how often the server samples the stores */
 
 /* What one sample saw: the HID pad present (ios_hidpad_presence; 0 when the server has no HID
- * pad) and each XInput slot connected (winios_gamepad_get_state). */
+ * pad) and each XInput slot's device listed (ios_hidpad_slot_listed, clarification 8). */
 struct ios_pnp_sample
 {
     int hid_present;

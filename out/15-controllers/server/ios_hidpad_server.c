@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 the MYIOSDECK author
 //
-// Spec 15 Part B: the HID pad, served by the wineserver itself.
+// Spec 15 Part B: the HID pad, served by the wineserver itself; clarification 8: the XInput
+// slots' HID devices the same way.
 //
 // Desktop Wine creates HID devices through winebus.sys, hidclass.sys and a device-manager
 // process; none of them runs on iOS. Like \Device\NamedPipe or \Device\Afd, this device has no
@@ -12,6 +13,8 @@
 //
 //   \Device\MyiosdeckHidPad0          the device object (open: one file object per handle)
 //   \??\HID#...#{4d1e55b2-...}        symlink to it, the name programs open (Part A2)
+//   \Device\MyiosdeckXInput0..3       clarification 8: XInput slot n's device, symlink
+//                                     \??\HID#VID_045E&PID_028E&IG_0n#9&4d616465&1&000n#{...}
 //
 // Compiled into the wineserver library (spec 08) with the server's own headers.
 
@@ -40,6 +43,7 @@
 #include "ios_hidparse.h"
 #include "ios_hidpad_request.h"
 #include "ios_hidpad_pnp.h"
+#include "ios_hidpad_rawinput.h"
 
 /* The request rules (hidpad/ios_hidpad_request.c) carry their own copies of these values so
  * they can be tested without Wine's headers; they must match Wine's. */
@@ -82,29 +86,46 @@ void ios_hidpad_server_init(void);
  * builds that rely on the gate, so a server without it fails to link. */
 int myiosdeck_hidpad_gate = 1;
 
-/* ---- the device ------------------------------------------------------------------------- */
+/* ---- the devices ------------------------------------------------------------------------ */
 
-static struct
+/* One served HID device: the HID pad (Part B), or an XInput slot's (clarification 8). */
+struct pad_device
 {
     int enabled;
+    int slot;                               /* -1: the HID pad; 0-3: an XInput slot */
     struct ios_hidpad_identity id;
-    struct ios_hidparse_desc desc;          /* B6: built once from A3's descriptor */
+    struct ios_hidparse_desc desc;          /* B6: built once from the descriptor */
     struct ios_hidpad_report_state report_state;
-    struct winios_hidpad_output output;     /* the last output snapshot (A6) */
+    struct winios_hidpad_output output;     /* the last output snapshot (A6; HID pad only) */
     struct list files;                      /* open file objects */
-    uint32_t open_refusals;                 /* clarification 4: opens refused, no pad published */
+    uint32_t opens;                         /* clarification 8g: opens, the first few logged */
+    uint32_t open_refusals;                 /* clarification 4: opens refused, no pad */
     uint32_t lost_handles;                  /* QUESTIONS 15-22: open handles lost the same way */
     struct timeout_user *tick;              /* B3: the device clock, only while reads wait */
     struct ios_hidpad_device requests;      /* B4/B5: what the request rules see */
-    /* B7: effects-report log */
+    /* B7: effects-report log (HID pad) */
     uint32_t effects_count, rumble_count, no_rumble_count, trigger_count, lightbar_count, led_count;
-} hidpad;
+    /* clarification 8c: raw input */
+    int rawinput_have;
+    uint32_t rawinput_packet;
+};
+
+static struct pad_device hidpad = { .slot = -1 };
+static struct pad_device slots[IOS_HIDPAD_SLOTS] = { { .slot = 0 }, { .slot = 1 }, { .slot = 2 }, { .slot = 3 } };
+
+/* The device object: which device it serves. */
+struct pad_device_object
+{
+    struct object       obj;
+    struct pad_device  *dev;
+};
 
 struct hidpad_file
 {
     struct object       obj;
     struct fd          *fd;
-    struct list         entry;              /* in hidpad.files */
+    struct pad_device  *dev;
+    struct list         entry;              /* in dev->files */
     struct async_queue  read_q;             /* reads waiting for the device clock */
     struct ios_hidpad_handle requests;      /* per-handle state of the request rules: input
                                                buffers, B3 pacing, lost (QUESTIONS 15-22) */
@@ -122,19 +143,44 @@ static void get_store( struct winios_hidpad *pad )
     winios_hidpad_get_state( pad );
 }
 
-/* Clarification 5: read the HID store and feed the presence rule; returns whether the pad is
- * present (published, or unpublished for less than the grace). */
-static int store_present( struct winios_hidpad *pad )
+static int slot_connected( unsigned int slot, struct winios_gamepad *gamepad )
 {
-    get_store( pad );
-    return ios_hidpad_presence( &hidpad.requests, pad->connected, now_us() );
+    memset( gamepad, 0, sizeof(*gamepad) );
+    return winios_gamepad_get_state( (int)slot, gamepad ) != 0;
 }
 
-/* ---- the device object ------------------------------------------------------------------ */
+/* Read a device's store into `pad` and feed the presence rule; returns whether the device is
+ * present (clarification 5: published, or unpublished for less than the grace). The HID pad
+ * reads the HID store; slot n reads XInput slot n, listed only while clarification 8f allows
+ * (slot 0 isn't while the HID pad is present), so an unlisted slot reads as a pad at rest. */
+static int sample_device( struct pad_device *dev, struct winios_hidpad *pad )
+{
+    struct winios_gamepad gamepad;
+    struct winios_hidpad hid;
+    int connected, hid_present = 0;
+
+    if (dev->slot < 0) get_store( pad );
+    else
+    {
+        connected = slot_connected( (unsigned int)dev->slot, &gamepad );
+        if (dev->slot == 0 && connected && hidpad.enabled) hid_present = sample_device( &hidpad, &hid );
+        ios_hidpad_from_gamepad( &gamepad, ios_hidpad_slot_listed( (unsigned int)dev->slot, connected, hid_present ), pad );
+    }
+    return ios_hidpad_presence( &dev->requests, pad->connected, now_us() );
+}
+
+static const char *dev_tag( const struct pad_device *dev )
+{
+    static const char *const tags[IOS_HIDPAD_SLOTS] = { "xinput-slot0", "xinput-slot1", "xinput-slot2", "xinput-slot3" };
+    return dev->slot < 0 ? "hid-pad" : tags[dev->slot];
+}
+
+/* ---- the device objects ----------------------------------------------------------------- */
 
 static void hidpad_device_dump( struct object *obj, int verbose )
 {
-    fputs( "MYIOSDECK HID pad device\n", stderr );
+    struct pad_device_object *device = (struct pad_device_object *)obj;
+    fprintf( stderr, "MYIOSDECK %s device\n", device->dev ? dev_tag( device->dev ) : "pad" );
 }
 
 static struct object *hidpad_device_open_file( struct object *obj, unsigned int access,
@@ -142,7 +188,7 @@ static struct object *hidpad_device_open_file( struct object *obj, unsigned int 
 
 static const struct object_ops hidpad_device_ops =
 {
-    sizeof(struct object),            /* size */
+    sizeof(struct pad_device_object), /* size */
     &device_type,                     /* type */
     hidpad_device_dump,               /* dump */
     no_add_queue,                     /* add_queue */
@@ -218,33 +264,48 @@ static const struct fd_ops hidpad_file_fd_ops =
     default_fd_reselect_async         /* reselect_async */
 };
 
+/* Why an open was refused, for the log. */
+static void log_refusal( const struct pad_device *dev )
+{
+    struct winios_gamepad gamepad;
+
+    if (dev->slot < 0)
+        ws_log( "[hid-pad] open refused: no PlayStation pad published" );
+    else if (dev->slot == 0 && slot_connected( 0, &gamepad ))
+        ws_log( "[xinput-slot0] open refused: player 1 is the PlayStation pad" );
+    else
+        ws_log( "[%s] open refused: no pad in XInput slot %d", dev_tag( dev ), dev->slot );
+}
+
 static struct object *hidpad_device_open_file( struct object *obj, unsigned int access,
                                                unsigned int sharing, unsigned int options )
 {
+    struct pad_device *dev = ((struct pad_device_object *)obj)->dev;
     struct hidpad_file *file;
     struct winios_hidpad pad;
-    int log_refusal;
+    int log;
 
-    if (!hidpad.enabled)
+    if (!dev || !dev->enabled)
     {
         set_error( STATUS_DEVICE_NOT_CONNECTED );
         return NULL;
     }
-    /* Clarification 4: while the app publishes no HID pad (Xbox mode) the device exists but
+    /* Clarification 4 (and 8b for the slots): while there is no pad the device exists but
      * won't open, as a pad that isn't plugged in; every reader skips a device it can't open.
      * Handles opened before are lost as an unplugged pad's are (QUESTIONS 15-22). */
-    memset( &pad, 0, sizeof(pad) );
-    if (!ios_hidpad_open_allowed( store_present( &pad ), &hidpad.open_refusals, &log_refusal ))
+    if (!ios_hidpad_open_allowed( sample_device( dev, &pad ), &dev->open_refusals, &log ))
     {
-        if (log_refusal) ws_log( "[hid-pad] open refused: no PlayStation pad published" );
+        if (log) log_refusal( dev );
         set_error( STATUS_NO_SUCH_DEVICE );
         return NULL;
     }
     if (!(file = alloc_object( &hidpad_file_ops ))) return NULL;
 
+    file->dev = dev;
+    file->lost_logged = 0;
     ios_hidpad_handle_init( &file->requests );
     init_async_queue( &file->read_q );
-    list_add_tail( &hidpad.files, &file->entry );
+    list_add_tail( &dev->files, &file->entry );
 
     if (!(file->fd = alloc_pseudo_fd( &hidpad_file_fd_ops, &file->obj, options )))
     {
@@ -252,12 +313,15 @@ static struct object *hidpad_device_open_file( struct object *obj, unsigned int 
         return NULL;
     }
     allow_fd_caching( file->fd );
+    if (dev->slot >= 0 && ++dev->opens <= IOS_HIDPAD_REFUSALS_LOGGED)
+        ws_log( "[%s] opened (open %u)", dev_tag( dev ), (unsigned int)dev->opens );
     return &file->obj;
 }
 
 static void hidpad_file_dump( struct object *obj, int verbose )
 {
-    fputs( "MYIOSDECK HID pad file\n", stderr );
+    struct hidpad_file *file = (struct hidpad_file *)obj;
+    fprintf( stderr, "MYIOSDECK %s file\n", dev_tag( file->dev ) );
 }
 
 static struct fd *hidpad_file_get_fd( struct object *obj )
@@ -278,19 +342,21 @@ static void log_output( const char *why )
             o->trigger_valid[0], o->trigger_valid[1], o->power_valid, o->power_reduction );
 }
 
-/* B2: the last handle is gone (the game quit or crashed). A real pad keeps its motors and
- * trigger effects going; this one must not stay rumbling for the rest of the session. */
+/* B2: the HID pad's last handle is gone (the game quit or crashed). A real pad keeps its
+ * motors and trigger effects going; this one must not stay rumbling for the rest of the
+ * session. (A slot device has no output reports: its rumble goes through XInput.) */
 static void hidpad_file_destroy( struct object *obj )
 {
     struct hidpad_file *file = (struct hidpad_file *)obj;
+    struct pad_device *dev = file->dev;
 
     list_remove( &file->entry );
     free_async_queue( &file->read_q );
     if (file->fd) release_object( file->fd );
 
-    if (list_empty( &hidpad.files ) && ios_hidpad_output_release( &hidpad.output ))
+    if (dev->slot < 0 && list_empty( &dev->files ) && ios_hidpad_output_release( &dev->output ))
     {
-        winios_hidpad_set_output( &hidpad.output );
+        winios_hidpad_set_output( &dev->output );
         log_output( "last handle closed, motors stopped and trigger effects released" );
     }
 }
@@ -310,17 +376,21 @@ static void complete( struct async *async, unsigned int status, data_size_t resu
 
 /* ---- B3: reads ---------------------------------------------------------------------------- */
 
-/* QUESTIONS 15-22: the pad was unpublished while `file` was open. Fail its waiting reads as
+/* QUESTIONS 15-22: the pad went away while `file` was open. Fail its waiting reads as
  * hidclass fails a removed device's (the first losses are logged). */
 static void lose_handle( struct hidpad_file *file )
 {
+    struct pad_device *dev = file->dev;
     struct async *async;
 
     if (!file->lost_logged)
     {
         file->lost_logged = 1;
-        if (++hidpad.lost_handles <= IOS_HIDPAD_REFUSALS_LOGGED)
-            ws_log( "[hid-pad] open handle lost: no PlayStation pad published any more" );
+        if (++dev->lost_handles <= IOS_HIDPAD_REFUSALS_LOGGED)
+        {
+            if (dev->slot < 0) ws_log( "[hid-pad] open handle lost: no PlayStation pad published any more" );
+            else ws_log( "[%s] open handle lost: XInput slot %d's device is gone", dev_tag( dev ), dev->slot );
+        }
     }
     while ((async = find_pending_async( &file->read_q )))
     {
@@ -329,11 +399,20 @@ static void lose_handle( struct hidpad_file *file )
     }
 }
 
+/* Lose every open handle of a device that is no longer present (the store poller). */
+static void lose_handles( struct pad_device *dev )
+{
+    struct hidpad_file *file;
+
+    LIST_FOR_EACH_ENTRY( file, &dev->files, struct hidpad_file, entry )
+        if (!file->requests.lost && ios_hidpad_handle_lost( &file->requests, 0 )) lose_handle( file );
+}
+
 static void hidpad_tick( void *private );
 
-static void start_tick(void)
+static void start_tick( struct pad_device *dev )
 {
-    if (!hidpad.tick) hidpad.tick = add_timeout_user( -(timeout_t)IOS_HIDPAD_TICK_US * 10, hidpad_tick, NULL );
+    if (!dev->tick) dev->tick = add_timeout_user( -(timeout_t)IOS_HIDPAD_TICK_US * 10, hidpad_tick, dev );
 }
 
 static int has_waiting_read( struct hidpad_file *file )
@@ -348,6 +427,7 @@ static int has_waiting_read( struct hidpad_file *file )
  * some handle has a read waiting, and re-armed after a tick only if one still does. */
 static void hidpad_tick( void *private )
 {
+    struct pad_device *dev = private;
     uint8_t report[IOS_HIDPAD_DUALSENSE_INPUT_LEN];
     struct winios_hidpad pad;
     struct hidpad_file *file;
@@ -355,9 +435,9 @@ static void hidpad_tick( void *private )
     data_size_t len;
     int waiting = 0, present;
 
-    hidpad.tick = NULL;
-    present = store_present( &pad );
-    LIST_FOR_EACH_ENTRY( file, &hidpad.files, struct hidpad_file, entry )
+    dev->tick = NULL;
+    present = sample_device( dev, &pad );
+    LIST_FOR_EACH_ENTRY( file, &dev->files, struct hidpad_file, entry )
     {
         if (!has_waiting_read( file )) continue;
         if (ios_hidpad_handle_lost( &file->requests, present ))
@@ -366,12 +446,12 @@ static void hidpad_tick( void *private )
             continue;
         }
         if (!(async = find_pending_async( &file->read_q ))) continue;
-        len = ios_hidpad_read_report( &hidpad.requests, &file->requests, &pad, now_us(), report );
+        len = ios_hidpad_read_report( &dev->requests, &file->requests, &pad, now_us(), report );
         async_request_complete_alloc( async, STATUS_SUCCESS, len, len, report );
         release_object( async );
         if (has_waiting_read( file )) waiting = 1;
     }
-    if (waiting) start_tick();
+    if (waiting) start_tick( dev );
 }
 
 /* ReadFile. A buffer shorter than one input report is refused as hidclass refuses it. The
@@ -381,27 +461,28 @@ static void hidpad_tick( void *private )
 static void hidpad_file_read( struct fd *fd, struct async *async, file_pos_t pos )
 {
     struct hidpad_file *file = get_fd_user( fd );
+    struct pad_device *dev = file->dev;
     uint8_t report[IOS_HIDPAD_DUALSENSE_INPUT_LEN];
     struct iosb *iosb = async_get_iosb( async );
     data_size_t size = iosb->out_size, len;
     struct winios_hidpad pad;
 
     release_object( iosb );
-    if (size < hidpad.desc.input_len)
+    if (size < dev->desc.input_len)
     {
         set_error( STATUS_INVALID_BUFFER_SIZE );
         return;
     }
 
-    get_store( &pad );
-    switch (ios_hidpad_read_decide( &hidpad.requests, &file->requests, &pad, has_waiting_read( file ), now_us() ))
+    sample_device( dev, &pad );
+    switch (ios_hidpad_read_decide( &dev->requests, &file->requests, &pad, has_waiting_read( file ), now_us() ))
     {
     case IOS_HIDPAD_READ_LOST:
         lose_handle( file );
         set_error( STATUS_DEVICE_NOT_CONNECTED );
         return;
     case IOS_HIDPAD_READ_NOW:
-        len = ios_hidpad_read_report( &hidpad.requests, &file->requests, &pad, now_us(), report );
+        len = ios_hidpad_read_report( &dev->requests, &file->requests, &pad, now_us(), report );
         complete( async, STATUS_SUCCESS, len, report, len );
         return;
     case IOS_HIDPAD_READ_WAIT:
@@ -409,7 +490,7 @@ static void hidpad_file_read( struct fd *fd, struct async *async, file_pos_t pos
     }
 
     queue_async( &file->read_q, async );
-    start_tick();
+    start_tick( dev );
     set_error( STATUS_PENDING );
 }
 
@@ -455,13 +536,15 @@ static void log_output_report( const uint8_t *data, const struct ios_hidpad_repl
     }
 }
 
-/* Hand a request's answer back: logs and the store for output reports, then the reply. */
-static void finish_request( struct async *async, const uint8_t *data, const struct ios_hidpad_reply *reply )
+/* Hand a request's answer back: logs and the store for output reports (only the HID pad has
+ * them), then the reply. */
+static void finish_request( struct pad_device *dev, struct async *async, const uint8_t *data,
+                            const struct ios_hidpad_reply *reply )
 {
-    if (reply->output_report)
+    if (reply->output_report && dev->slot < 0)
     {
         log_output_report( data, reply );
-        if (reply->output_changed) winios_hidpad_set_output( &hidpad.output );
+        if (reply->output_changed) winios_hidpad_set_output( &dev->output );
     }
     if (reply->status != STATUS_SUCCESS) set_error( reply->status );
     else complete( async, STATUS_SUCCESS, reply->information, reply->data, reply->size );
@@ -475,10 +558,10 @@ static void hidpad_file_write( struct fd *fd, struct async *async, file_pos_t po
     struct ios_hidpad_reply reply;
     struct winios_hidpad pad;
 
-    get_store( &pad );
-    ios_hidpad_write( &hidpad.requests, &file->requests, &pad, now_us(), iosb->in_data, iosb->in_size, &reply );
+    sample_device( file->dev, &pad );
+    ios_hidpad_write( &file->dev->requests, &file->requests, &pad, now_us(), iosb->in_data, iosb->in_size, &reply );
     if (file->requests.lost) lose_handle( file );
-    finish_request( async, iosb->in_data, &reply );
+    finish_request( file->dev, async, iosb->in_data, &reply );
     release_object( iosb );
 }
 
@@ -508,12 +591,75 @@ static void hidpad_file_ioctl( struct fd *fd, ioctl_code_t code, struct async *a
     struct ios_hidpad_reply reply;
     struct winios_hidpad pad;
 
-    get_store( &pad );
-    ios_hidpad_ioctl( &hidpad.requests, &file->requests, code, iosb->in_data, iosb->in_size,
+    sample_device( file->dev, &pad );
+    ios_hidpad_ioctl( &file->dev->requests, &file->requests, code, iosb->in_data, iosb->in_size,
                       iosb->out_size, &pad, now_us(), &reply );
     if (file->requests.lost) lose_handle( file );
-    finish_request( async, iosb->in_data, &reply );
+    finish_request( file->dev, async, iosb->in_data, &reply );
     release_object( iosb );
+}
+
+/* ---- clarification 8c: raw input for the slot devices ------------------------------------ */
+
+static struct
+{
+    const struct ios_rawinput_sink *sink;   /* spec 08's queue; NULL: no raw input messages */
+    struct timeout_user *timer;             /* the 4 ms raw input clock, only while wanted */
+} rawinput;
+
+void ios_hidpad_set_rawinput_sink( const struct ios_rawinput_sink *sink )
+{
+    rawinput.sink = sink;
+    ws_log( "[xinput-slots] raw input sink %s", sink ? "installed: WM_INPUT for the slot devices" : "removed" );
+}
+
+static int rawinput_wanted(void)
+{
+    return rawinput.sink && rawinput.sink->wanted && rawinput.sink->send &&
+           rawinput.sink->wanted( 0x01, 0x05 );    /* Generic Desktop, Game Pad */
+}
+
+static void rawinput_tick( void *private );
+
+static void rawinput_start(void)
+{
+    if (!rawinput.timer && rawinput_wanted())
+        rawinput.timer = add_timeout_user( -(timeout_t)IOS_HIDPAD_TICK_US * 10, rawinput_tick, NULL );
+}
+
+/* Every 4 ms while some process wants game pad raw input: one WM_INPUT per listed slot device
+ * whose store changed (and one when it is first listed). Stops when no one wants it; the
+ * store poller starts it again. */
+static void rawinput_tick( void *private )
+{
+    uint8_t report[IOS_HIDPAD_XINPUT_INPUT_LEN];
+    struct winios_hidpad pad;
+    unsigned int i;
+    size_t len;
+
+    rawinput.timer = NULL;
+    if (!rawinput_wanted()) return;
+    for (i = 0; i < IOS_HIDPAD_SLOTS; i++)
+    {
+        struct pad_device *dev = &slots[i];
+        if (!dev->enabled) continue;
+        sample_device( dev, &pad );
+        if (!ios_hidpad_rawinput_due( &dev->rawinput_have, &dev->rawinput_packet, pad.connected, pad.packet ))
+            continue;
+        len = ios_hidpad_build_xinput_input( &pad, report );
+        rawinput.sink->send( IOS_RAWINPUT_WM_INPUT, 0, dev->requests.rawinput_handle, 0x01, 0x05,
+                             report, (unsigned int)len );
+    }
+    rawinput_start();
+}
+
+static void rawinput_device_change( struct pad_device *dev, int arrival )
+{
+    if (!rawinput.sink || !rawinput.sink->send) return;
+    dev->rawinput_have = 0;
+    rawinput.sink->send( IOS_RAWINPUT_WM_INPUT_DEVICE_CHANGE,
+                         arrival ? IOS_RAWINPUT_GIDC_ARRIVAL : IOS_RAWINPUT_GIDC_REMOVAL,
+                         dev->requests.rawinput_handle, 0x01, 0x05, NULL, 0 );
 }
 
 /* ---- clarification 6: device arrival and removal (\??\MyiosdeckPnp) ---------------------- */
@@ -698,9 +844,10 @@ static void pnp_deliver( struct pnp_listener *listener, const struct ios_pnp_rec
     ios_pnp_queue_push( &listener->queue, record );
 }
 
-/* The store poller: every IOS_PNP_POLL_US, sample the HID pad's presence and the XInput slots,
- * announce what changed to every listener, and lose the HID pad's open handles once the pad
- * is gone past the grace (clarification 5), even when no read waits on them. */
+/* The store poller: every IOS_PNP_POLL_US, sample the HID pad's presence and each slot
+ * device's (clarification 8: listed, with the same grace), announce what changed to every
+ * listener (and to raw input readers), and lose the open handles of a device gone past the
+ * grace (clarification 5), even when no read waits on them. */
 static void pnp_poll( void *private )
 {
     struct ios_pnp_change changes[IOS_PNP_MAX_CHANGES];
@@ -709,13 +856,16 @@ static void pnp_poll( void *private )
     struct winios_hidpad pad;
     struct winios_gamepad gamepad;
     struct pnp_listener *listener;
-    struct hidpad_file *file;
     unsigned int i, n;
 
     pnp.timer = NULL;
     memset( &sample, 0, sizeof(sample) );
-    if (hidpad.enabled) sample.hid_present = store_present( &pad );
-    for (i = 0; i < IOS_PNP_SLOTS; i++) sample.slot[i] = winios_gamepad_get_state( i, &gamepad ) != 0;
+    if (hidpad.enabled) sample.hid_present = sample_device( &hidpad, &pad );
+    for (i = 0; i < IOS_PNP_SLOTS; i++)
+    {
+        if (slots[i].enabled) sample.slot[i] = sample_device( &slots[i], &pad );
+        else sample.slot[i] = ios_hidpad_slot_listed( i, slot_connected( i, &gamepad ), sample.hid_present );
+    }
 
     n = ios_pnp_watch_update( &pnp.watch, &sample, changes );
     for (i = 0; i < n; i++)
@@ -724,18 +874,21 @@ static void pnp_poll( void *private )
         if (changes[i].which < 0)
             ws_log( "[pnp] %s: HID pad", changes[i].code == IOS_PNP_ARRIVAL ? "arrival" : "removal" );
         else
+        {
             ws_log( "[pnp] %s: XInput slot %d", changes[i].code == IOS_PNP_ARRIVAL ? "arrival" : "removal",
                     changes[i].which );
+            if (slots[changes[i].which].enabled)
+                rawinput_device_change( &slots[changes[i].which], changes[i].code == IOS_PNP_ARRIVAL );
+        }
         LIST_FOR_EACH_ENTRY( listener, &pnp.listeners, struct pnp_listener, entry )
             pnp_deliver( listener, &record );
     }
 
-    if (hidpad.enabled && !sample.hid_present)
-    {
-        LIST_FOR_EACH_ENTRY( file, &hidpad.files, struct hidpad_file, entry )
-            if (!file->requests.lost && ios_hidpad_handle_lost( &file->requests, 0 )) lose_handle( file );
-    }
+    if (hidpad.enabled && !sample.hid_present) lose_handles( &hidpad );
+    for (i = 0; i < IOS_PNP_SLOTS; i++)
+        if (slots[i].enabled && !sample.slot[i]) lose_handles( &slots[i] );
 
+    rawinput_start();
     pnp.timer = add_timeout_user( -(timeout_t)IOS_PNP_POLL_US * 10, pnp_poll, NULL );
 }
 
@@ -785,66 +938,93 @@ static int make_unicode( const char *ascii, WCHAR *buffer, size_t count, struct 
     return 1;
 }
 
+/* Parse the device's descriptor, create its device object `object_name` and the symlink its
+ * identity names, and set up what the request rules see. Returns 1 when the device is served. */
+static int create_device( struct pad_device *dev, const char *object_name, uint32_t rawinput_handle )
+{
+    WCHAR device_buf[64], link_buf[256], target_buf[64];
+    struct unicode_str device_name, link_name, target;
+    struct pad_device_object *device;
+    struct object *symlink;
+    char link[256];
+
+    list_init( &dev->files );
+
+    /* B6: the preparsed data hid.dll reads, built once from the descriptor */
+    if (!ios_hidparse_parse( dev->id.descriptor, dev->id.descriptor_len, &dev->desc ))
+    {
+        ws_log( "[%s] %s: the report descriptor didn't parse, no device", dev_tag( dev ), dev->id.name );
+        return 0;
+    }
+
+    if (!ios_hidpad_symlink_path( &dev->id, link, sizeof(link) ) ||
+        !make_unicode( link, link_buf, sizeof(link_buf) / sizeof(WCHAR), &link_name ) ||
+        !make_unicode( object_name, device_buf, sizeof(device_buf) / sizeof(WCHAR), &device_name ) ||
+        !make_unicode( object_name, target_buf, sizeof(target_buf) / sizeof(WCHAR), &target ))
+    {
+        ws_log( "[%s] %s: names too long, no device", dev_tag( dev ), dev->id.name );
+        return 0;
+    }
+
+    if (!(device = create_named_object( NULL, &hidpad_device_ops, &device_name, OBJ_PERMANENT, NULL )))
+    {
+        ws_log( "[%s] %s: creating %s failed, status %#x", dev_tag( dev ), dev->id.name, object_name, get_error() );
+        return 0;
+    }
+    device->dev = dev;
+    release_object( device );
+
+    if (!(symlink = create_symlink( NULL, &link_name, OBJ_PERMANENT, &target, NULL )))
+    {
+        ws_log( "[%s] %s: creating %s failed, status %#x", dev_tag( dev ), dev->id.name, link, get_error() );
+        return 0;
+    }
+    release_object( symlink );
+    clear_error();
+
+    dev->requests.id = &dev->id;
+    dev->requests.desc = &dev->desc;
+    dev->requests.report_state = &dev->report_state;
+    dev->requests.output = &dev->output;
+    dev->requests.poll_interval = 0;        /* not polled */
+    dev->requests.rawinput_handle = rawinput_handle;
+    dev->enabled = 1;
+    ws_log( "[%s] %s %04X:%04X v%04x \"%s\" / \"%s\" / \"%s\", descriptor %u bytes, input report %u, "
+            "output %u, feature %u, preparsed %u bytes, raw input handle %#x; %s -> %s",
+            dev_tag( dev ), dev->id.name, dev->id.vendor_id, dev->id.product_id, dev->id.version,
+            dev->id.product, dev->id.manufacturer, dev->id.serial,
+            (unsigned int)dev->id.descriptor_len, (unsigned int)dev->desc.input_len,
+            (unsigned int)dev->desc.output_len, (unsigned int)dev->desc.feature_len,
+            (unsigned int)dev->desc.preparsed_len,
+            rawinput_handle ? (unsigned int)rawinput_handle : IOS_HIDPAD_RAWINPUT_HANDLE, link, object_name );
+    return 1;
+}
+
 /* Called once by the wineserver after its object namespace and the registry exist (spec 08
- * clarification 6). Without an identity it does nothing. */
+ * clarification 6). The device-change channel and the four XInput slot devices exist in every
+ * session (clarifications 6 and 8); the HID pad only with an identity. */
 void ios_hidpad_server_init(void)
 {
     static int done;
-    WCHAR device_buf[64], link_buf[256], target_buf[64];
-    struct unicode_str device_name, link_name, target;
-    char link[256];
-    struct object *device, *symlink;
+    char name[64];
+    unsigned int i;
 
     if (done) return;
     done = 1;
 
     list_init( &hidpad.files );
-    pnp_init();     /* clarification 6: also announces the XInput slots, with or without a HID pad */
+    for (i = 0; i < IOS_HIDPAD_SLOTS; i++) list_init( &slots[i].files );
+    pnp_init();
+
+    /* clarification 8: the XInput slot devices */
+    for (i = 0; i < IOS_HIDPAD_SLOTS; i++)
+    {
+        ios_hidpad_identity_slot( i, &slots[i].id );
+        snprintf( name, sizeof(name), IOS_HIDPAD_SLOT_DEVICE_OBJECT_FMT, i );
+        create_device( &slots[i], name, IOS_HIDPAD_SLOT_RAWINPUT_HANDLE( i ) );
+    }
+
     if (!ios_hidpad_identity_select( getenv( "MADEIRA_HIDPAD" ), getenv( "MADEIRA_HIDPAD_NAME" ), &hidpad.id ))
         return;
-
-    /* B6: the preparsed data hid.dll reads, built once from A3's descriptor */
-    if (!ios_hidparse_parse( hidpad.id.descriptor, hidpad.id.descriptor_len, &hidpad.desc ))
-    {
-        ws_log( "[hidpad] %s: the report descriptor didn't parse, no device", hidpad.id.name );
-        return;
-    }
-
-    if (!ios_hidpad_symlink_path( &hidpad.id, link, sizeof(link) ) ||
-        !make_unicode( link, link_buf, sizeof(link_buf) / sizeof(WCHAR), &link_name ) ||
-        !make_unicode( IOS_HIDPAD_DEVICE_OBJECT, device_buf, sizeof(device_buf) / sizeof(WCHAR), &device_name ) ||
-        !make_unicode( IOS_HIDPAD_DEVICE_OBJECT, target_buf, sizeof(target_buf) / sizeof(WCHAR), &target ))
-    {
-        ws_log( "[hidpad] %s: names too long, no device", hidpad.id.name );
-        return;
-    }
-
-    if (!(device = create_named_object( NULL, &hidpad_device_ops, &device_name, OBJ_PERMANENT, NULL )))
-    {
-        ws_log( "[hidpad] %s: creating %s failed, status %#x", hidpad.id.name, IOS_HIDPAD_DEVICE_OBJECT, get_error() );
-        return;
-    }
-    release_object( device );
-
-    if (!(symlink = create_symlink( NULL, &link_name, OBJ_PERMANENT, &target, NULL )))
-    {
-        ws_log( "[hidpad] %s: creating %s failed, status %#x", hidpad.id.name, link, get_error() );
-        return;
-    }
-    release_object( symlink );
-    clear_error();
-
-    hidpad.requests.id = &hidpad.id;
-    hidpad.requests.desc = &hidpad.desc;
-    hidpad.requests.report_state = &hidpad.report_state;
-    hidpad.requests.output = &hidpad.output;
-    hidpad.requests.poll_interval = 0;      /* not polled */
-    hidpad.enabled = 1;
-    ws_log( "[hidpad] %s %04X:%04X v%04x \"%s\" / \"%s\" / \"%s\", descriptor %u bytes, input report %u, "
-            "output %u, feature %u, preparsed %u bytes; %s -> %s",
-            hidpad.id.name, hidpad.id.vendor_id, hidpad.id.product_id, hidpad.id.version,
-            hidpad.id.product, hidpad.id.manufacturer, hidpad.id.serial,
-            (unsigned int)hidpad.id.descriptor_len, (unsigned int)hidpad.desc.input_len,
-            (unsigned int)hidpad.desc.output_len, (unsigned int)hidpad.desc.feature_len,
-            (unsigned int)hidpad.desc.preparsed_len, link, IOS_HIDPAD_DEVICE_OBJECT );
+    create_device( &hidpad, IOS_HIDPAD_DEVICE_OBJECT, 0 );
 }

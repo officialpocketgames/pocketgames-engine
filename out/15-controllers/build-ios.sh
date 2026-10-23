@@ -116,6 +116,9 @@ echo "spec 15 controllers for iOS arm64 (minimum iOS $MIN_IOS)"
 
 compile "$PURE_CFLAGS" "$HERE/hidpad/ios_hidpad.c"
 pure_objs=$LAST_OBJ
+# clarification 8: the XInput slots' HID devices (identities, descriptor, reports)
+compile "$PURE_CFLAGS" "$HERE/hidpad/ios_hidpad_xinput.c"
+pure_objs="$pure_objs $LAST_OBJ"
 # the request rules of B4/B5 (plain C; ios_hidparse.h is a plain header)
 compile "$PURE_CFLAGS -I$HERE/server" "$HERE/hidpad/ios_hidpad_request.c"
 pure_objs="$pure_objs $LAST_OBJ"

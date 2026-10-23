@@ -174,6 +174,9 @@ int ios_hidpad_identity_get(enum ios_hidpad_kind kind, const char *name_env,
         out->input_report_len = IOS_HIDPAD_GENERIC_INPUT_LEN;
         return 1;
 
+    case IOS_HIDPAD_XINPUT:
+        return ios_hidpad_identity_slot(0, out);
+
     case IOS_HIDPAD_NONE:
         break;
     }
@@ -318,8 +321,9 @@ size_t ios_hidpad_hardware_id(const struct ios_hidpad_identity *id, unsigned int
 
     switch (index)
     {
-    case 0:   /* the device id with &REV_xxxx before any &MI_ */
+    case 0:   /* the device id with &REV_xxxx before any &MI_ (or an XInput pad's &IG_) */
         mi = strstr(id->device_id, "&MI_");
+        if (!mi) mi = strstr(id->device_id, "&IG_");
         if (mi)
         {
             sb_add(&sb, id->device_id, (size_t)(mi - id->device_id));
@@ -552,6 +556,7 @@ size_t ios_hidpad_build_input(const struct ios_hidpad_identity *id, const struct
     {
     case IOS_HIDPAD_DUALSENSE: return ios_hidpad_build_dualsense_input(pad, state, now_us, out);
     case IOS_HIDPAD_GENERIC: return ios_hidpad_build_generic_input(pad, out);
+    case IOS_HIDPAD_XINPUT: return ios_hidpad_build_xinput_input(pad, out);
     case IOS_HIDPAD_NONE: break;
     }
     return 0;

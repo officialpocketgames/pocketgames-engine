@@ -338,7 +338,7 @@ void ios_hidpad_ioctl(struct ios_hidpad_device *dev, struct ios_hidpad_handle *h
 
     case IOS_IOCTL_HID_GET_WINE_RAWINPUT_HANDLE:
         if (out_size < 4) reply_error(reply, IOS_STATUS_BUFFER_OVERFLOW);
-        else reply_ulong(reply, IOS_HIDPAD_RAWINPUT_HANDLE);
+        else reply_ulong(reply, dev->rawinput_handle ? dev->rawinput_handle : IOS_HIDPAD_RAWINPUT_HANDLE);
         break;
 
     default:
