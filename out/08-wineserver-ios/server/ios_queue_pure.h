@@ -64,4 +64,19 @@ static inline int ios_queue_clear_bits( struct ios_queue_bits *q, unsigned int b
     return ios_queue_status( q );
 }
 
+/* Spec 15 clarification 10b (QUESTIONS 15-24): the raw input sink of spec 15's slot devices.
+ * A registration's usage key, as upstream stores it (MAKELONG(usage, usage page)). */
+static inline unsigned int ios_rawinput_usage_key( unsigned short usage_page, unsigned short usage )
+{
+    return (unsigned int)usage | ((unsigned int)usage_page << 16);
+}
+
+/* The RAWHID shape of a message: one report of report_len bytes for WM_INPUT, none for a device
+ * change (report_len 0). */
+static inline void ios_rawinput_hid_shape( unsigned int report_len, unsigned int *count, unsigned int *size )
+{
+    *count = report_len ? 1 : 0;
+    *size = report_len;
+}
+
 #endif /* MYIOSDECK_SERVER_IOS_QUEUE_PURE_H */

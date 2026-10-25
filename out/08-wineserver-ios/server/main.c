@@ -282,6 +282,8 @@ static void init_limits(void)
 #ifdef WINE_IOS
 /* spec 15 Part B (spec 08 clarification 6): the HID pad's server part, if linked */
 extern void ios_hidpad_server_init(void) __attribute__((weak));
+/* spec 15 clarification 10b: queue.c's raw input sink for spec 15's slot devices */
+extern void ios_queue_install_rawinput_sink(void);
 
 /* The app's server thread calls this (spec 02 Part B). It returns when the app sets
  * g_wineserver_should_stop. The server's state lives on in the app after it returns: a
@@ -318,6 +320,7 @@ int wineserver_main( int argc, char *argv[] )
         /* clarification 6: spec 15's HID pad, once, after the namespace and the registry;
          * weak, so skipped when spec 15's server part isn't linked */
         if (ios_hidpad_server_init) ios_hidpad_server_init();
+        ios_queue_install_rawinput_sink();   /* after it: the sink needs the slot devices */
         started = 1;
     }
     else ws_log( "continuing with the state of the previous run" );

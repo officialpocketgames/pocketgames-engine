@@ -84,7 +84,9 @@ CFLAGS="$CFLAGS -DHAVE_LINUX_NTSYNC_H=1 -DIOS_USYNC=1"
 # spec 17 Part A1 (spec 08 clarification 7): the shared header overrides (wine/unixlib.h,
 # winternl.h) come before the Wine tree's include/
 OVERRIDE_INC=$(cd "$HERE/../09-ntdll-processes/include" && pwd)
-CFLAGS="$CFLAGS -I$STAGE -I$SYNC_INC -I$OVERRIDE_INC -I$WINE_BUILD/include -I$WINE_SRC/include"
+# spec 15 clarification 10b: the raw input sink's contract header (ios_hidpad_rawinput.h)
+RAWINPUT_INC=$(cd "$HERE/../15-controllers/server" && pwd)
+CFLAGS="$CFLAGS -I$STAGE -I$SYNC_INC -I$OVERRIDE_INC -I$RAWINPUT_INC -I$WINE_BUILD/include -I$WINE_SRC/include"
 
 echo "wineserver for iOS arm64 (minimum iOS $MIN_IOS)"
 echo "  tree:  $WINE_SRC"

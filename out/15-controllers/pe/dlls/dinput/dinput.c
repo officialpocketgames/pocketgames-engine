@@ -81,6 +81,30 @@ __ASM_GLOBAL_FUNC( enum_callback_wrapper,
 #define enum_callback_wrapper(callback, instance, ref) (callback)((instance), (ref))
 #endif
 
+/* MYIOSDECK (spec 15 clarification 10e): a DirectInput object is ready (the first 8, so a game
+ * that creates DirectInput and never enumerates shows it), and each EnumDevices call's result
+ * (the first 16), also when it returns nothing. */
+static void ios_log_initialized( const struct dinput *impl, DWORD version )
+{
+    static LONG logged;
+
+    if (InterlockedIncrement( &logged ) <= 8)
+        MESSAGE( "[dinput] DirectInput %#lx initialized (%p); its EnumDevices calls are logged as they come\n",
+                 version, impl );
+}
+
+static LONG ios_enum_returned;   /* devices handed to the callback by the current enumeration */
+
+static HRESULT ios_log_enum_devices( DWORD type, DWORD flags, HRESULT hr )
+{
+    static LONG logged;
+
+    if (InterlockedIncrement( &logged ) <= 16)
+        MESSAGE( "[dinput] EnumDevices(type %#lx, flags %#lx): %ld devices returned, hr %#lx\n",
+                 type, flags, ios_enum_returned, hr );
+    return hr;
+}
+
 static HRESULT WINAPI dinput7_EnumDevices( IDirectInput7W *iface, DWORD type, LPDIENUMDEVICESCALLBACKW callback,
                                            void *context, DWORD flags )
 {
@@ -217,6 +241,7 @@ static HRESULT WINAPI dinput7_Initialize( IDirectInput7W *iface, HINSTANCE hinst
     {
         impl->dwVersion = version;
         impl->evsequence = 1;
+        ios_log_initialized( impl, version );   /* MYIOSDECK (clarification 10e) */
     }
 
     return DI_OK;
@@ -344,10 +369,11 @@ static BOOL try_enum_device( DWORD type, LPDIENUMDEVICESCALLBACKW callback,
         MESSAGE( "[dinput] EnumDevices returns \"%s\", type %#lx, instance %s, product %s\n",
                  debugstr_w( instance->tszProductName ), instance->dwDevType,
                  debugstr_guid( &instance->guidInstance ), debugstr_guid( &instance->guidProduct ) );
+    InterlockedIncrement( &ios_enum_returned );
     return enum_callback_wrapper( callback, instance, context );
 }
 
-static HRESULT WINAPI dinput8_EnumDevices( IDirectInput8W *iface, DWORD type, LPDIENUMDEVICESCALLBACKW callback, void *context,
+static HRESULT enum_devices( IDirectInput8W *iface, DWORD type, LPDIENUMDEVICESCALLBACKW callback, void *context,
                                            DWORD flags )
 {
     DIDEVICEINSTANCEW instance = {.dwSize = sizeof(DIDEVICEINSTANCEW)};
@@ -404,6 +430,15 @@ static HRESULT WINAPI dinput8_EnumDevices( IDirectInput8W *iface, DWORD type, LP
     return DI_OK;
 }
 
+/* MYIOSDECK (spec 15 clarification 10e): upstream's EnumDevices (enum_devices above), with each
+ * call's result logged */
+static HRESULT WINAPI dinput8_EnumDevices( IDirectInput8W *iface, DWORD type, LPDIENUMDEVICESCALLBACKW callback, void *context,
+                                           DWORD flags )
+{
+    InterlockedExchange( &ios_enum_returned, 0 );
+    return ios_log_enum_devices( type, flags, enum_devices( iface, type, callback, context, flags ) );
+}
+
 static HRESULT WINAPI dinput8_GetDeviceStatus( IDirectInput8W *iface, const GUID *guid )
 {
     struct dinput *impl = impl_from_IDirectInput8W( iface );
@@ -435,6 +470,7 @@ static HRESULT WINAPI dinput8_Initialize( IDirectInput8W *iface, HINSTANCE hinst
     {
         impl->dwVersion = version;
         impl->evsequence = 1;
+        ios_log_initialized( impl, version );   /* MYIOSDECK (clarification 10e) */
     }
 
     return DI_OK;

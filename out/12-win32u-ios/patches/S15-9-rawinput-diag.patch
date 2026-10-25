@@ -3,6 +3,8 @@ clarification 8 (rawinput_ios.inc): each RegisterRawInputDevices entry (the firs
 GetRawInputDeviceList (the first 8, naming the slot devices listed, then a count per 5 s), and the
 first GetRawInputData and GetRawInputBuffer calls (then counts). Diagnostics only.
 
+Spec 15 clarification 10a: also each NtUserGetRawInputDeviceInfo answer (the first 12).
+
 --- a/dlls/win32u/rawinput.c
 +++ b/dlls/win32u/rawinput.c
 @@ -4,6 +4,8 @@
@@ -59,7 +61,17 @@ first GetRawInputData and GetRawInputBuffer calls (then counts). Diagnostics onl
      pthread_mutex_unlock( &rawinput_mutex );
  
      if (!device_list)
-@@ -474,6 +494,10 @@
+@@ -434,6 +454,9 @@
+         break;
+     }
+ 
++#ifdef WINE_IOS
++    w32ios_diag_device_info( device, command, data != NULL, data_len, len );
++#endif
+     pthread_mutex_unlock( &rawinput_mutex );
+ 
+     if (!data)
+@@ -474,6 +497,10 @@
      if (NtCurrentTeb()->WowTebOffset) header_size = sizeof(RAWINPUTHEADER64);
  
      thread_info = get_user_thread_info();
@@ -70,7 +82,7 @@ first GetRawInputData and GetRawInputBuffer calls (then counts). Diagnostics onl
      SERVER_START_REQ( get_rawinput_buffer )
      {
          req->header_size = header_size;
-@@ -484,6 +508,10 @@
+@@ -484,6 +511,10 @@
          if (reply->count) thread_info->client_info.message_time = reply->time;
      }
      SERVER_END_REQ;
@@ -81,7 +93,7 @@ first GetRawInputData and GetRawInputBuffer calls (then counts). Diagnostics onl
  
      return count;
  }
-@@ -519,11 +547,17 @@
+@@ -519,11 +550,17 @@
      if (!data)
      {
          *data_size = sizeof(RAWINPUTHEADER) + size;
@@ -99,7 +111,7 @@ first GetRawInputData and GetRawInputBuffer calls (then counts). Diagnostics onl
          RtlSetLastWin32Error( ERROR_INSUFFICIENT_BUFFER );
          return -1;
      }
-@@ -557,6 +591,9 @@
+@@ -557,6 +594,9 @@
          goto failed;
      }
  
@@ -109,7 +121,7 @@ first GetRawInputData and GetRawInputBuffer calls (then counts). Diagnostics onl
      return rawinput->header.dwSize;
  
  failed:
-@@ -678,6 +715,9 @@
+@@ -678,6 +718,9 @@
      {
          TRACE( "device %u: page %#x, usage %#x, flags %#x, target %p.\n", i, devices[i].usUsagePage,
                 devices[i].usUsage, devices[i].dwFlags, devices[i].hwndTarget );

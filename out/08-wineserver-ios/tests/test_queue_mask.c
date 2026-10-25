@@ -158,8 +158,22 @@ static void test_masks_follow_the_last_request(void)
     CHECK( ios_queue_status( &m.q ) );
 }
 
+/* spec 15 clarification 10b: the raw input sink's usage keys and report shapes */
+static void test_rawinput_sink_shapes(void)
+{
+    unsigned int count = 99, size = 99;
+
+    if (ios_rawinput_usage_key( 0x01, 0x05 ) != 0x00010005) { fprintf( stderr, "usage key game pad\n" ); failures++; }
+    if (ios_rawinput_usage_key( 0x01, 0x02 ) != 0x00010002) { fprintf( stderr, "usage key mouse\n" ); failures++; }
+    ios_rawinput_hid_shape( 15, &count, &size );
+    if (count != 1 || size != 15) { fprintf( stderr, "WM_INPUT shape\n" ); failures++; }
+    ios_rawinput_hid_shape( 0, &count, &size );
+    if (count != 0 || size != 0) { fprintf( stderr, "device change shape\n" ); failures++; }
+}
+
 int main(void)
 {
+    test_rawinput_sink_shapes();
     test_upstream_rules_show_the_hang();
     test_ios_rules_store_the_masks();
     test_pattern_many_times();

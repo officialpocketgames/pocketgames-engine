@@ -48,6 +48,7 @@
 #include "user.h"
 #ifdef WINE_IOS
 #include "ios_queue_pure.h"
+#include "ios_hidpad_rawinput.h"   /* spec 15's sink contract (out/15-controllers/server) */
 #endif
 
 #define QS_DRIVER       0x80000000
@@ -2213,6 +2214,71 @@ static void dispatch_rawinput_message( struct desktop *desktop, struct rawinput_
     LIST_FOR_EACH_ENTRY( process, &rawinput_processes, struct process, rawinput_entry )
         queue_rawinput_message( desktop, process, raw_msg );
 }
+
+#ifdef WINE_IOS
+/* Spec 15 clarification 10b (QUESTIONS 15-24): the raw input sink of spec 15's XInput slot
+ * devices (out/15-controllers/server/ios_hidpad_rawinput.h). Those devices are served by the
+ * server itself, so no hidclass sends their reports; spec 15's server library hands them here
+ * and they are queued as upstream queues hidclass's hardware messages (queue_custom_hardware_
+ * message): WM_INPUT to the processes that registered for the usage (RIDEV_INPUTSINK rules as
+ * upstream), WM_INPUT_DEVICE_CHANGE only to registrations with RIDEV_DEVNOTIFY. */
+
+/* Some process registered raw input for this usage. */
+static int ios_rawinput_wanted( unsigned short usage_page, unsigned short usage )
+{
+    unsigned int key = ios_rawinput_usage_key( usage_page, usage );
+    struct process *process;
+
+    LIST_FOR_EACH_ENTRY( process, &rawinput_processes, struct process, rawinput_entry )
+        if (find_rawinput_device( process, key )) return 1;
+    return 0;
+}
+
+static void ios_rawinput_send( unsigned int message, unsigned int wparam, unsigned int device,
+                               unsigned short usage_page, unsigned short usage,
+                               const void *report, unsigned int report_len )
+{
+    struct rawinput_message raw_msg = {0};
+    struct winstation *winstation;
+    struct desktop *desktop;
+    struct thread *foreground;
+    unsigned int count, size;
+
+    if (message != WM_INPUT && message != WM_INPUT_DEVICE_CHANGE) return;
+    if (!(winstation = get_visible_winstation())) return;
+    if (!(desktop = get_input_desktop( winstation ))) return;
+    if ((foreground = get_foreground_thread( desktop, 0 )))
+    {
+        ios_rawinput_hid_shape( report_len, &count, &size );
+        raw_msg.foreground       = foreground;
+        raw_msg.source.device    = IMDT_UNAVAILABLE;
+        raw_msg.source.origin    = IMO_HARDWARE;
+        raw_msg.time             = get_tick_count();
+        raw_msg.message          = message;
+        raw_msg.hid_report       = report;
+        raw_msg.rawinput.type    = RIM_TYPEHID;
+        raw_msg.rawinput.device  = device;
+        raw_msg.rawinput.wparam  = wparam;
+        raw_msg.rawinput.usage   = ios_rawinput_usage_key( usage_page, usage );
+        raw_msg.data.hid.dwCount   = count;
+        raw_msg.data.hid.dwSizeHid = size;
+        dispatch_rawinput_message( desktop, &raw_msg );
+        release_object( foreground );
+    }
+    release_object( desktop );
+}
+
+static const struct ios_rawinput_sink ios_rawinput_sink = { ios_rawinput_wanted, ios_rawinput_send };
+
+/* spec 15's server library, if linked (weak, as ios_hidpad_server_init) */
+extern void ios_hidpad_set_rawinput_sink( const struct ios_rawinput_sink *sink ) __attribute__((weak));
+
+/* Called once by main.c after ios_hidpad_server_init. */
+void ios_queue_install_rawinput_sink(void)
+{
+    if (ios_hidpad_set_rawinput_sink) ios_hidpad_set_rawinput_sink( &ios_rawinput_sink );
+}
+#endif
 
 /* queue a hardware message for a mouse event */
 static int queue_mouse_message( struct desktop *desktop, user_handle_t win, const union hw_input *input,
