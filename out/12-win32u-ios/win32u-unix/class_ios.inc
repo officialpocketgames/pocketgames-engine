@@ -67,11 +67,11 @@ static WNDPROC w32ios_proc_to_handle( WINDOWPROC *proc )
     return (WNDPROC)(ULONG_PTR)(index | (WINPROC_HANDLE << 16));
 }
 
-/* init_user for the session's first process, then remember that process (B4) */
+/* init_user for the session's first process, then mark that process's slot (B4, clarification 11) */
 static void w32ios_init_user( void )
 {
     init_user();
-    w32ios_set_session_process( ios_current_peb() );
+    w32ios_set_session_process();
 }
 
 static void w32ios_initialize_client_procs( const ntuser_client_func_ptr *client_procsA,

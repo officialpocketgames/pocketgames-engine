@@ -575,10 +575,20 @@ static void test_image_machine(void)
     CHECK( ios_image_fits_process( 0x8664, 0x8664, 0 ) );
     CHECK( ios_image_fits_process( 0x8664, 0xaa64, 1 ) );
     CHECK( !ios_image_fits_process( 0x8664, 0xaa64, 0 ) );
-    /* WoW64 and an unknown main image: upstream's rules */
-    CHECK( ios_image_fits_process( 0x014c, 0xaa64, 0 ) );
+    /* clarification 11 (a kept session's 32-bit game mapped the ARM64EC win32u.dll beside its
+     * ARM64 side): a WoW64 process refuses an x64-machine image with ARM64EC metadata */
+    CHECK( !ios_image_fits_process( 0x014c, 0x8664, 1 ) );
+    /* and keeps upstream's rules for plain x64, ARM64 (hybrid or not) and 32-bit images */
     CHECK( ios_image_fits_process( 0x014c, 0x8664, 0 ) );
+    CHECK( ios_image_fits_process( 0x014c, 0xaa64, 0 ) );
+    CHECK( ios_image_fits_process( 0x014c, 0xaa64, 1 ) );
+    CHECK( ios_image_fits_process( 0x014c, 0x014c, 0 ) );
+    /* a main image not known yet accepts every image */
     CHECK( ios_image_fits_process( 0, 0x8664, 0 ) );
+    CHECK( ios_image_fits_process( 0, 0x8664, 1 ) );
+    CHECK( ios_image_fits_process( 0, 0xaa64, 0 ) );
+    CHECK( ios_image_fits_process( 0, 0xaa64, 1 ) );
+    CHECK( ios_image_fits_process( 0, 0x014c, 0 ) );
     /* images that aren't 64-bit are left alone */
     CHECK( ios_image_fits_process( 0xaa64, 0x014c, 0 ) );
     CHECK( ios_image_fits_process( 0x8664, 0x014c, 0 ) );

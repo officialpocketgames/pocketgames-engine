@@ -203,6 +203,21 @@ static void test_farm(void)
     CHECK( !names_log_once( &logged, w, len ) );      /* a full table logs nothing more */
 }
 
+/* clarification 3: the machine rule of the 64-bit side of a WoW64 process */
+static void test_wow64_machine(void)
+{
+    /* in a WoW64 process: x64 and ARM64EC images (0x8664) refused, ARM64 and i386 not */
+    CHECK( names_wow64_refuses_machine( 1, 0x8664 ) );
+    CHECK( !names_wow64_refuses_machine( 1, 0xaa64 ) );
+    CHECK( !names_wow64_refuses_machine( 1, 0x014c ) );
+    CHECK( !names_wow64_refuses_machine( 1, 0x01c4 ) );   /* ARMNT: upstream's answer */
+    CHECK( !names_wow64_refuses_machine( 1, 0 ) );
+    /* outside a WoW64 process nothing is refused by this rule */
+    CHECK( !names_wow64_refuses_machine( 0, 0x8664 ) );
+    CHECK( !names_wow64_refuses_machine( 0, 0xaa64 ) );
+    CHECK( !names_wow64_refuses_machine( 0, 0x014c ) );
+}
+
 static void test_qpc(void)
 {
     const uint64_t f24 = 24000000, f1g = 1000000000;
@@ -349,6 +364,7 @@ int main(void)
 {
     test_names();
     test_farm();
+    test_wow64_machine();
     test_qpc();
     test_heap();
     return check_report( "misc" );

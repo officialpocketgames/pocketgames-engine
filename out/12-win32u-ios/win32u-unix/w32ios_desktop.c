@@ -7,7 +7,8 @@
 //    explorer.exe; none is ever started. Without a desktop window the answer is 0 and the next
 //    call asks again.
 //  - Only the session's first process ran init_user (window station, desktop, desktop and
-//    message window classes). A thread of another process that gets no desktop window: once per
+//    message window classes); its own slot is marked (clarification 11, w32ios_proc.c), and a
+//    slot's next owner starts unmarked. A thread of another process that gets no desktop window: once per
 //    process, register the desktop and message classes for its process and ask again; if the
 //    thread has no desktop at all, connect it the way winstation_init connects the session
 //    (WinSta0 and the default desktop, unless its process parameters name others) and ask once
@@ -42,14 +43,15 @@ static BOOL child_desktop_enabled( void )
     return enabled;
 }
 
-/* the session's first process isn't the caller's, and the caller's process hasn't tried yet */
+/* init_user ran in some process, not the caller's (clarification 11: the mark in the caller's own
+ * slot, never a PEB comparison), and the caller's process hasn't tried yet */
 static BOOL try_child_desktop( void )
 {
-    void *session = w32ios_session_peb();
-    struct w32ios_proc *proc;
+    struct w32ios_proc *proc = w32ios_proc_current();
 
-    if (!child_desktop_enabled() || !session || session == ios_current_peb()) return FALSE;
-    proc = w32ios_proc_current();
+    if (!w32ios_child_desktop_due( child_desktop_enabled(), w32ios_session_initialized(),
+                                   ReadAcquire( &proc->ran_init_user ), ReadAcquire( &proc->child_desktop_tried ) ))
+        return FALSE;
     return !InterlockedExchange( &proc->child_desktop_tried, 1 );
 }
 

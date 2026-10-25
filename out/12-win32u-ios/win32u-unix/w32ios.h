@@ -50,6 +50,8 @@ struct w32ios_proc
     LONG             builtins_owner;          /* thread id registering them now */
     /* B4: one try at a desktop window for a child process */
     LONG             child_desktop_tried;
+    /* B4, clarification 11: this process ran init_user (never set on the overflow slot) */
+    LONG             ran_init_user;
     /* the GDI handle table is attached to this process's PEB (w32ios_mem.c) */
     LONG             gdi_attached;
     /* C6: the registry GPU was written by this process */
@@ -111,9 +113,9 @@ struct w32ios_proc
 struct w32ios_proc *w32ios_proc_current( void );
 /* A session starts (w32ios_proc.c calls it): resets of the session-wide state of every Part. */
 void w32ios_session_start( void );
-/* Set when the session's first process finished init_user (B4); its PEB. */
-void w32ios_set_session_process( void *peb );
-void *w32ios_session_peb( void );
+/* Called by the process that finished init_user (B4): marks its own slot (clarification 11:
+ * a PEB address is reused after its process ends, so it never identifies that process). */
+void w32ios_set_session_process( void );
 BOOL w32ios_session_initialized( void );
 
 /* B1: the allocation ceiling of the calling thread (cached per thread). */

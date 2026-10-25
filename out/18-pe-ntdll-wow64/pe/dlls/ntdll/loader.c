@@ -2575,6 +2575,11 @@ static BOOL has_chpe_metadata( HANDLE file, const SECTION_IMAGE_INFORMATION *inf
 static BOOL is_valid_binary( HANDLE file, const SECTION_IMAGE_INFORMATION *info )
 {
     if (info->Machine == current_machine) return TRUE;
+#if defined(__aarch64__) && !defined(__arm64ec__)
+    /* MYIOSDECK (spec 18 clarification 3): an x64 or ARM64EC image can never run on the 64-bit
+     * side of a WoW64 process; refusing it lets the search go on to sysaa64 (clarification 1) */
+    if (names_wow64_refuses_machine( NtCurrentTeb()->WowTebOffset != 0, info->Machine )) return FALSE;
+#endif
     if (NtCurrentTeb()->WowTebOffset) return TRUE;
     /* support ARM64EC binaries on x86-64 */
     if (current_machine == IMAGE_FILE_MACHINE_AMD64 && has_chpe_metadata( file, info )) return TRUE;
@@ -2836,6 +2841,19 @@ static NTSTATUS open_known_dll( const WCHAR *libname, UNICODE_STRING *nt_name, W
         return STATUS_SUCCESS;
     }
     NtQuerySection( *mapping, SectionImageInformation, image_info, sizeof(*image_info), NULL );
+#if defined(__aarch64__) && !defined(__arm64ec__)
+    /* MYIOSDECK (spec 18 clarification 3): the same rule as is_valid_binary; the search goes on
+     * as if the name weren't in KnownDlls */
+    if (names_wow64_refuses_machine( NtCurrentTeb()->WowTebOffset != 0, image_info->Machine ))
+    {
+        TRACE( "known dll %s is for arch %x, continuing search\n", debugstr_us(nt_name), image_info->Machine );
+        NtClose( *mapping );
+        *mapping = 0;
+        RtlFreeUnicodeString( nt_name );
+        nt_name->Buffer = NULL;
+        return STATUS_DLL_NOT_FOUND;
+    }
+#endif
     memset( id, 0, sizeof(*id) );
     TRACE( "loaded %s from known dlls\n", debugstr_us(nt_name) );
     return STATUS_SUCCESS;

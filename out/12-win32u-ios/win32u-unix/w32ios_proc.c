@@ -32,7 +32,6 @@ static pthread_mutex_t table_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct w32ios_proc overflow_proc;
 static pthread_once_t overflow_once = PTHREAD_ONCE_INIT;
 
-static void *session_peb;
 static LONG session_ready;
 
 struct thread_cache
@@ -244,16 +243,16 @@ struct w32ios_proc *w32ios_proc_current( void )
     return proc;
 }
 
-void w32ios_set_session_process( void *peb )
+/* Clarification 11: the mark lives in the caller's own slot, which a later process taking the
+ * slot gets written fresh (init_proc), so it never passes on with a reused PEB address. */
+void w32ios_set_session_process( void )
 {
-    session_peb = peb;
-    WriteRelease( &session_ready, 1 );
-    w32ios_log( "session's first process initialised win32u (PEB %p)", peb );
-}
+    struct w32ios_proc *proc = w32ios_proc_current();
 
-void *w32ios_session_peb( void )
-{
-    return ReadAcquire( &session_ready ) ? session_peb : NULL;
+    if (proc != &overflow_proc) WriteRelease( &proc->ran_init_user, 1 );
+    WriteRelease( &session_ready, 1 );
+    w32ios_log( "session's first process %04x initialised win32u (PEB %p)",
+                (unsigned int)GetCurrentProcessId(), ios_current_peb() );
 }
 
 BOOL w32ios_session_initialized( void )

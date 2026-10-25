@@ -389,7 +389,8 @@ int ios_image_fits_process( unsigned short main_machine, unsigned short image_ma
     {
     case 0xaa64: return image_machine == 0xaa64;                         /* plain ARM64 */
     case 0x8664: return image_machine == 0x8664 || is_hybrid;            /* x64 (ARM64EC) */
-    default:     return 1;                                               /* WoW64, not known */
+    case 0x014c: return !(image_machine == 0x8664 && is_hybrid);         /* WoW64: no ARM64EC (cl. 11) */
+    default:     return 1;                                               /* not known */
     }
 }
 

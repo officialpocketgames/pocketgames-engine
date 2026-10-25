@@ -172,8 +172,9 @@ int ios_image_takes_dylib( int wine_builtin_marker, int loaded_as_builtin, unsig
  * main_machine: the process's main image (0x8664 x64, 0xaa64 plain ARM64, 0x014c WoW64, 0 not
  * known yet); image_machine and is_hybrid (ARM64X/CHPE metadata) from the image's information.
  * A plain ARM64 process takes only 0xaa64 images; an x64 process 0x8664 images (the ARM64EC
- * builds) and 0xaa64 images that are hybrid. Anything else (a WoW64 process, an unknown main
- * image, an image that isn't 64-bit) is left to upstream. Returns 1 when the image may be
+ * builds) and 0xaa64 images that are hybrid. A WoW64 process refuses 0x8664 images that are
+ * hybrid (ARM64EC, clarification 11) and leaves the rest to upstream. Anything else (an unknown
+ * main image, an image that isn't 64-bit) is left to upstream. Returns 1 when the image may be
  * mapped, 0 to refuse it with STATUS_INVALID_IMAGE_FORMAT. */
 int ios_image_fits_process( unsigned short main_machine, unsigned short image_machine, int is_hybrid );
 

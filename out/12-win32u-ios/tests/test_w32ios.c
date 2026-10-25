@@ -419,6 +419,80 @@ static int fake_is_dead( void *peb, uint32_t pid, void *ctx )
     return dead_slot >= 0 && peb == slot_pebs[dead_slot];
 }
 
+/* clarification 11: the B4 state of each slot, written fresh when a process takes the slot (as
+ * init_proc does), and the rule B4 applies to it */
+struct b4_slot { int ran_init_user, tried; };
+static struct w32ios_pp_table b4_table;
+static struct b4_slot b4_slots[W32IOS_PP_SLOTS];
+
+static int b4_take( void *peb, uint32_t pid )
+{
+    int reuse, index = w32ios_pp_pick( &b4_table, peb, pid, NULL, NULL, &reuse );
+
+    if (index >= 0 && !reuse)
+    {
+        w32ios_pp_begin( &b4_table, index );
+        memset( &b4_slots[index], 0, sizeof(b4_slots[index]) );
+        w32ios_pp_publish( &b4_table, index, peb, pid );
+    }
+    return index;
+}
+
+/* a thread of the slot's process finds no desktop window: does B4 run now? */
+static int b4_miss( int index, int enabled, int initialized )
+{
+    struct b4_slot *slot = &b4_slots[index];
+
+    if (!w32ios_child_desktop_due( enabled, initialized, slot->ran_init_user, slot->tried )) return 0;
+    slot->tried = 1;
+    return 1;
+}
+
+static void test_init_user_mark( void )
+{
+    char pebs[W32IOS_PP_SLOTS + 2], *P = &pebs[0];
+    int a, b, c, i;
+
+    memset( &b4_table, 0, sizeof(b4_table) );
+
+    /* nothing before init_user has run anywhere */
+    a = b4_take( P, 0x20 );
+    CHECK( !b4_miss( a, 1, 0 ) );
+
+    /* A runs init_user: its slot is marked, B4 never runs for it */
+    b4_slots[a].ran_init_user = 1;
+    CHECK( !b4_miss( a, 1, 1 ) );
+    CHECK( !b4_miss( a, 1, 1 ) );
+
+    /* A ends; B lands on the same PEB with id 0x140: unmarked, B4 runs once */
+    b = b4_take( P, 0x140 );
+    CHECK( b >= 0 && !b4_slots[b].ran_init_user );
+    CHECK( b4_miss( b, 1, 1 ) );
+    CHECK( !b4_miss( b, 1, 1 ) );          /* a second miss doesn't repeat it */
+
+    /* C with another PEB behaves as B */
+    c = b4_take( &pebs[1], 0x150 );
+    CHECK( c >= 0 && c != a );
+    CHECK( b4_miss( c, 1, 1 ) );
+    CHECK( !b4_miss( c, 1, 1 ) );
+
+    /* PG_CHILD_DESKTOP=0: nothing for an unmarked process */
+    memset( &b4_slots[c], 0, sizeof(b4_slots[c]) );
+    CHECK( !b4_miss( c, 0, 1 ) );
+
+    /* a full table: the later process at A's PEB takes A's own slot, written fresh */
+    memset( &b4_table, 0, sizeof(b4_table) );
+    a = b4_take( P, 0x20 );
+    b4_slots[a].ran_init_user = 1;
+    for (i = 1; i < W32IOS_PP_SLOTS; i++) b4_take( &pebs[i + 1], 0x1000 + i );
+    b = b4_take( P, 0x140 );
+    CHECK_EQ( b, a );
+    CHECK( !b4_slots[b].ran_init_user );   /* the mark didn't pass on */
+    CHECK( b4_miss( b, 1, 1 ) );
+    CHECK( !b4_miss( b, 1, 1 ) );
+    CHECK( !b4_miss( b, 0, 1 ) );
+}
+
 static void test_pp_table( void )
 {
     static struct w32ios_pp_table table;
@@ -811,6 +885,7 @@ int main( void )
     test_slicing();
     test_rects();
     test_pp_table();
+    test_init_user_mark();
     test_client_procs();
     test_builtin_action();
     test_ceiling();

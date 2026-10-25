@@ -8330,7 +8330,8 @@ static void ios_log_refused_image( const UNICODE_STRING *nt_name, USHORT machine
                                 ARRAY_SIZE(proc->refused_images) )) return;
     ios_log( "[nojit] %s: machine %04x doesn't fit this %s process; refused\n",
              *ios_file_part( name ) ? ios_file_part( name ) : "(image)", machine,
-             main_image_info.Machine == IMAGE_FILE_MACHINE_AMD64 ? "x64" : "arm64" );
+             main_image_info.Machine == IMAGE_FILE_MACHINE_AMD64 ? "x64" :
+             main_image_info.Machine == IMAGE_FILE_MACHINE_I386 ? "32-bit" : "arm64" );  /* cl. 11 */
 }
 
 /* clarification 9: a native file with a builtin's name is mapped from its file */

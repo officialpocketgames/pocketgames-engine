@@ -116,6 +116,11 @@ int w32ios_is_session_root( int queried, uint64_t parent_pid )
     return queried && !parent_pid;
 }
 
+int w32ios_child_desktop_due( int enabled, int initialized, int slot_ran_init_user, int slot_tried )
+{
+    return enabled && initialized && !slot_ran_init_user && !slot_tried;
+}
+
 uint64_t w32ios_ceiling( int wow64, uint64_t highest_user_address )
 {
     if (!wow64) return 0;

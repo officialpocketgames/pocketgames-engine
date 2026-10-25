@@ -56,6 +56,12 @@ void w32ios_pp_publish( struct w32ios_pp_table *table, int index, void *peb, uin
  * then it is not taken for a new session. */
 int w32ios_is_session_root( int queried, uint64_t parent_pid );
 
+/* B4 / clarification 11: whether a thread that found no desktop window should register the
+ * desktop classes (and connect) for its process: B4 is on (PG_CHILD_DESKTOP), init_user has run
+ * in some process, the caller's own slot isn't marked as the one that ran it, and its process
+ * hasn't tried yet. */
+int w32ios_child_desktop_due( int enabled, int initialized, int slot_ran_init_user, int slot_tried );
+
 /* B1: the allocation ceiling of a thread. A WoW64 thread gets the guest ceiling OR 0x7fffffff;
  * every other thread 0. */
 uint64_t w32ios_ceiling( int wow64, uint64_t highest_user_address );

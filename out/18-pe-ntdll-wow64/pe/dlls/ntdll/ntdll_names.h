@@ -8,6 +8,7 @@
  *   H6  the path in the other 64-bit farm: \??\C:\windows\sysx64\<base name>[.dll]
  *   clarification 1: the same for the aarch64 build, \??\C:\windows\sysaa64\<base name>[.dll],
  *       logged once per DLL name
+ *   clarification 3: the 64-bit side of a WoW64 process refuses 0x8664 images
  */
 
 #ifndef MYIOSDECK_NTDLL_NAMES_H
@@ -142,6 +143,17 @@ static inline int names_log_once( struct names_logged *set, const unsigned short
     if (set->count == NAMES_LOGGED_MAX) return 0;
     set->hashes[set->count++] = hash;
     return 1;
+}
+
+/* clarification 3 (aarch64 build): the 64-bit side of a WoW64 process runs only ARM64 code, so
+ * an IMAGE_FILE_MACHINE_AMD64 image (x64 and ARM64EC alike) is refused there; every other
+ * machine, and every image outside a WoW64 process, keeps upstream's answer. Used by
+ * is_valid_binary and open_known_dll. */
+#define NAMES_MACHINE_AMD64 0x8664
+
+static inline int names_wow64_refuses_machine( int wow64_process, unsigned short machine )
+{
+    return wow64_process && machine == NAMES_MACHINE_AMD64;
 }
 
 #endif /* MYIOSDECK_NTDLL_NAMES_H */
