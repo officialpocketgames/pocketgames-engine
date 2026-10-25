@@ -3,9 +3,11 @@
 //
 // Spec 15 clarification 9: the diagnostic counters every reader path uses. Each path logs its
 // first few events in full, then one count per 5 s window while events keep coming. Plain C,
-// header only, no Wine headers: the Windows-side DLLs of this part include it from pe/include,
-// the server from ../pe/include, and the host test tests/test_diag.c runs it. Diagnostics only:
-// nothing here changes what a reader gets.
+// header only, no Wine headers. This copy (hidpad/) is the one the server and the host test
+// tests/test_diag.c use; the Windows-side DLLs carry identical copies in their own folders
+// (pe/dlls/dinput, pe/dlls/xinput1_3, pe/dlls/windows.gaming.input), because Wine's makedep
+// finds a header of include/ only when include/Makefile.in lists it. run-host-tests.sh fails
+// when a copy differs. Diagnostics only: nothing here changes what a reader gets.
 
 #ifndef MYIOSDECK_IOS_DIAG_H
 #define MYIOSDECK_IOS_DIAG_H

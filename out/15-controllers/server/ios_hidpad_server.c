@@ -44,7 +44,7 @@
 #include "ios_hidpad_request.h"
 #include "ios_hidpad_pnp.h"
 #include "ios_hidpad_rawinput.h"
-#include "../pe/include/ios_diag.h"
+#include "ios_diag.h"
 
 /* The request rules (hidpad/ios_hidpad_request.c) carry their own copies of these values so
  * they can be tested without Wine's headers; they must match Wine's. */

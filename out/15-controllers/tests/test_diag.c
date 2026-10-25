@@ -2,7 +2,7 @@
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 15 clarification 9f: the diagnostic counters every reader path uses
-// (pe/include/ios_diag.h: the first few events in full, then a count per 5 s window; the
+// (hidpad/ios_diag.h and its copies in pe/dlls: the first few events in full, then a count per 5 s window; the
 // server's summary period), and the server's IOCTL names and tally
 // (hidpad/ios_hidpad_request.c).
 

@@ -36,8 +36,23 @@ run test_hidpad $cc $flags -o "$build/test_hidpad" "$here/test_hidpad.c" "$top/h
 run test_regplan $cc $flags -I"$top/ntdll" -o "$build/test_regplan" "$here/test_regplan.c" \
     "$top/ntdll/ios_hidpad_regplan.c" "$top/hidpad/ios_hidpad.c" "$top/hidpad/ios_hidpad_xinput.c"
 run test_dinput_ios $cc $flags -I"$top/pe/dlls/dinput" -o "$build/test_dinput_ios" "$here/test_dinput_ios.c" -lm
-run test_diag $cc $flags -I"$top/pe/include" -I"$top/server" -o "$build/test_diag" "$here/test_diag.c" \
+run test_diag $cc $flags -I"$top/server" -o "$build/test_diag" "$here/test_diag.c" \
     "$top/hidpad/ios_hidpad_request.c" "$top/hidpad/ios_hidpad.c" "$top/hidpad/ios_hidpad_xinput.c"
+# clarification 9: the DLLs carry copies of hidpad/ios_diag.h (makedep doesn't see new headers in
+# include/); every copy must be the same file. And pe/include holds only headers upstream has.
+for copy in "$top"/pe/dlls/dinput/ios_diag.h "$top"/pe/dlls/xinput1_3/ios_diag.h "$top"/pe/dlls/windows.gaming.input/ios_diag.h; do
+    if ! cmp -s "$top/hidpad/ios_diag.h" "$copy"; then
+        echo "FAILED: $copy differs from hidpad/ios_diag.h" >&2
+        status=1
+    fi
+done
+for header in "$top"/pe/include/*.h; do
+    [ -f "$header" ] || continue
+    if [ ! -f "$wine/include/$(basename "$header")" ] && [ -d "$wine/include" ]; then
+        echo "FAILED: pe/include/$(basename "$header") is not an upstream header (makedep won't find it)" >&2
+        status=1
+    fi
+done
 
 if [ -f "$wine/dlls/hidparse.sys/main.c" ] && [ -f "$wine/include/wine/hid.h" ]; then
     # Wine's headers, compiled by a native compiler as Wine's own unix-side code is
