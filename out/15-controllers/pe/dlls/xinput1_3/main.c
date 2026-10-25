@@ -52,6 +52,7 @@
 #include "wine/debug.h"
 
 #include "xinput_keystroke.h"
+#include "ios_diag.h"
 
 DEFINE_GUID(GUID_DEVINTERFACE_WINEXINPUT,0x6c53d5fd,0x6480,0x440f,0xb6,0x18,0x47,0x67,0x50,0xc5,0xe1,0xa6);
 
@@ -147,6 +148,35 @@ static CRITICAL_SECTION host_crit = { &host_crit_debug, -1, 0, 0, 0, 0 };
 #define XINPUT_HOST_LOCK() EnterCriticalSection(&host_crit)
 #define XINPUT_HOST_UNLOCK() LeaveCriticalSection(&host_crit)
 #include "xinput_host.h"
+
+/* MYIOSDECK (spec 15 clarification 9e): whether and how the game polls XInput. The first 3
+ * XInputGetState / XInputGetStateEx calls per user index with their result, then a count per
+ * 5 s while it keeps polling. Diagnostics only. */
+static struct ios_diag get_state_diag[2][XUSER_MAX_COUNT];
+
+static void diag_get_state(int ex, DWORD index, DWORD ret, const XINPUT_STATE *state)
+{
+    static const char *const names[2] = { "XInputGetState", "XInputGetStateEx" };
+    ULONGLONG now = GetTickCount64();
+    uint64_t elapsed;
+    uint32_t n;
+
+    if (index >= XUSER_MAX_COUNT) return;
+    n = ios_diag_event(&get_state_diag[ex][index], now);
+    if (n <= 3)
+    {
+        if (ret == ERROR_SUCCESS)
+            MESSAGE("[xinput] %s(%lu) call %u: success, packet %lu, buttons %#x, LX %d LY %d RX %d RY %d, LT %u RT %u\n",
+                    names[ex], index, n, state->dwPacketNumber, state->Gamepad.wButtons,
+                    state->Gamepad.sThumbLX, state->Gamepad.sThumbLY, state->Gamepad.sThumbRX,
+                    state->Gamepad.sThumbRY, state->Gamepad.bLeftTrigger, state->Gamepad.bRightTrigger);
+        else
+            MESSAGE("[xinput] %s(%lu) call %u: error %lu\n", names[ex], index, n, ret);
+    }
+    if ((n = ios_diag_due(&get_state_diag[ex][index], now, &elapsed)))
+        MESSAGE("[xinput] %s(%lu): %u calls in %u ms, last %s\n", names[ex], index, n, (unsigned int)elapsed,
+                ret == ERROR_SUCCESS ? "success" : "an error");
+}
 
 static BOOL find_opened_device(const WCHAR *device_path, int *free_slot)
 {
@@ -903,19 +933,28 @@ DWORD WINAPI DECLSPEC_HOTPATCH XInputGetState(DWORD index, XINPUT_STATE *state)
     TRACE("index %lu, state %p.\n", index, state);
 
     ret = xinput_get_state(index, state);
-    if (ret != ERROR_SUCCESS) return ret;
+    if (ret != ERROR_SUCCESS)
+    {
+        diag_get_state(0, index, ret, state);   /* MYIOSDECK (clarification 9e) */
+        return ret;
+    }
 
     /* The main difference between this and the Ex version is the media guide button */
     state->Gamepad.wButtons &= ~XINPUT_GAMEPAD_GUIDE;
 
+    diag_get_state(0, index, ERROR_SUCCESS, state);   /* MYIOSDECK (clarification 9e) */
     return ERROR_SUCCESS;
 }
 
 DWORD WINAPI DECLSPEC_HOTPATCH XInputGetStateEx(DWORD index, XINPUT_STATE *state)
 {
+    DWORD ret;
+
     TRACE("index %lu, state %p.\n", index, state);
 
-    return xinput_get_state(index, state);
+    ret = xinput_get_state(index, state);
+    diag_get_state(1, index, ret, state);   /* MYIOSDECK (clarification 9e) */
+    return ret;
 }
 
 /* MYIOSDECK (spec 15 Part D4): the edge detector is xinput_keystroke.h, shared with the host

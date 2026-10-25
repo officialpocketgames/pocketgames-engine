@@ -44,6 +44,7 @@
 #include "ios_hidpad_request.h"
 #include "ios_hidpad_pnp.h"
 #include "ios_hidpad_rawinput.h"
+#include "../pe/include/ios_diag.h"
 
 /* The request rules (hidpad/ios_hidpad_request.c) carry their own copies of these values so
  * they can be tested without Wine's headers; they must match Wine's. */
@@ -108,6 +109,12 @@ struct pad_device
     /* clarification 8c: raw input */
     int rawinput_have;
     uint32_t rawinput_packet;
+    /* clarification 9a: what readers do with a slot device, summed per 5 s while it is open */
+    uint64_t diag_start_ms;
+    uint32_t diag_reads, diag_read_now, diag_read_waited, diag_read_lost;
+    struct ios_hidpad_tally diag_ioctls;
+    uint32_t diag_wm_input;                 /* WM_INPUT sent, this window */
+    uint32_t diag_wm_input_total;           /* and since the start (the first 3 logged) */
 };
 
 static struct pad_device hidpad = { .slot = -1 };
@@ -130,7 +137,14 @@ struct hidpad_file
     struct ios_hidpad_handle requests;      /* per-handle state of the request rules: input
                                                buffers, B3 pacing, lost (QUESTIONS 15-22) */
     int                 lost_logged;
+    uint32_t            diag_ioctls;        /* clarification 9a: IOCTLs on this handle (first 8 logged) */
+    uint32_t            diag_reads;         /* reports delivered on this handle (first 3 logged) */
 };
+
+/* Clarification 9a: the first IOCTLs of a handle and the first reports it gets, in full. */
+#define DIAG_IOCTLS_LOGGED 8
+#define DIAG_READS_LOGGED  3
+#define DIAG_WM_INPUT_LOGGED 3
 
 static uint64_t now_us(void)
 {
@@ -173,6 +187,85 @@ static const char *dev_tag( const struct pad_device *dev )
 {
     static const char *const tags[IOS_HIDPAD_SLOTS] = { "xinput-slot0", "xinput-slot1", "xinput-slot2", "xinput-slot3" };
     return dev->slot < 0 ? "hid-pad" : tags[dev->slot];
+}
+
+/* ---- clarification 9a: diagnostics of the slot devices ----------------------------------- */
+
+static uint64_t now_ms(void)
+{
+    return now_us() / 1000;
+}
+
+/* A report delivered on a slot device's handle (`waited`: by the device clock). */
+static void diag_read( struct hidpad_file *file, const uint8_t *report, data_size_t len, int waited )
+{
+    struct pad_device *dev = file->dev;
+    char hex[3 * 16 + 1];
+    data_size_t i;
+
+    if (dev->slot < 0) return;
+    if (waited) dev->diag_read_waited++;
+    else dev->diag_read_now++;
+    if (++file->diag_reads > DIAG_READS_LOGGED) return;
+    for (i = 0; i < len && i < 16; i++) snprintf( hex + 3 * i, 4, "%02x ", report[i] );
+    hex[3 * i] = 0;
+    ws_log( "[%s] handle %p read %u: %u bytes%s: %s", dev_tag( dev ), file, (unsigned int)file->diag_reads,
+            (unsigned int)len, waited ? " (after a wait)" : "", hex );
+}
+
+/* An IOCTL answered on a slot device's handle. */
+static void diag_ioctl( struct hidpad_file *file, ioctl_code_t code, data_size_t in_size,
+                        data_size_t out_size, const struct ios_hidpad_reply *reply )
+{
+    struct pad_device *dev = file->dev;
+    const char *name;
+
+    if (dev->slot < 0) return;
+    ios_hidpad_tally_add( &dev->diag_ioctls, code );
+    if (++file->diag_ioctls > DIAG_IOCTLS_LOGGED) return;
+    name = ios_hidpad_ioctl_name( code );
+    ws_log( "[%s] handle %p ioctl %u: %s %#x, in %u, out %u: status %#x, %u bytes", dev_tag( dev ), file,
+            (unsigned int)file->diag_ioctls, name ? name : "code", (unsigned int)code, (unsigned int)in_size,
+            (unsigned int)out_size, (unsigned int)reply->status, (unsigned int)reply->information );
+}
+
+/* Every 5 s while a slot device has open handles (from the store poller), one line: how often
+ * it was read and how, which IOCTLs it got, how many WM_INPUT it sent. Logged with zero reads
+ * too: "opened but never read" is what this is for. */
+static void diag_summary( struct pad_device *dev )
+{
+    char ioctls[256];
+    struct hidpad_file *file;
+    unsigned int handles = 0, i;
+    size_t len = 0;
+
+    LIST_FOR_EACH_ENTRY( file, &dev->files, struct hidpad_file, entry ) handles++;
+    if (!handles)
+    {
+        dev->diag_start_ms = 0;
+        return;
+    }
+    if (!ios_diag_period( &dev->diag_start_ms, now_ms() )) return;
+
+    ioctls[0] = 0;
+    for (i = 0; i < dev->diag_ioctls.used && len < sizeof(ioctls) - 64; i++)
+    {
+        const char *name = ios_hidpad_ioctl_name( dev->diag_ioctls.code[i] );
+        len += snprintf( ioctls + len, sizeof(ioctls) - len, "%s%s%s%#x x%u", len ? ", " : "",
+                         name ? name + 6 : "", name ? " " : "", (unsigned int)dev->diag_ioctls.code[i],
+                         (unsigned int)dev->diag_ioctls.count[i] );
+    }
+    if (dev->diag_ioctls.other && len < sizeof(ioctls) - 32)
+        snprintf( ioctls + len, sizeof(ioctls) - len, "%sother x%u", len ? ", " : "", (unsigned int)dev->diag_ioctls.other );
+
+    ws_log( "[%s] 5 s: %u handles, %u reads (%u.%u/s): %u at once, %u after a wait, %u lost; IOCTLs: %s; WM_INPUT %u",
+            dev_tag( dev ), handles, (unsigned int)dev->diag_reads, (unsigned int)(dev->diag_reads / 5),
+            (unsigned int)(dev->diag_reads * 2 % 10), (unsigned int)dev->diag_read_now,
+            (unsigned int)dev->diag_read_waited, (unsigned int)dev->diag_read_lost,
+            ioctls[0] ? ioctls : "none", (unsigned int)dev->diag_wm_input );
+    dev->diag_reads = dev->diag_read_now = dev->diag_read_waited = dev->diag_read_lost = 0;
+    dev->diag_wm_input = 0;
+    memset( &dev->diag_ioctls, 0, sizeof(dev->diag_ioctls) );
 }
 
 /* ---- the device objects ----------------------------------------------------------------- */
@@ -303,6 +396,8 @@ static struct object *hidpad_device_open_file( struct object *obj, unsigned int 
 
     file->dev = dev;
     file->lost_logged = 0;
+    file->diag_ioctls = 0;
+    file->diag_reads = 0;
     ios_hidpad_handle_init( &file->requests );
     init_async_queue( &file->read_q );
     list_add_tail( &dev->files, &file->entry );
@@ -449,6 +544,7 @@ static void hidpad_tick( void *private )
         len = ios_hidpad_read_report( &dev->requests, &file->requests, &pad, now_us(), report );
         async_request_complete_alloc( async, STATUS_SUCCESS, len, len, report );
         release_object( async );
+        diag_read( file, report, len, 1 );
         if (has_waiting_read( file )) waiting = 1;
     }
     if (waiting) start_tick( dev );
@@ -468,8 +564,12 @@ static void hidpad_file_read( struct fd *fd, struct async *async, file_pos_t pos
     struct pgios_hidpad pad;
 
     release_object( iosb );
+    if (dev->slot >= 0) dev->diag_reads++;
     if (size < dev->desc.input_len)
     {
+        if (dev->slot >= 0 && file->diag_reads < DIAG_READS_LOGGED)
+            ws_log( "[%s] handle %p read refused: buffer %u bytes, a report is %u", dev_tag( dev ), file,
+                    (unsigned int)size, (unsigned int)dev->desc.input_len );
         set_error( STATUS_INVALID_BUFFER_SIZE );
         return;
     }
@@ -478,12 +578,14 @@ static void hidpad_file_read( struct fd *fd, struct async *async, file_pos_t pos
     switch (ios_hidpad_read_decide( &dev->requests, &file->requests, &pad, has_waiting_read( file ), now_us() ))
     {
     case IOS_HIDPAD_READ_LOST:
+        if (dev->slot >= 0) dev->diag_read_lost++;
         lose_handle( file );
         set_error( STATUS_DEVICE_NOT_CONNECTED );
         return;
     case IOS_HIDPAD_READ_NOW:
         len = ios_hidpad_read_report( &dev->requests, &file->requests, &pad, now_us(), report );
         complete( async, STATUS_SUCCESS, len, report, len );
+        diag_read( file, report, len, 0 );
         return;
     case IOS_HIDPAD_READ_WAIT:
         break;
@@ -594,6 +696,7 @@ static void hidpad_file_ioctl( struct fd *fd, ioctl_code_t code, struct async *a
     sample_device( file->dev, &pad );
     ios_hidpad_ioctl( &file->dev->requests, &file->requests, code, iosb->in_data, iosb->in_size,
                       iosb->out_size, &pad, now_us(), &reply );
+    diag_ioctl( file, code, iosb->in_size, iosb->out_size, &reply );
     if (file->requests.lost) lose_handle( file );
     finish_request( file->dev, async, iosb->in_data, &reply );
     release_object( iosb );
@@ -649,6 +752,12 @@ static void rawinput_tick( void *private )
         len = ios_hidpad_build_xinput_input( &pad, report );
         rawinput.sink->send( IOS_RAWINPUT_WM_INPUT, 0, dev->requests.rawinput_handle, 0x01, 0x05,
                              report, (unsigned int)len );
+        /* clarification 9b: the first WM_INPUT of each slot, then the 5 s summary's count */
+        dev->diag_wm_input++;
+        if (++dev->diag_wm_input_total <= DIAG_WM_INPUT_LOGGED)
+            ws_log( "[%s] WM_INPUT %u sent: device %#x, %u bytes, packet %u", dev_tag( dev ),
+                    (unsigned int)dev->diag_wm_input_total, (unsigned int)dev->requests.rawinput_handle,
+                    (unsigned int)len, (unsigned int)pad.packet );
     }
     rawinput_start();
 }
@@ -887,6 +996,19 @@ static void pnp_poll( void *private )
     if (hidpad.enabled && !sample.hid_present) lose_handles( &hidpad );
     for (i = 0; i < IOS_PNP_SLOTS; i++)
         if (slots[i].enabled && !sample.slot[i]) lose_handles( &slots[i] );
+
+    /* clarification 9: the 5 s summaries, and once whether raw input can be sent at all */
+    for (i = 0; i < IOS_PNP_SLOTS; i++)
+    {
+        static int no_sink_logged;
+        if (!slots[i].enabled) continue;
+        diag_summary( &slots[i] );
+        if (sample.slot[i] && !rawinput.sink && !no_sink_logged)
+        {
+            no_sink_logged = 1;
+            ws_log( "[xinput-slots] no raw input sink installed: no WM_INPUT for the slot devices (QUESTIONS 15-24)" );
+        }
+    }
 
     rawinput_start();
     pnp.timer = add_timeout_user( -(timeout_t)IOS_PNP_POLL_US * 10, pnp_poll, NULL );

@@ -174,6 +174,23 @@ int w32ios_key_extended( unsigned int vk, unsigned int scan_ex, int nav_e0 );
 /* E1: log the first few events and every 256th. */
 int w32ios_log_event( unsigned int count );
 
+/* Spec 15 clarification 9b (raw input diagnostics): the first few events of a kind are logged in
+ * full, then one count per 5 s window while they keep coming. w32ios_diag_event counts one event
+ * at now_ms and returns its number (1-based); w32ios_diag_due returns the window's count when it
+ * has lasted W32IOS_DIAG_WINDOW_MS and had events (and starts the next window), else 0. */
+struct w32ios_diag
+{
+    unsigned int total;
+    unsigned int window;
+    uint64_t window_start;
+};
+#define W32IOS_DIAG_WINDOW_MS 5000
+unsigned int w32ios_diag_event( struct w32ios_diag *d, uint64_t now_ms );
+unsigned int w32ios_diag_due( struct w32ios_diag *d, uint64_t now_ms );
+/* The XInput slot (0-3) whose HID device spec 15 clarification 8 serves under raw input handle
+ * 0x101 + slot with VID/PID 045E:028E, or -1 for any other device. */
+int w32ios_rawinput_slot( unsigned int handle, unsigned int vendor, unsigned int product );
+
 /* E2: the deadline of the next slice of a message wait. Times in 100 ns units. has_deadline = 0
  * for a wait without timeout. *final is 1 when the slice ends at the caller's own deadline, so a
  * timeout there is the caller's timeout. */

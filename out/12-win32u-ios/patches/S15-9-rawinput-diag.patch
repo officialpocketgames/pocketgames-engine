@@ -1,0 +1,121 @@
+Spec 15 clarification 9b: raw input diagnostics for the XInput slot devices of spec 15
+clarification 8 (rawinput_ios.inc): each RegisterRawInputDevices entry (the first 16), each
+GetRawInputDeviceList (the first 8, naming the slot devices listed, then a count per 5 s), and the
+first GetRawInputData and GetRawInputBuffer calls (then counts). Diagnostics only.
+
+--- a/dlls/win32u/rawinput.c
++++ b/dlls/win32u/rawinput.c
+@@ -4,6 +4,8 @@
+  * Copyright 2012 Henri Verbeet
+  * Copyright 2018 Zebediah Figura for CodeWeavers
+  *
++ * Changed for MYIOSDECK (iOS, spec 15 clarification 9b): see out/12-win32u-ios/CHANGES.md
++ *
+  * This library is free software; you can redistribute it and/or
+  * modify it under the terms of the GNU Lesser General Public
+  * License as published by the Free Software Foundation; either
+@@ -66,6 +68,11 @@
+ static struct list devices = LIST_INIT( devices );
+ static pthread_mutex_t rawinput_mutex = PTHREAD_MUTEX_INITIALIZER;
+ 
++#ifdef WINE_IOS
++#include "w32ios.h"
++#include "rawinput_ios.inc"   /* spec 15 clarification 9b: diagnostics */
++#endif
++
+ static struct device *add_device( HKEY key, DWORD type )
+ {
+     static const WCHAR symbolic_linkW[] = {'S','y','m','b','o','l','i','c','L','i','n','k',0};
+@@ -328,6 +335,10 @@
+ {
+     unsigned int count = 0;
+     struct device *device;
++#ifdef WINE_IOS
++    BOOL with_list = device_list != NULL;
++    unsigned int slots = 0;
++#endif
+ 
+     TRACE( "device_list %p, device_count %p, size %u.\n", device_list, device_count, size );
+ 
+@@ -349,12 +360,21 @@
+ 
+     LIST_FOR_EACH_ENTRY( device, &devices, struct device, entry )
+     {
++#ifdef WINE_IOS
++        int slot = device->info.dwType != RIM_TYPEHID ? -1 :
++                   w32ios_rawinput_slot( HandleToUlong( device->handle ), device->info.hid.dwVendorId,
++                                         device->info.hid.dwProductId );
++        if (slot >= 0) slots |= 1u << slot;
++#endif
+         if (*device_count < ++count || !device_list) continue;
+         device_list->hDevice = device->handle;
+         device_list->dwType = device->info.dwType;
+         device_list++;
+     }
+ 
++#ifdef WINE_IOS
++    w32ios_diag_device_list( count, slots, with_list );
++#endif
+     pthread_mutex_unlock( &rawinput_mutex );
+ 
+     if (!device_list)
+@@ -474,6 +494,10 @@
+     if (NtCurrentTeb()->WowTebOffset) header_size = sizeof(RAWINPUTHEADER64);
+ 
+     thread_info = get_user_thread_info();
++#ifdef WINE_IOS
++    {
++        UINT asked = *data_size;
++#endif
+     SERVER_START_REQ( get_rawinput_buffer )
+     {
+         req->header_size = header_size;
+@@ -484,6 +508,10 @@
+         if (reply->count) thread_info->client_info.message_time = reply->time;
+     }
+     SERVER_END_REQ;
++#ifdef WINE_IOS
++        w32ios_diag_get_buffer( data != NULL, asked, *data_size, count );
++    }
++#endif
+ 
+     return count;
+ }
+@@ -519,11 +547,17 @@
+     if (!data)
+     {
+         *data_size = sizeof(RAWINPUTHEADER) + size;
++#ifdef WINE_IOS
++        w32ios_diag_get_data( command, 0, *data_size );
++#endif
+         return 0;
+     }
+ 
+     if (*data_size < sizeof(RAWINPUTHEADER) + size)
+     {
++#ifdef WINE_IOS
++        w32ios_diag_get_data( command, *data_size, -1 );
++#endif
+         RtlSetLastWin32Error( ERROR_INSUFFICIENT_BUFFER );
+         return -1;
+     }
+@@ -557,6 +591,9 @@
+         goto failed;
+     }
+ 
++#ifdef WINE_IOS
++    w32ios_diag_get_data( command, *data_size, rawinput->header.dwSize );
++#endif
+     return rawinput->header.dwSize;
+ 
+ failed:
+@@ -678,6 +715,9 @@
+     {
+         TRACE( "device %u: page %#x, usage %#x, flags %#x, target %p.\n", i, devices[i].usUsagePage,
+                devices[i].usUsage, devices[i].dwFlags, devices[i].hwndTarget );
++#ifdef WINE_IOS
++        w32ios_diag_register( devices + i );
++#endif
+ 
+         if ((devices[i].dwFlags & RIDEV_INPUTSINK) && !devices[i].hwndTarget)
+         {

@@ -55,6 +55,22 @@ extern "C" {
 #define IOS_IOCTL_HID_SET_OUTPUT_REPORT           IOS_HID_CTL(101, IOS_METHOD_IN_DIRECT)
 #define IOS_IOCTL_HID_GET_WINE_RAWINPUT_HANDLE    IOS_HID_CTL(300, IOS_METHOD_BUFFERED)
 
+/* Clarification 9: the name of an IOCTL the device answers ("IOCTL_HID_GET_FEATURE"), or NULL
+ * for any other code (the log prints it in hex). */
+const char *ios_hidpad_ioctl_name(uint32_t code);
+
+/* Clarification 9: IOCTLs counted by code for the 5 s summary: the first
+ * IOS_HIDPAD_TALLY_CODES distinct codes each get a count, the rest go to `other`. */
+#define IOS_HIDPAD_TALLY_CODES 8
+struct ios_hidpad_tally
+{
+    uint32_t used;
+    uint32_t code[IOS_HIDPAD_TALLY_CODES];
+    uint32_t count[IOS_HIDPAD_TALLY_CODES];
+    uint32_t other;
+};
+void ios_hidpad_tally_add(struct ios_hidpad_tally *tally, uint32_t code);
+
 /* B5: Wine's virtual mouse and keyboard use raw input handles 1 and 2. */
 #define IOS_HIDPAD_RAWINPUT_HANDLE      0x100u
 /* Clarification 8: XInput slot n's device is 0x101 + n (win32u keeps one device per handle). */

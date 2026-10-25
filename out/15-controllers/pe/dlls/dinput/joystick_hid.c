@@ -3,7 +3,9 @@
  * Copyright 2021 Rémi Bernon for CodeWeavers
  *
  * Changed for MYIOSDECK (spec 15 Part E4): sign_extend, scale_value and scale_axis_value
- * moved unchanged to joystick_scale.h, shared with joystick_ios.c.
+ * moved unchanged to joystick_scale.h, shared with joystick_ios.c. Spec 15 clarification 9d:
+ * diagnostics of a joystick on an XInput slot's device (acquire, reports, polls), and a poll
+ * callback that only counts.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -44,6 +46,7 @@
 #include "dinput_private.h"
 #include "device_private.h"
 #include "joystick_scale.h"
+#include "ios_diag.h"
 
 #include "initguid.h"
 
@@ -206,12 +209,40 @@ struct hid_joystick
     struct pid_block_load pid_block_load;
     struct pid_new_effect pid_new_effect;
     struct pid_effect_state pid_effect_state;
+
+    /* MYIOSDECK (spec 15 clarification 9d) */
+    int ios_slot;                   /* the XInput slot whose device this is, or -1 */
+    struct ios_diag ios_reports;    /* reports read from the device */
+    struct ios_diag ios_polls;      /* Poll, and GetDeviceState's poll */
 };
 
 static inline struct hid_joystick *impl_from_IDirectInputDevice8W( IDirectInputDevice8W *iface )
 {
     return CONTAINING_RECORD( CONTAINING_RECORD( iface, struct dinput_device, IDirectInputDevice8W_iface ),
                               struct hid_joystick, base );
+}
+
+/* MYIOSDECK (spec 15 clarification 9d): the slot a device path names (spec 15 clarification
+ * 8a's instance ids are ours alone), or -1. */
+static int ios_slot_from_path( const WCHAR *path )
+{
+    const WCHAR *ig = wcsstr( path, L"&IG_0" );
+
+    if (!ig || !wcsstr( path, L"#9&4d616465&1&000" )) return -1;
+    if (ig[5] < '0' || ig[5] > '3') return -1;
+    return ig[5] - '0';
+}
+
+/* Up to 32 bytes as hex, for the first few reports and states. */
+static const char *ios_hex( const void *data, ULONG size )
+{
+    static char buffer[3 * 32 + 1];
+    const BYTE *bytes = data;
+    ULONG i;
+
+    for (i = 0; i < size && i < 32; i++) sprintf( buffer + 3 * i, "%02x ", bytes[i] );
+    buffer[3 * i] = 0;
+    return buffer;
 }
 
 struct hid_joystick_effect
@@ -903,13 +934,38 @@ static HRESULT hid_joystick_acquire( IDirectInputDevice8W *iface )
     ret = ReadFile( impl->device, impl->input_report_buf, report_len, NULL, &impl->read_ovl );
     if (!ret && GetLastError() != ERROR_IO_PENDING)
     {
+        if (impl->ios_slot >= 0)   /* MYIOSDECK (spec 15 clarification 9d) */
+            MESSAGE( "[dinput] slot %d joystick Acquire: first read failed, error %lu: unplugged\n",
+                     impl->ios_slot, GetLastError() );
         CloseHandle( impl->device );
         impl->device = INVALID_HANDLE_VALUE;
         return DIERR_UNPLUGGED;
     }
 
+    if (impl->ios_slot >= 0)   /* MYIOSDECK (spec 15 clarification 9d) */
+        MESSAGE( "[dinput] slot %d joystick Acquire: reading %lu-byte reports\n", impl->ios_slot, report_len );
     IDirectInputDevice8_SendForceFeedbackCommand( iface, DISFFC_RESET );
     return DI_OK;
+}
+
+/* MYIOSDECK (spec 15 clarification 9d): dinput's Poll, and the poll inside GetDeviceState,
+ * counted for a joystick on a slot device, with the state it holds for the first three. Returns
+ * what device.c returns without a poll callback, so nothing changes. */
+static HRESULT hid_joystick_poll( IDirectInputDevice8W *iface )
+{
+    struct hid_joystick *impl = impl_from_IDirectInputDevice8W( iface );
+    ULONGLONG now;
+    uint64_t elapsed;
+    uint32_t n;
+
+    if (impl->ios_slot < 0) return DI_NOEFFECT;
+    now = GetTickCount64();
+    if ((n = ios_diag_event( &impl->ios_polls, now )) <= 3)
+        MESSAGE( "[dinput] slot %d joystick poll %u: state %s\n", impl->ios_slot, n,
+                 ios_hex( impl->base.device_state, impl->base.device_format.dwDataSize ) );
+    if ((n = ios_diag_due( &impl->ios_polls, now, &elapsed )))
+        MESSAGE( "[dinput] slot %d joystick: %u polls in %u ms\n", impl->ios_slot, n, (unsigned int)elapsed );
+    return DI_NOEFFECT;
 }
 
 static HRESULT hid_joystick_send_force_feedback_command( IDirectInputDevice8W *iface, DWORD command, BOOL unacquire );
@@ -1205,6 +1261,19 @@ static HRESULT hid_joystick_read( IDirectInputDevice8W *iface )
     EnterCriticalSection( &impl->base.crit );
     while (ret)
     {
+        if (impl->ios_slot >= 0)   /* MYIOSDECK (spec 15 clarification 9d) */
+        {
+            ULONGLONG now = GetTickCount64();
+            uint64_t elapsed;
+            uint32_t n;
+
+            if ((n = ios_diag_event( &impl->ios_reports, now )) <= 3)
+                MESSAGE( "[dinput] slot %d joystick report %u (%lu bytes): %s\n", impl->ios_slot, n, count,
+                         ios_hex( report_buf, count ) );
+            if ((n = ios_diag_due( &impl->ios_reports, now, &elapsed )))
+                MESSAGE( "[dinput] slot %d joystick: %u reports in %u ms\n", impl->ios_slot, n, (unsigned int)elapsed );
+        }
+
         if (TRACE_ON(dinput))
         {
             TRACE( "iface %p, size %lu, report:\n", iface, count );
@@ -1315,7 +1384,7 @@ static HRESULT hid_joystick_enum_objects( IDirectInputDevice8W *iface, const DIP
 static const struct dinput_device_vtbl hid_joystick_vtbl =
 {
     hid_joystick_destroy,
-    NULL,
+    hid_joystick_poll,      /* MYIOSDECK: counts only (clarification 9d) */
     hid_joystick_read,
     hid_joystick_acquire,
     hid_joystick_unacquire,
@@ -1984,6 +2053,7 @@ HRESULT hid_joystick_create_device( struct dinput *dinput, const GUID *guid, IDi
     *out = NULL;
 
     if (!(impl = calloc( 1, sizeof(*impl) ))) return E_OUTOFMEMORY;
+    impl->ios_slot = -1;    /* MYIOSDECK */
     dinput_device_init( &impl->base, &hid_joystick_vtbl, guid, dinput );
     impl->base.crit.DebugInfo->Spare[0] = (DWORD_PTR)(__FILE__ ": hid_joystick.base.crit");
     impl->base.dwCoopLevel = DISCL_NONEXCLUSIVE | DISCL_BACKGROUND;
@@ -1999,6 +2069,12 @@ HRESULT hid_joystick_create_device( struct dinput *dinput, const GUID *guid, IDi
                                            &impl->caps, &impl->base.instance, dinput->dwVersion );
     }
     if (hr != DI_OK) goto failed;
+
+    /* MYIOSDECK (spec 15 clarification 9d) */
+    if ((impl->ios_slot = ios_slot_from_path( impl->device_path )) >= 0)
+        MESSAGE( "[dinput] CreateDevice: HID joystick on XInput slot %d's device, \"%s\", instance %s\n",
+                 impl->ios_slot, debugstr_w( impl->base.instance.tszProductName ),
+                 debugstr_guid( &impl->base.instance.guidInstance ) );
 
     impl->base.caps.dwDevType = impl->base.instance.dwDevType;
     impl->attrs = attrs;

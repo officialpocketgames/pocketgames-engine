@@ -36,6 +36,8 @@ run test_hidpad $cc $flags -o "$build/test_hidpad" "$here/test_hidpad.c" "$top/h
 run test_regplan $cc $flags -I"$top/ntdll" -o "$build/test_regplan" "$here/test_regplan.c" \
     "$top/ntdll/ios_hidpad_regplan.c" "$top/hidpad/ios_hidpad.c" "$top/hidpad/ios_hidpad_xinput.c"
 run test_dinput_ios $cc $flags -I"$top/pe/dlls/dinput" -o "$build/test_dinput_ios" "$here/test_dinput_ios.c" -lm
+run test_diag $cc $flags -I"$top/pe/include" -I"$top/server" -o "$build/test_diag" "$here/test_diag.c" \
+    "$top/hidpad/ios_hidpad_request.c" "$top/hidpad/ios_hidpad.c" "$top/hidpad/ios_hidpad_xinput.c"
 
 if [ -f "$wine/dlls/hidparse.sys/main.c" ] && [ -f "$wine/include/wine/hid.h" ]; then
     # Wine's headers, compiled by a native compiler as Wine's own unix-side code is

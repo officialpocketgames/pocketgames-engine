@@ -28,6 +28,50 @@ const struct ios_hidparse_report *ios_hidparse_find_report(const struct ios_hidp
     return NULL;
 }
 
+const char *ios_hidpad_ioctl_name(uint32_t code)
+{
+    switch (code)
+    {
+    case IOS_IOCTL_HID_GET_COLLECTION_INFORMATION: return "IOCTL_HID_GET_COLLECTION_INFORMATION";
+    case IOS_IOCTL_HID_GET_COLLECTION_DESCRIPTOR: return "IOCTL_HID_GET_COLLECTION_DESCRIPTOR";
+    case IOS_IOCTL_HID_GET_INPUT_REPORT: return "IOCTL_HID_GET_INPUT_REPORT";
+    case IOS_IOCTL_HID_GET_FEATURE: return "IOCTL_HID_GET_FEATURE";
+    case IOS_IOCTL_HID_SET_FEATURE: return "IOCTL_HID_SET_FEATURE";
+    case IOS_IOCTL_HID_SET_OUTPUT_REPORT: return "IOCTL_HID_SET_OUTPUT_REPORT";
+    case IOS_IOCTL_HID_GET_PRODUCT_STRING: return "IOCTL_HID_GET_PRODUCT_STRING";
+    case IOS_IOCTL_HID_GET_MANUFACTURER_STRING: return "IOCTL_HID_GET_MANUFACTURER_STRING";
+    case IOS_IOCTL_HID_GET_SERIALNUMBER_STRING: return "IOCTL_HID_GET_SERIALNUMBER_STRING";
+    case IOS_IOCTL_HID_GET_INDEXED_STRING: return "IOCTL_HID_GET_INDEXED_STRING";
+    case IOS_IOCTL_GET_NUM_DEVICE_INPUT_BUFFERS: return "IOCTL_GET_NUM_DEVICE_INPUT_BUFFERS";
+    case IOS_IOCTL_SET_NUM_DEVICE_INPUT_BUFFERS: return "IOCTL_SET_NUM_DEVICE_INPUT_BUFFERS";
+    case IOS_IOCTL_HID_GET_POLL_FREQUENCY_MSEC: return "IOCTL_HID_GET_POLL_FREQUENCY_MSEC";
+    case IOS_IOCTL_HID_SET_POLL_FREQUENCY_MSEC: return "IOCTL_HID_SET_POLL_FREQUENCY_MSEC";
+    case IOS_IOCTL_HID_FLUSH_QUEUE: return "IOCTL_HID_FLUSH_QUEUE";
+    case IOS_IOCTL_HID_GET_WINE_RAWINPUT_HANDLE: return "IOCTL_HID_GET_WINE_RAWINPUT_HANDLE";
+    }
+    return NULL;
+}
+
+void ios_hidpad_tally_add(struct ios_hidpad_tally *tally, uint32_t code)
+{
+    uint32_t i;
+
+    for (i = 0; i < tally->used; i++)
+    {
+        if (tally->code[i] != code) continue;
+        tally->count[i]++;
+        return;
+    }
+    if (tally->used == IOS_HIDPAD_TALLY_CODES)
+    {
+        tally->other++;
+        return;
+    }
+    tally->code[tally->used] = code;
+    tally->count[tally->used] = 1;
+    tally->used++;
+}
+
 void ios_hidpad_handle_init(struct ios_hidpad_handle *handle)
 {
     memset(handle, 0, sizeof(*handle));

@@ -3,7 +3,8 @@
  * Copyright 2022 Rémi Bernon for CodeWeavers
  *
  * Changed for MYIOSDECK (spec 15 clarification 8e, 2026): a provider for each XInput host slot
- * device, answered through win32u's NtUserGetGamepadState instead of DirectInput (wgi_host.h).
+ * device, answered through win32u's NtUserGetGamepadState instead of DirectInput (wgi_host.h);
+ * clarification 9c: each host provider created or refused is logged.
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -847,7 +848,9 @@ static BOOL host_provider_create( const WCHAR *device_path )
     file = CreateFileW( device_path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL );
     if (file == INVALID_HANDLE_VALUE)
     {
-        TRACE( "slot %d device %s not listed, error %lu\n", slot, debugstr_w( device_path ), GetLastError() );
+        /* clarification 9c: logged, with why */
+        MESSAGE( "[wgi] no provider for XInput slot %d: its device doesn't open (error %lu: no pad in the slot, "
+                 "or player 1 is the PlayStation pad)\n", slot, GetLastError() );
         return TRUE;
     }
     CloseHandle( file );
@@ -861,7 +864,7 @@ static BOOL host_provider_create( const WCHAR *device_path )
     list_init( &impl->entry );
 
     provider = &impl->IGameControllerProvider_iface;
-    TRACE( "created host slot %d WineGameControllerProvider %p\n", slot, provider );
+    MESSAGE( "[wgi] provider for XInput slot %d created (%p): a Gamepad, read through XInput's slot\n", slot, provider );
 
     EnterCriticalSection( &provider_cs );
     LIST_FOR_EACH_ENTRY( entry, &provider_list, struct provider, entry )

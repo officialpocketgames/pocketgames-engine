@@ -347,6 +347,34 @@ static void test_log_event( void )
     CHECK( w32ios_log_event( 256 ) && w32ios_log_event( 512 ) );
 }
 
+/* spec 15 clarification 9b: the raw input diagnostics' counts and slot devices */
+static void test_diag( void )
+{
+    struct w32ios_diag d;
+
+    memset( &d, 0, sizeof(d) );
+    CHECK_EQ( w32ios_diag_due( &d, 100000 ), 0 );        /* nothing counted */
+    CHECK_EQ( w32ios_diag_event( &d, 1000 ), 1 );
+    CHECK_EQ( w32ios_diag_event( &d, 2000 ), 2 );
+    CHECK_EQ( w32ios_diag_event( &d, 3000 ), 3 );
+    CHECK_EQ( w32ios_diag_due( &d, 5999 ), 0 );          /* the window began at 1000 */
+    CHECK_EQ( w32ios_diag_due( &d, 6000 ), 3 );
+    CHECK_EQ( w32ios_diag_due( &d, 12000 ), 0 );         /* no events since */
+    CHECK_EQ( w32ios_diag_event( &d, 12000 ), 4 );
+    CHECK_EQ( w32ios_diag_due( &d, 12000 ), 1 );         /* that window began at 6000 */
+    CHECK_EQ( w32ios_diag_event( &d, 13000 ), 5 );
+    CHECK_EQ( w32ios_diag_due( &d, 16999 ), 0 );         /* the next began at 12000 */
+    CHECK_EQ( w32ios_diag_due( &d, 17000 ), 1 );
+    CHECK_EQ( d.total, 5 );
+    CHECK_EQ( w32ios_diag_due( &d, 1000 ), 0 );          /* a clock before the window */
+
+    CHECK_EQ( w32ios_rawinput_slot( 0x101, 0x045e, 0x028e ), 0 );
+    CHECK_EQ( w32ios_rawinput_slot( 0x104, 0x045e, 0x028e ), 3 );
+    CHECK_EQ( w32ios_rawinput_slot( 0x100, 0x054c, 0x0ce6 ), -1 );   /* the HID pad */
+    CHECK_EQ( w32ios_rawinput_slot( 0x105, 0x045e, 0x028e ), -1 );
+    CHECK_EQ( w32ios_rawinput_slot( 0x102, 0x045e, 0x02ea ), -1 );   /* another Microsoft pad */
+}
+
 static void test_slicing( void )
 {
     int final;
@@ -779,6 +807,7 @@ int main( void )
     test_cursor();
     test_extended_key();
     test_log_event();
+    test_diag();
     test_slicing();
     test_rects();
     test_pp_table();

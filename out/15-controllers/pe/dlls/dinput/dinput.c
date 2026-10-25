@@ -5,7 +5,8 @@
  * Copyright 2007 Vitaliy Margolen
  *
  * Changed for MYIOSDECK (spec 15 Part E5): EnumDevices and CreateDevice offer the iOS
- * joystick (joystick_ios.c) before the HID path.
+ * joystick (joystick_ios.c) before the HID path. Spec 15 clarification 9d: the devices an
+ * enumeration returns are logged (the first 24).
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -333,9 +334,16 @@ static HRESULT WINAPI dinput8_CreateDevice( IDirectInput8W *iface, const GUID *g
 static BOOL try_enum_device( DWORD type, LPDIENUMDEVICESCALLBACKW callback,
                              DIDEVICEINSTANCEW *instance, void *context, DWORD flags )
 {
+    static LONG logged;
+
     if (type && (instance->dwDevType & 0xff) != type) return DIENUM_CONTINUE;
     if ((flags & DIEDFL_FORCEFEEDBACK) && IsEqualGUID( &instance->guidFFDriver, &GUID_NULL ))
         return DIENUM_CONTINUE;
+    /* MYIOSDECK (spec 15 clarification 9d): what enumerations hand the game (the first 24) */
+    if (InterlockedIncrement( &logged ) <= 24)
+        MESSAGE( "[dinput] EnumDevices returns \"%s\", type %#lx, instance %s, product %s\n",
+                 debugstr_w( instance->tszProductName ), instance->dwDevType,
+                 debugstr_guid( &instance->guidInstance ), debugstr_guid( &instance->guidProduct ) );
     return enum_callback_wrapper( callback, instance, context );
 }
 

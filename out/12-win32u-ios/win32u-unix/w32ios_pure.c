@@ -471,6 +471,32 @@ int w32ios_log_event( unsigned int count )
     return count < 8 || !(count % 256);
 }
 
+unsigned int w32ios_diag_event( struct w32ios_diag *d, uint64_t now_ms )
+{
+    if (!d->total) d->window_start = now_ms;
+    d->total++;
+    d->window++;
+    return d->total;
+}
+
+unsigned int w32ios_diag_due( struct w32ios_diag *d, uint64_t now_ms )
+{
+    unsigned int n;
+
+    if (!d->window || now_ms < d->window_start || now_ms - d->window_start < W32IOS_DIAG_WINDOW_MS) return 0;
+    n = d->window;
+    d->window = 0;
+    d->window_start = now_ms;
+    return n;
+}
+
+int w32ios_rawinput_slot( unsigned int handle, unsigned int vendor, unsigned int product )
+{
+    if (vendor != 0x045e || product != 0x028e) return -1;
+    if (handle < 0x101 || handle > 0x104) return -1;
+    return (int)(handle - 0x101);
+}
+
 int64_t w32ios_slice_deadline( int64_t now, int has_deadline, int64_t deadline, int64_t slice,
                                int *final )
 {
