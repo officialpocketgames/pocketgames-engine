@@ -21,7 +21,15 @@ header; the licence texts are in the app under Settings › About › Open-sourc
   push builds the iOS libraries and the Windows DLLs.
 - Each build's `pe-relink-kit` artifact holds the exact Wine tree its Windows DLLs were built from.
 - `refs/` lists the upstream sources the build downloads, with their checksums.
+- Each App Store version's engine is tagged here (`pocketgames-<version>-<build>`).
+- [pocketgames-build](https://github.com/officialpocketgames/pocketgames-build) has the tools that
+  turn the Windows DLLs into the files the app loads, the other Wine-derived files in the app, the
+  prebuilt parts the app is built from, and, for each App Store version, a relinking kit: the rest
+  of the app's executable as object code, with its link command, so that you can relink it with
+  your own versions of the LGPL libraries linked into it.
 
-You may change the LGPL parts and use your changed versions with the app.
+You may change the LGPL parts and use your changed versions with the app; reverse engineering the
+app for debugging such changes is permitted. For three years after each version's release, we will
+send you its relinking material on request, at no more than the cost of sending it.
 
 Contact: officialpocketgame@gmail.com

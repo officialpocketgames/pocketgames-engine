@@ -18,3 +18,13 @@ freely, but don't treat them as code to copy unless their row below says so.
 | `ffmpeg-7.1.1/` | `ffmpeg.org/releases/ffmpeg-7.1.1.tar.xz`, SHA-256 `733984395e0dbbe5c046abda2dc49a5544e7e0e1e2366bba849222ae9e3a03b1` (fetched 2026-10-19) | FFmpeg 7.1.1, LGPL-2.1-or-later in the configuration spec 14 uses; some optional parts are GPL (see `LICENSE.md`, `COPYING.LGPLv2.1`). Not committed (`refs/.gitignore`): it is 97 MB | Spec 14 builds it unchanged as static libraries, LGPL components only. Read `libavcodec/wma*.c` and `libavformat/xwma.c` for the WMA rules. Keep its notice. |
 | `bearssl-7bea48e/` | `https://www.bearssl.org/git/BearSSL`, commit `7bea48e5e850ab4cafbe68d3765cdaba13a86d6f` (2026-04-06, "Fixed bug in handling incoming records with invalid length"), exported with `git archive --prefix=bearssl-7bea48e/ HEAD \| gzip -n` (SHA-256 `a986a40baf6689c5a38bfebd29348232fbbda9d19dce516734af72704419f805`; the commit hash is the identity to check) (fetched 2026-10-19) | BearSSL, Thomas Pornin's TLS library, MIT licence (`LICENSE.txt`). Not committed (`refs/.gitignore`). `T0Comp.exe` in it is a prebuilt code generator: never run it (the generated `.c` files are already in `src/`) | Spec 13 (clarification 7) builds its C sources unchanged as a static library for secur32's TLS, AES-GCM, X25519 and the RSA operations Security.framework lacks. Keep its notice. |
 | `wine-11.4/libs/tomcrypt/` | part of `wine-11.4/` above | LibTomCrypt 1.18.2 (public domain or WTFPL, `LICENSE`) and LibTomMath (`mpi.c`, Unlicense), as bundled by upstream Wine | Spec 13 (clarification 7) compiles a subset unchanged for the unix side (DH, DSA, big-number arithmetic). Keep its notice. |
+
+## Off limits inside these copies
+
+Some folders of the copies above are never a source for any part, whatever a spec's "Allowed
+references" say about the tree around them. Don't open them, search them or build from them:
+
+| Folder | Why |
+|---|---|
+| `wine-11.4/libs/vkd3d/`, except `wine-11.4/libs/vkd3d/tests/` | Wine's Direct3D 12 and its shader compiler: a different design under a different licence. `tests/` may be read for expected results and built and run as a black box; never copy its code |
+| `wine-11.4/dlls/d3d12/*.c` and `wine-11.4/dlls/dxgi/*.c` | Wine's Direct3D 12 and DXGI front ends. Their `tests/` folders may be read and run as above |

@@ -7,6 +7,10 @@ build/
 /specs/2[0-9]*
 /out/0[1-4]-*
 /out/2[0-9]-*
+# ...except the closed engine parts (spec 00 Part H: specs 28-32), which are kept in this private
+# repository; publish/publish-engine.sh never publishes them
+!/specs/2[89]-*
+!/out/2[89]-*
 /interfaces/app-api.md
 /interfaces/steam_*
 /interfaces/wine_bridge.h
