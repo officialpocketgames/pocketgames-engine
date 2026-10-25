@@ -35,7 +35,7 @@ enum ios_hidpad_kind
 struct ios_hidpad_identity
 {
     enum ios_hidpad_kind kind;
-    const char *name;               /* the MADEIRA_HIDPAD value that selects it */
+    const char *name;               /* the PG_HIDPAD value that selects it */
     uint16_t vendor_id;
     uint16_t product_id;
     uint16_t version;
@@ -52,7 +52,7 @@ struct ios_hidpad_identity
 };
 
 /* Fill `out` for the identity `hidpad_env` names ("dualsense" or "generic", exact match);
- * `name_env` is MADEIRA_HIDPAD_NAME (may be NULL). Returns 0 and sets out->kind to
+ * `name_env` is PG_HIDPAD_NAME (may be NULL). Returns 0 and sets out->kind to
  * IOS_HIDPAD_NONE for anything else, including NULL. */
 int ios_hidpad_identity_select(const char *hidpad_env, const char *name_env,
                                struct ios_hidpad_identity *out);
@@ -115,15 +115,15 @@ int16_t ios_hidpad_flip_y(int16_t v);
 /* Build DualSense USB report 0x01 into out[IOS_HIDPAD_DUALSENSE_INPUT_LEN]. `pad` may be a
  * disconnected snapshot (connected == 0): the report is then a pad at rest. `now_us` is the
  * sensor clock in microseconds. Returns the report length. */
-size_t ios_hidpad_build_dualsense_input(const struct winios_hidpad *pad,
+size_t ios_hidpad_build_dualsense_input(const struct pgios_hidpad *pad,
                                         struct ios_hidpad_report_state *state,
                                         uint64_t now_us, uint8_t *out);
 
 /* Build the generic report 1 into out[IOS_HIDPAD_GENERIC_INPUT_LEN]. */
-size_t ios_hidpad_build_generic_input(const struct winios_hidpad *pad, uint8_t *out);
+size_t ios_hidpad_build_generic_input(const struct pgios_hidpad *pad, uint8_t *out);
 
 /* Either of the above, by identity. `out` must hold id->input_report_len bytes. */
-size_t ios_hidpad_build_input(const struct ios_hidpad_identity *id, const struct winios_hidpad *pad,
+size_t ios_hidpad_build_input(const struct ios_hidpad_identity *id, const struct pgios_hidpad *pad,
                               struct ios_hidpad_report_state *state, uint64_t now_us, uint8_t *out);
 
 /* ---- A5: feature reports (DualSense) -------------------------------------------------- */
@@ -159,16 +159,16 @@ struct ios_hidpad_output_flags
 /* Decode `data[0..len-1]` (byte 0 the report id) and fold every flagged field into `out`
  * (which holds the last output snapshot; its serial is left alone). `flags` may be NULL. */
 enum ios_hidpad_output_result ios_hidpad_decode_output(const uint8_t *data, size_t len,
-                                                       struct winios_hidpad_output *out,
+                                                       struct pgios_hidpad_output *out,
                                                        struct ios_hidpad_output_flags *flags);
 
 /* B2: what a real pad would keep but a closed game must not: motors stopped, trigger effects
  * released (both blocks all zero, i.e. no effect). Fields a game never set stay unset.
  * Returns 1 if `out` changed. */
-int ios_hidpad_output_release(struct winios_hidpad_output *out);
+int ios_hidpad_output_release(struct pgios_hidpad_output *out);
 
 /* Bytewise comparison ignoring `serial`: 1 if the two snapshots ask for the same thing. */
-int ios_hidpad_output_same(const struct winios_hidpad_output *a, const struct winios_hidpad_output *b);
+int ios_hidpad_output_same(const struct pgios_hidpad_output *a, const struct pgios_hidpad_output *b);
 
 /* ---- B3 / B7 helpers (pure, host-tested) ---------------------------------------------- */
 
@@ -189,7 +189,7 @@ int ios_hidpad_effects_log_kind(uint32_t count);
 #define IOS_HIDPAD_REFUSALS_LOGGED 4
 
 /* Whether a new handle may open the device: only while the HID store reports the pad
- * connected (`connected` = winios_hidpad_get_state's result), as a pad that isn't plugged in.
+ * connected (`connected` = pgios_hidpad_get_state's result), as a pad that isn't plugged in.
  * A refusal adds one to `*refusals`; `*log_refusal` (may be NULL) is set to 1 for the first
  * IOS_HIDPAD_REFUSALS_LOGGED refusals, else 0. Handles already open are not affected. */
 int ios_hidpad_open_allowed(int connected, uint32_t *refusals, int *log_refusal);
@@ -209,15 +209,15 @@ extern const size_t ios_hidpad_xinput_descriptor_len;
 int ios_hidpad_identity_slot(unsigned int slot, struct ios_hidpad_identity *out);
 
 /* The input report of the XInput HID collection into out[IOS_HIDPAD_XINPUT_INPUT_LEN], from a
- * slot's state carried in a winios_hidpad (ios_hidpad_from_gamepad): X Y Rx Ry 0..65535 with
+ * slot's state carried in a pgios_hidpad (ios_hidpad_from_gamepad): X Y Rx Ry 0..65535 with
  * Y and Ry growing downwards, Z = 0x8000 + (LT - RT) * 128, buttons 1-10 (A B X Y LB RB Back
  * Start LS RS), hat 1-8 clockwise from north (0 centred). A disconnected snapshot is a pad at
  * rest. */
-size_t ios_hidpad_build_xinput_input(const struct winios_hidpad *pad, uint8_t *out);
+size_t ios_hidpad_build_xinput_input(const struct pgios_hidpad *pad, uint8_t *out);
 
 /* A slot's store state as the snapshot the request rules and report builders take. */
-void ios_hidpad_from_gamepad(const struct winios_gamepad *gamepad, int connected,
-                             struct winios_hidpad *out);
+void ios_hidpad_from_gamepad(const struct pgios_gamepad *gamepad, int connected,
+                             struct pgios_hidpad *out);
 
 /* Clarification 8f: whether slot `slot`'s device is listed (opens allowed, raw input, WGI,
  * events): the slot has a pad, and for slot 0 the HID pad isn't present (in the PlayStation

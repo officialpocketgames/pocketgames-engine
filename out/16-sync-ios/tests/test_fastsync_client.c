@@ -135,7 +135,7 @@ static void test_usable(void)
     CHECK( !ios_fs_entry_usable( &e, 0x100000 ));   /* the access check */
     e.access = 0x100002;
     CHECK( ios_fs_entry_usable( &e, 0x100000 ));
-    e.index = sem;   /* MADEIRA_FASTSYNC_SEM is on in this test */
+    e.index = sem;   /* PG_FASTSYNC_SEM is on in this test */
     CHECK( ios_fs_entry_usable( &e, 0x100000 ));
     ios_cell_free( ev );
     ios_cell_free( sem );
@@ -378,10 +378,10 @@ static void test_gates(void)
 
 int main(void)
 {
-    setenv( "MADEIRA_FASTSYNC", "1", 1 );
-    setenv( "MADEIRA_FASTSYNC_SEM", "1", 1 );
-    setenv( "MADEIRA_FASTSYNC_SPIN_US", "40", 1 );
-    setenv( "MADEIRA_FASTSYNC_CAP_US", "2000", 1 );
+    setenv( "PG_FASTSYNC", "1", 1 );
+    setenv( "PG_FASTSYNC_SEM", "1", 1 );
+    setenv( "PG_FASTSYNC_SPIN_US", "40", 1 );
+    setenv( "PG_FASTSYNC_CAP_US", "2000", 1 );
 
     test_cache();
     test_seqlock();

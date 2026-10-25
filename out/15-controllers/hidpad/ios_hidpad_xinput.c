@@ -150,7 +150,7 @@ static void put16(uint8_t *p, unsigned int v)
     p[1] = (uint8_t)((v >> 8) & 0xff);
 }
 
-size_t ios_hidpad_build_xinput_input(const struct winios_hidpad *pad, uint8_t *out)
+size_t ios_hidpad_build_xinput_input(const struct pgios_hidpad *pad, uint8_t *out)
 {
     static const struct { uint32_t mask; unsigned int bit; } buttons[] =
     {
@@ -159,7 +159,7 @@ size_t ios_hidpad_build_xinput_input(const struct winios_hidpad *pad, uint8_t *o
         { PAD_BACK, 6 }, { PAD_START, 7 },
         { PAD_LEFT_THUMB, 8 }, { PAD_RIGHT_THUMB, 9 },
     };
-    struct winios_hidpad rest;
+    struct pgios_hidpad rest;
     unsigned int i, bits = 0;
     uint8_t hat;
 
@@ -184,8 +184,8 @@ size_t ios_hidpad_build_xinput_input(const struct winios_hidpad *pad, uint8_t *o
     return IOS_HIDPAD_XINPUT_INPUT_LEN;
 }
 
-void ios_hidpad_from_gamepad(const struct winios_gamepad *gamepad, int connected,
-                             struct winios_hidpad *out)
+void ios_hidpad_from_gamepad(const struct pgios_gamepad *gamepad, int connected,
+                             struct pgios_hidpad *out)
 {
     memset(out, 0, sizeof(*out));
     out->packet = gamepad->packet;
@@ -198,7 +198,7 @@ void ios_hidpad_from_gamepad(const struct winios_gamepad *gamepad, int connected
     out->ry = gamepad->ry;
     out->left_trigger = gamepad->left_trigger;
     out->right_trigger = gamepad->right_trigger;
-    out->battery = WINIOS_HIDPAD_BATTERY_UNKNOWN;
+    out->battery = PGIOS_HIDPAD_BATTERY_UNKNOWN;
 }
 
 int ios_hidpad_slot_listed(unsigned int slot, int slot_connected, int hid_present)

@@ -19,7 +19,7 @@
  *
  * Changed for MYIOSDECK (2026, spec 13 Parts B and H): the host resolver is a state per thread
  * used through res_n* of the linked libresolv (ios_resolv.h maps _res, res_init, res_query and
- * h_errno), MADEIRA_DNSAPI_UNIXLIB=0 makes every entry return STATUS_NOT_SUPPORTED, and the
+ * h_errno), PG_DNSAPI_UNIXLIB=0 makes every entry return STATUS_NOT_SUPPORTED, and the
  * 32-bit thunks convert guest addresses with ios_g2h(). See out/13-net-crypto-ios/CHANGES.md.
  */
 
@@ -351,7 +351,7 @@ static NTSTATUS resolv_query( void *args )
     return ret;
 }
 
-/* MYIOSDECK (spec 13 Part H4): MADEIRA_DNSAPI_UNIXLIB=0 makes every entry of both tables return
+/* MYIOSDECK (spec 13 Part H4): PG_DNSAPI_UNIXLIB=0 makes every entry of both tables return
  * STATUS_NOT_SUPPORTED. Read once per app run. */
 static BOOL ios_dnsapi_disabled( void )
 {
@@ -360,10 +360,10 @@ static BOOL ios_dnsapi_disabled( void )
 
     if (value < 0)
     {
-        const char *env = getenv( "MADEIRA_DNSAPI_UNIXLIB" );
+        const char *env = getenv( "PG_DNSAPI_UNIXLIB" );
 
         value = env && !strcmp( env, "0" );
-        if (value) fprintf( stderr, "[dnsapi-ios] MADEIRA_DNSAPI_UNIXLIB=0: unix side off\n" );
+        if (value) fprintf( stderr, "[dnsapi-ios] PG_DNSAPI_UNIXLIB=0: unix side off\n" );
         __atomic_store_n( &disabled, value, __ATOMIC_RELAXED );
     }
     return value;

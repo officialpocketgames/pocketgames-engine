@@ -1,5 +1,5 @@
 Spec 12 Part D3: EnumAdapters2 lists the D3DKMT adapter and OpenAdapterFromDeviceName opens it
-when MADEIRA_KMT_ADAPTER is on (w32ios_kmt.c). Line numbers are those after C-01-sysparams.patch.
+when PG_KMT_ADAPTER is on (w32ios_kmt.c). Line numbers are those after C-01-sysparams.patch.
 
 --- a/dlls/win32u/sysparams.c
 +++ b/dlls/win32u/sysparams.c

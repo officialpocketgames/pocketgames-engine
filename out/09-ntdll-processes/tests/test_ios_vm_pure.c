@@ -46,7 +46,7 @@ static void test_user_limit(void)
 
 static void test_laa(void)
 {
-    /* 4 GB for everybody, unless the image lacks the flag and MADEIRA_LAA=0 */
+    /* 4 GB for everybody, unless the image lacks the flag and PG_LAA=0 */
     CHECK( ios_wow_ceiling( 1, NULL ) == IOS_4G );
     CHECK( ios_wow_ceiling( 0, NULL ) == IOS_4G );
     CHECK( ios_wow_ceiling( 0, "1" ) == IOS_4G );

@@ -121,8 +121,8 @@ static BOOL CALLBACK nsi_init_switches( INIT_ONCE *once, void *param, void **con
 {
     BOOL *switches = param;
 
-    switches[0] = nsi_read_switch( "MADEIRA_NSI_DEVICE_CACHE" );
-    switches[1] = nsi_read_switch( "MADEIRA_NSI_NOTIFY_PENDING" );
+    switches[0] = nsi_read_switch( "PG_NSI_DEVICE_CACHE" );
+    switches[1] = nsi_read_switch( "PG_NSI_NOTIFY_PENDING" );
     return TRUE;
 }
 

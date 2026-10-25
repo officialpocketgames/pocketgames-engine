@@ -71,7 +71,7 @@ struct ios_hidpad_device
     const struct ios_hidpad_identity *id;
     const struct ios_hidparse_desc *desc;
     struct ios_hidpad_report_state *report_state;
-    struct winios_hidpad_output *output;    /* the last output snapshot (A6) */
+    struct pgios_hidpad_output *output;    /* the last output snapshot (A6) */
     uint32_t poll_interval;
     uint32_t rawinput_handle;               /* win32u's handle for the device; 0: the HID pad's */
     /* clarification 5: presence, from the store's samples */
@@ -84,7 +84,7 @@ struct ios_hidpad_device
  * long, so a short gap in the app's publishing never drops a handle or announces a removal. */
 #define IOS_HIDPAD_UNPUBLISH_GRACE_US 1000000u
 
-/* Feed one store sample (`connected` = winios_hidpad_get_state's answer at `now_us`) and
+/* Feed one store sample (`connected` = pgios_hidpad_get_state's answer at `now_us`) and
  * return whether the pad is present: published now, or unpublished for less than the grace.
  * A pad never published since the server started is not present. */
 int ios_hidpad_presence(struct ios_hidpad_device *dev, int connected, uint64_t now_us);
@@ -123,13 +123,13 @@ enum ios_hidpad_read_outcome
  * and sensor timestamp advancing as on hardware: a reader never sees silence. */
 enum ios_hidpad_read_outcome ios_hidpad_read_decide(struct ios_hidpad_device *dev,
                                                     struct ios_hidpad_handle *handle,
-                                                    const struct winios_hidpad *pad,
+                                                    const struct pgios_hidpad *pad,
                                                     int queued, uint64_t now_us);
 
 /* Build the report a read delivers and record it as the handle's last (B3). Returns its
  * length; `out` holds dev->id->input_report_len bytes. */
 uint32_t ios_hidpad_read_report(struct ios_hidpad_device *dev, struct ios_hidpad_handle *handle,
-                                const struct winios_hidpad *pad, uint64_t now_us, uint8_t *out);
+                                const struct pgios_hidpad *pad, uint64_t now_us, uint8_t *out);
 
 #define IOS_HIDPAD_REPLY_MAX 256
 
@@ -156,7 +156,7 @@ uint32_t ios_hidpad_input_size(uint32_t code, uint32_t data_size, uint32_t out_s
 /* WriteFile (B4): the lost-handle rule, hidclass's IOCTL_HID_WRITE_REPORT checks, then A6.
  * `pad` is the store's newest snapshot. */
 void ios_hidpad_write(struct ios_hidpad_device *dev, struct ios_hidpad_handle *handle,
-                      const struct winios_hidpad *pad, uint64_t now_us, const uint8_t *data,
+                      const struct pgios_hidpad *pad, uint64_t now_us, const uint8_t *data,
                       uint32_t size, struct ios_hidpad_reply *reply);
 
 /* An IOCTL (B4, B5). `data`/`data_size` is the request data, `out_size` the output buffer's
@@ -164,7 +164,7 @@ void ios_hidpad_write(struct ios_hidpad_device *dev, struct ios_hidpad_handle *h
  * report), `now_us` the sensor clock. */
 void ios_hidpad_ioctl(struct ios_hidpad_device *dev, struct ios_hidpad_handle *handle, uint32_t code,
                       const uint8_t *data, uint32_t data_size, uint32_t out_size,
-                      const struct winios_hidpad *pad, uint64_t now_us, struct ios_hidpad_reply *reply);
+                      const struct pgios_hidpad *pad, uint64_t now_us, struct ios_hidpad_reply *reply);
 
 #ifdef __cplusplus
 }

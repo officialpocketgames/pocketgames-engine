@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 the MYIOSDECK author
 //
-// Spec 12 Part D: a D3DKMT adapter (opt-in). With MADEIRA_KMT_ADAPTER=1 (or on/true/yes) the GPU
+// Spec 12 Part D: a D3DKMT adapter (opt-in). With PG_KMT_ADAPTER=1 (or on/true/yes) the GPU
 // that DXGI reports (DXMT: Metal's default device) becomes a D3DKMT adapter: its LUID is
 // bswap64(MTLDevice.registryID), its dedicated memory spec 05's vram-mb (256 MB or more) or
 // 4096 MB; the registry GPU of Part C6 gets both. EnumAdapters2 lists it; OpenAdapterFromHdc,
@@ -31,7 +31,7 @@ static LUID metal_luid;
 BOOL w32ios_kmt_enabled( void )
 {
     static int enabled = -1;
-    if (enabled < 0) enabled = w32ios_env_bool( "MADEIRA_KMT_ADAPTER", FALSE );
+    if (enabled < 0) enabled = w32ios_env_bool( "PG_KMT_ADAPTER", FALSE );
     return enabled;
 }
 
@@ -41,7 +41,7 @@ static void init_luid( void )
 
     if (!w32ios_metal_registry_id( &id ))
     {
-        w32ios_log( "MADEIRA_KMT_ADAPTER: no Metal device, so no D3DKMT adapter" );
+        w32ios_log( "PG_KMT_ADAPTER: no Metal device, so no D3DKMT adapter" );
         return;
     }
     value = w32ios_luid_from_registry_id( id );

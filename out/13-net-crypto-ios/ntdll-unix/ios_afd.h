@@ -15,7 +15,7 @@
 //   The WoW64 layer converts that argument as an address, so a 32-bit caller's handle h
 //   arrives as B + h. For B != 0: a value v with B <= v and v - B <= 0xffffffff is the handle
 //   (LONG)(v - B) sign-extended (so B itself is NULL); any other value is passed unchanged.
-//   MADEIRA_AFD_EVENT_HANDLE=0 turns this correction off.
+//   PG_AFD_EVENT_HANDLE=0 turns this correction off.
 //
 // Nothing here does I/O or takes a lock: these sit on the send and receive paths. The *_at
 // forms are pure (B passed in) and are what the host tests check.
@@ -46,7 +46,7 @@ static inline uint64_t ios_afd_event_handle_at( uint64_t base, uint64_t v, int e
     return v;
 }
 
-/* the value of MADEIRA_AFD_EVENT_HANDLE -> whether the correction is on (only "0" turns it
+/* the value of PG_AFD_EVENT_HANDLE -> whether the correction is on (only "0" turns it
  * off) */
 static inline int ios_afd_event_env_enabled( const char *value )
 {

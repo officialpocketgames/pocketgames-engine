@@ -68,7 +68,7 @@ static void test_modes( void )
         CHECK( same( list[16], 1024, 768 ) );
     }
 
-    /* MADEIRA_EXTENDED_MODES=1: four times the default's pixels (2048x1536 is exactly that) */
+    /* PG_EXTENDED_MODES=1: four times the default's pixels (2048x1536 is exactly that) */
     count = w32ios_build_modes( def, def, 1, list, W32IOS_STD_MODE_COUNT + 1 );
     CHECK_EQ( count, 36 );
     CHECK( same( list[count - 1], 2048, 1536 ) );
@@ -331,7 +331,7 @@ static void test_extended_key( void )
     CHECK( w32ios_key_extended( 0x25, 0xe04b, 0 ) );      /* the prefix counts even without the nav rule */
     CHECK( w32ios_key_extended( 0x13, 0xe11d, 1 ) );      /* e1 prefix */
     CHECK( w32ios_key_extended( 0x21, 0x49, 1 ) );        /* Page Up without prefix: nav rule */
-    CHECK( !w32ios_key_extended( 0x21, 0x49, 0 ) );       /* MADEIRA_NAV_KEYS_E0=0 */
+    CHECK( !w32ios_key_extended( 0x21, 0x49, 0 ) );       /* PG_NAV_KEYS_E0=0 */
     CHECK( w32ios_key_extended( 0x2e, 0x53, 1 ) );        /* Delete */
     CHECK( w32ios_key_extended( 0x2d, 0x52, 1 ) );        /* Insert */
     CHECK( w32ios_key_extended( 0x24, 0x47, 1 ) );        /* Home */
@@ -508,7 +508,7 @@ static void test_winproc_handle( void )
 
 /* ---------------------------------------------------------------- Part F */
 
-static struct winios_gamepad fake_pad;
+static struct pgios_gamepad fake_pad;
 static int fake_rumble, vib_index = -1;
 static uint16_t vib_left, vib_right;
 
@@ -602,7 +602,7 @@ static void test_xinput( void )
     CHECK_EQ( vib_left, 0x1111 );
     CHECK_EQ( vib_right, 0x2222 );
 
-    CHECK_EQ( sizeof(struct winios_gamepad), 20 );
+    CHECK_EQ( sizeof(struct pgios_gamepad), 20 );
 }
 
 /* ---------------------------------------------------------------- Part D */

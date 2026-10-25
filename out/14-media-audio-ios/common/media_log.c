@@ -55,7 +55,7 @@ int iom_diag( void )
 
     if (v < 0)
     {
-        v = iom_env_is( "MADEIRA_DIAG", "1" );
+        v = iom_env_is( "PG_DIAG", "1" );
         diag = v;
     }
     return v;

@@ -135,7 +135,7 @@ constexpr size_t kPendingReserveCapBytes = 64u << 10;
 /* Elements to reserve for the next batch of a kind whose high-water mark (the
    largest count it held at a flush) is `peak` elements of `element_size` bytes:
    min(peak, 64 KiB / element size), no minimum. With the budget switched off
-   (MADEIRA_D3D9_BATCH_BUDGET=0) the cap is off too: the whole high-water mark. */
+   (PG_D3D9_BATCH_BUDGET=0) the cap is off too: the whole high-water mark. */
 inline size_t
 PendingReserveCount(size_t peak, size_t element_size, bool budget_enabled = true) {
   if (!budget_enabled)

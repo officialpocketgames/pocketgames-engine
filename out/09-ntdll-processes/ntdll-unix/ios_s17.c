@@ -30,9 +30,9 @@ int ios_s17_switches_init(void)
 {
     int bits = 0;
 
-    if (ios_s17_switch_value( getenv( "MADEIRA_WOW64_BY_TEB" ))) bits |= IOS_S17_WOW64_BY_TEB;
-    if (ios_s17_switch_value( getenv( "MADEIRA_IO_STATUS_OWNER" ))) bits |= IOS_S17_IO_STATUS_OWNER;
-    if (ios_s17_switch_value( getenv( "MADEIRA_SECTION_PROCESS_LIMIT" ))) bits |= IOS_S17_SECTION_LIMIT;
+    if (ios_s17_switch_value( getenv( "PG_WOW64_BY_TEB" ))) bits |= IOS_S17_WOW64_BY_TEB;
+    if (ios_s17_switch_value( getenv( "PG_IO_STATUS_OWNER" ))) bits |= IOS_S17_IO_STATUS_OWNER;
+    if (ios_s17_switch_value( getenv( "PG_SECTION_PROCESS_LIMIT" ))) bits |= IOS_S17_SECTION_LIMIT;
     /* every racer computes the same value from the same environment */
     __atomic_store_n( &ios_s17_switch_bits, bits, __ATOMIC_RELAXED );
     return bits;
@@ -131,9 +131,9 @@ long ios_s17_cpu_count( long host )
     {
         char value[64] = "";
         int expected = -1;
-        const char *env = getenv( "MADEIRA_CPU_COUNT" );
+        const char *env = getenv( "PG_CPU_COUNT" );
 
-        ios_s17_cfg_file_get( getenv( "MADEIRA_DOCS_DIR" ), "cpu-count", value, sizeof(value) );
+        ios_s17_cfg_file_get( getenv( "PG_DOCS_DIR" ), "cpu-count", value, sizeof(value) );
         count = ios_s17_cpu_override( env, value );
         if (__atomic_compare_exchange_n( &cpu_override, &expected, count, FALSE,
                                          __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ))

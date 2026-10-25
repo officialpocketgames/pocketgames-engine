@@ -315,7 +315,7 @@ int ios_s17_cfg_file_get( const char *docs_dir, const char *key, char *out, size
     int fd, found;
 
     if (!docs_dir || !docs_dir[0]) return 0;
-    if (snprintf( path, sizeof(path), "%s/madeira.cfg", docs_dir ) >= (int)sizeof(path)) return 0;
+    if (snprintf( path, sizeof(path), "%s/pocketgames.cfg", docs_dir ) >= (int)sizeof(path)) return 0;
     if ((fd = open( path, O_RDONLY | O_CLOEXEC )) == -1) return 0;
     for (;;)
     {

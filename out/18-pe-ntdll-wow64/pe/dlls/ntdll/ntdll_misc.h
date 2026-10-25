@@ -15,7 +15,7 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * Changed for MYIOSDECK (spec 18): declarations of ios_teb_tsd_offset, heap_init_madeira_policy,
+ * Changed for MYIOSDECK (spec 18): declarations of ios_teb_tsd_offset, heap_init_pg_policy,
  * arm64ec_process_init_dispatchers and arm64ec_redirect_ptr.
  */
 
@@ -126,7 +126,7 @@ extern TEB_FLS_DATA *fls_alloc_data(void);
 extern void heap_thread_detach(void);
 
 /* MYIOSDECK (spec 18 Part I1): reads the 32-bit heap policies from the environment, once */
-extern void heap_init_madeira_policy(void);
+extern void heap_init_pg_policy(void);
 
 #ifdef _WIN64
 /* MYIOSDECK (spec 18 Part B1): offset from the TSD base to the TEB slot, 0 = not known */

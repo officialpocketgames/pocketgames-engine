@@ -3,7 +3,7 @@
 //
 // Spec 14 Part B1 and A3: winegstreamer's unix call tables on iOS, under the names spec 09's
 // loader looks up (winegstreamer_unix_call_funcs / winegstreamer_unix_call_wow64_funcs), and the
-// gate that keeps the 64-bit table from 64-bit callers unless MADEIRA_WG_64BIT=1.
+// gate that keeps the 64-bit table from 64-bit callers unless PG_WG_64BIT=1.
 //
 // Both tables follow dlls/winegstreamer/unixlib.h's enum unix_funcs entry for entry: an index
 // that drifted would dispatch a call to another function's argument block.
@@ -139,15 +139,15 @@ _Static_assert( sizeof(winegstreamer_unix_call_wow64_funcs) / sizeof(winegstream
                 unix_wg_funcs_count, "winegstreamer_unix_call_wow64_funcs must have one entry per enum unix_funcs value" );
 
 /* Spec 09's loader calls <name>_unix_lib_init after binding a table and returns its status.
- * A3: a 64-bit caller (no guest window) is treated as having no table unless MADEIRA_WG_64BIT=1:
+ * A3: a 64-bit caller (no guest window) is treated as having no table unless PG_WG_64BIT=1:
  * no 64-bit winegstreamer.dll is shipped, and this keeps 64-bit behaviour as it was. */
 __attribute__((used, visibility("default"))) NTSTATUS winegstreamer_unix_lib_init( void )
 {
     static volatile int logged;
 
     if (ios_wow_base()) return STATUS_SUCCESS;
-    if (iom_env_is( "MADEIRA_WG_64BIT", "1" )) return STATUS_SUCCESS;
+    if (iom_env_is( "PG_WG_64BIT", "1" )) return STATUS_SUCCESS;
     if (!__atomic_exchange_n( &logged, 1, __ATOMIC_RELAXED ))
-        iom_log( "[winegstreamer] ", "64-bit caller: no unix library (set MADEIRA_WG_64BIT=1 to enable it)" );
+        iom_log( "[winegstreamer] ", "64-bit caller: no unix library (set PG_WG_64BIT=1 to enable it)" );
     return STATUS_DLL_NOT_FOUND;
 }

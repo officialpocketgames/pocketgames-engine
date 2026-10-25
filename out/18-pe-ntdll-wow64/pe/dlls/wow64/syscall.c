@@ -1039,7 +1039,7 @@ static DWORD WINAPI process_init( RTL_RUN_ONCE *once, void *param, void **contex
  *           get_initial_context_i386
  *
  * MYIOSDECK (spec 18 Part J11): writing the initial frame below a zero Esp is a wild write.
- * Retry a failed or empty context up to 64 times; MADEIRA_WOW_INIT_CTX_RETRY=0 (read once)
+ * Retry a failed or empty context up to 64 times; PG_WOW_INIT_CTX_RETRY=0 (read once)
  * keeps upstream's unchecked call.
  */
 static void get_initial_context_i386( I386_CONTEXT *ctx )
@@ -1050,7 +1050,7 @@ static void get_initial_context_i386( I386_CONTEXT *ctx )
 
     if (checked < 0)
     {
-        static const WCHAR name[] = L"MADEIRA_WOW_INIT_CTX_RETRY";
+        static const WCHAR name[] = L"PG_WOW_INIT_CTX_RETRY";
         WCHAR value[4];
         SIZE_T len = 0;
 

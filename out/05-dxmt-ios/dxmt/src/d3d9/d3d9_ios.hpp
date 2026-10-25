@@ -15,11 +15,11 @@ namespace dxmt {
 
 struct D9IosConfig {
   uint64_t upload_commit_bytes; // C3: DXMT_D9_UPLOAD_COMMIT_MB (default 64 MB; 0 never)
-  bool batch_budget;            // C4: MADEIRA_D3D9_BATCH_BUDGET (default on)
+  bool batch_budget;            // C4: PG_D3D9_BATCH_BUDGET (default on)
   bool scene_batch;             // C5: DXMT_D9_SCENE_BATCH (default on)
-  bool batch_readback;          // C6: DXMT_D9_BATCH_READBACK and MADEIRA_D3D9_MIRROR_BATCH (both default on)
+  bool batch_readback;          // C6: DXMT_D9_BATCH_READBACK and PG_D3D9_MIRROR_BATCH (both default on)
   bool query_adaptive;          // C7: DXMT_D9_QUERY_ADAPTIVE (default on)
-  bool virtual_mode;            // C8: DXMT_D9_VIRTUAL_MODE (default on) and MADEIRA_SCREEN_W set
+  bool virtual_mode;            // C8: DXMT_D9_VIRTUAL_MODE (default on) and PG_SCREEN_W set
   bool canonical_blend;         // C11: DXMT_D9_CANONICAL_BLEND (default on)
   bool binding_prune;           // C12: DXMT_D9_BINDING_PRUNE (default on)
   bool shader_prune;            // C12: DXMT_D9_SHADER_PRUNE (default on)

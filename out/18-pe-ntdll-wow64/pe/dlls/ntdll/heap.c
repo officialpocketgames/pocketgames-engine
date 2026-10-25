@@ -19,7 +19,7 @@
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
  * Changed for MYIOSDECK (spec 18 Part I): four opt-in policies for the 32-bit heaps, which share
- * one 4 GB window with everything else (MADEIRA_HEAP_COMPACT, _COMBINED, _RECLAIM, _STATS).
+ * one 4 GB window with everything else (PG_HEAP_COMPACT, _COMBINED, _RECLAIM, _STATS).
  * The 64-bit builds compile upstream's behaviour.
  */
 
@@ -43,7 +43,7 @@
 WINE_DEFAULT_DEBUG_CHANNEL(heap);
 
 #ifdef __i386__
-/* MYIOSDECK (spec 18 Part I1): set once by heap_init_madeira_policy, before other threads run */
+/* MYIOSDECK (spec 18 Part I1): set once by heap_init_pg_policy, before other threads run */
 static struct
 {
     BOOL compact;   /* grow by at most 2 MB, halve on failure */
@@ -2087,18 +2087,18 @@ void heap_thread_detach(void)
 }
 
 /***********************************************************************
- *           heap_init_madeira_policy
+ *           heap_init_pg_policy
  *
  * MYIOSDECK (spec 18 Part I1): each switch is on only when its value is exactly "1". Called once
  * by loader_init, before any other thread runs and with no heap lock held (the PEB lock is taken
  * in the opposite order while the environment changes).
  */
-void heap_init_madeira_policy(void)
+void heap_init_pg_policy(void)
 {
 #ifdef __i386__
     static const WCHAR * const names[] =
     {
-        L"MADEIRA_HEAP_COMPACT", L"MADEIRA_HEAP_COMBINED", L"MADEIRA_HEAP_RECLAIM", L"MADEIRA_HEAP_STATS",
+        L"PG_HEAP_COMPACT", L"PG_HEAP_COMBINED", L"PG_HEAP_RECLAIM", L"PG_HEAP_STATS",
     };
     BOOL *switches[] = { &heap_policy.compact, &heap_policy.combined, &heap_policy.reclaim, &heap_policy.stats };
     unsigned int i;

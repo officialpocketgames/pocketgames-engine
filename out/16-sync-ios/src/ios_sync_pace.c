@@ -54,7 +54,7 @@ static void eco_init(void)
     __atomic_store_n( &eco_gen, 1, __ATOMIC_RELEASE );
 }
 
-void madeira_set_eco( int on )
+void pg_set_eco( int on )
 {
     struct timeval tv;
     struct tm tm;
@@ -71,7 +71,7 @@ void madeira_set_eco( int on )
     ios_sync_log( "eco: %s at %s (generation %u)", on ? "on" : "off", stamp, gen );
 }
 
-int madeira_get_eco(void)
+int pg_get_eco(void)
 {
     pthread_once( &eco_once, eco_init );
     return __atomic_load_n( &eco_on, __ATOMIC_RELAXED );
@@ -115,7 +115,7 @@ void ios_eco_apply(void)
 
     if (gen && gen == eco_applied) return;   /* the common case: one load */
     gen = ios_eco_generation();
-    on = madeira_get_eco();
+    on = pg_get_eco();
     if (!ios_eco_must_apply( &eco_applied, gen, on )) return;
     cls = ios_eco_qos_class( on, ios_sync_settings()->eco_qos );
     ios_eco_last_class = cls;

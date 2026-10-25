@@ -4,9 +4,9 @@
 // Spec 12 Part E: the iOS user driver, installed at win32u's init (__wine_set_user_driver). Its
 // entries forward to the app's weak hooks (interfaces/wine_unix_contract.h Section B) when they
 // are linked; pUpdateDisplayDevices describes the virtual monitor of Part C. Two modes: desktop
-// mode (MADEIRA_DESKTOP=1, a Windows desktop the app composites) and game mode (otherwise).
+// mode (PG_DESKTOP=1, a Windows desktop the app composites) and game mode (otherwise).
 //
-// Also the app's way in (Section A: winios_drv_post_mouse / winios_drv_post_key) and the message
+// Also the app's way in (Section A: pgios_drv_post_mouse / pgios_drv_post_key) and the message
 // wait helpers patched into message.c (E2).
 
 #include <stdlib.h>
@@ -19,7 +19,7 @@
 #include "w32ios.h"
 #include "w32ios_app.h"
 
-WINE_DEFAULT_DEBUG_CHANNEL(winios);
+WINE_DEFAULT_DEBUG_CHANNEL(pgios);
 
 /* ---------------------------------------------------------------- switches */
 
@@ -32,31 +32,31 @@ static int env_switch( int *cache, const char *name, BOOL def )
 BOOL w32ios_desktop_mode( void )
 {
     static int value = -1;
-    return env_switch( &value, "MADEIRA_DESKTOP", FALSE );
+    return env_switch( &value, "PG_DESKTOP", FALSE );
 }
 
 static BOOL game_windows( void )        /* E4 in game mode */
 {
     static int value = -1;
-    return env_switch( &value, "MADEIRA_GAME_WINDOWS", TRUE );
+    return env_switch( &value, "PG_GAME_WINDOWS", TRUE );
 }
 
 static BOOL nav_keys_e0( void )         /* E1 */
 {
     static int value = -1;
-    return env_switch( &value, "MADEIRA_NAV_KEYS_E0", TRUE );
+    return env_switch( &value, "PG_NAV_KEYS_E0", TRUE );
 }
 
 static BOOL game_input_wake( void )     /* E5 */
 {
     static int value = -1;
-    return env_switch( &value, "MADEIRA_GAME_INPUT_WAKE", TRUE );
+    return env_switch( &value, "PG_GAME_INPUT_WAKE", TRUE );
 }
 
 static BOOL foreground_fix_enabled( void )   /* E6 */
 {
     static int value = -1;
-    return env_switch( &value, "MADEIRA_FOREGROUND_FIX", TRUE );
+    return env_switch( &value, "PG_FOREGROUND_FIX", TRUE );
 }
 
 static BOOL windows_enabled( void )
@@ -66,7 +66,7 @@ static BOOL windows_enabled( void )
 
 static BOOL direct_cursor( void )
 {
-    return !w32ios_desktop_mode() && winios_direct_cursor_wanted && winios_direct_cursor_wanted();
+    return !w32ios_desktop_mode() && pgios_direct_cursor_wanted && pgios_direct_cursor_wanted();
 }
 
 /* ---------------------------------------------------------------- per-thread state */
@@ -107,13 +107,13 @@ static void report_cursor_pos( void )
     NTSTATUS status;
     int x = 0, y = 0;
 
-    if (!direct_cursor() || !winios_direct_cursor_pos) return;
+    if (!direct_cursor() || !pgios_direct_cursor_pos) return;
     while ((status = get_shared_desktop( &lock, &desktop_shm )) == STATUS_PENDING)
     {
         x = desktop_shm->cursor.x;
         y = desktop_shm->cursor.y;
     }
-    if (!status) winios_direct_cursor_pos( x, y );
+    if (!status) pgios_direct_cursor_pos( x, y );
 }
 
 static void count_failure( const char *what, NTSTATUS status )
@@ -122,7 +122,7 @@ static void count_failure( const char *what, NTSTATUS status )
     if (w32ios_log_event( n - 1 )) w32ios_log( "%s failed (%#x), %d failures", what, (unsigned int)status, (int)n );
 }
 
-void winios_drv_post_mouse( int x, int y, unsigned int flags, unsigned int mouse_data, HWND hwnd )
+void pgios_drv_post_mouse( int x, int y, unsigned int flags, unsigned int mouse_data, HWND hwnd )
 {
     INPUT input = { .type = INPUT_MOUSE };
     LONG n = InterlockedIncrement( &mouse_events );
@@ -141,7 +141,7 @@ void winios_drv_post_mouse( int x, int y, unsigned int flags, unsigned int mouse
     if (flags & (MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE)) report_cursor_pos();
 }
 
-void winios_drv_post_key( unsigned short vk, unsigned int flags )
+void pgios_drv_post_key( unsigned short vk, unsigned int flags )
 {
     INPUT input = { .type = INPUT_KEYBOARD };
     LONG n = InterlockedIncrement( &key_events );
@@ -300,11 +300,11 @@ static void ios_SetCursor( HWND hwnd, HCURSOR cursor )
     int w, h, hot_x, hot_y;
     BYTE *bgra;
 
-    if (desktop) { set = winios_cursor_set; show = winios_cursor_show; }
-    else if (direct) { set = winios_direct_cursor_set; show = winios_direct_cursor_show; }
+    if (desktop) { set = pgios_cursor_set; show = pgios_cursor_show; }
+    else if (direct) { set = pgios_direct_cursor_set; show = pgios_direct_cursor_show; }
     else
     {
-        if (winios_pSetCursor) winios_pSetCursor( hwnd, cursor );
+        if (pgios_pSetCursor) pgios_pSetCursor( hwnd, cursor );
         return;
     }
 
@@ -338,7 +338,7 @@ static BOOL ios_SetCursorPos( INT x, INT y )
 static void ios_DestroyCursorIcon( HCURSOR cursor )
 {
     InterlockedCompareExchangePointer( (void **)&last_sent, NULL, cursor );   /* the handle may come back */
-    if (winios_pDestroyCursorIcon) winios_pDestroyCursorIcon( cursor );
+    if (pgios_pDestroyCursorIcon) pgios_pDestroyCursorIcon( cursor );
 }
 
 /* ---------------------------------------------------------------- E4/E5: window images */
@@ -358,9 +358,9 @@ static BOOL ios_surface_flush( struct window_surface *surface, const RECT *rect,
 {
     int w = color_info->bmiHeader.biWidth, h = abs( color_info->bmiHeader.biHeight );
 
-    if (!winios_surface_present) return TRUE;
+    if (!pgios_surface_present) return TRUE;
     /* 0: the bits could not be copied, win32u keeps the damage and flushes again */
-    return winios_surface_present( surface->hwnd, dirty->left, dirty->top, dirty->right - dirty->left,
+    return pgios_surface_present( surface->hwnd, dirty->left, dirty->top, dirty->right - dirty->left,
                                    dirty->bottom - dirty->top, w, h, w * 4, color_bits ) != 0;
 }
 
@@ -466,8 +466,8 @@ static void ios_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint,
     BOOL visible = !(swp_flags & SWP_HIDEWINDOW) && !IsRectEmpty( vis );
     BOOL toplevel = is_toplevel( hwnd );
 
-    if (winios_window_frame && (w32ios_desktop_mode() || toplevel))
-        winios_window_frame( hwnd, vis->left, vis->top, vis->right - vis->left, vis->bottom - vis->top, visible,
+    if (pgios_window_frame && (w32ios_desktop_mode() || toplevel))
+        pgios_window_frame( hwnd, vis->left, vis->top, vis->right - vis->left, vis->bottom - vis->top, visible,
                              client->left, client->top, client->right - client->left, client->bottom - client->top );
 
     /* game mode: a window that was just shown or reframed paints its first image */
@@ -475,8 +475,8 @@ static void ios_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint,
         (swp_flags & (SWP_SHOWWINDOW | SWP_FRAMECHANGED)))
         NtUserRedrawWindow( hwnd, NULL, 0, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN );
 
-    if (winios_pWindowPosChanged)
-        winios_pWindowPosChanged( hwnd, insert_after, owner_hint, swp_flags, new_rects, surface );
+    if (pgios_pWindowPosChanged)
+        pgios_pWindowPosChanged( hwnd, insert_after, owner_hint, swp_flags, new_rects, surface );
 }
 
 /* ---------------------------------------------------------------- E6: foreground */
@@ -530,24 +530,24 @@ void w32ios_foreground_fix( void )
 
 static BOOL ios_CreateWindow( HWND hwnd )
 {
-    if (winios_pCreateWindow) return winios_pCreateWindow( hwnd );
+    if (pgios_pCreateWindow) return pgios_pCreateWindow( hwnd );
     return TRUE;
 }
 
 static void ios_DestroyWindow( HWND hwnd )
 {
-    if (winios_pDestroyWindow) winios_pDestroyWindow( hwnd );
+    if (pgios_pDestroyWindow) pgios_pDestroyWindow( hwnd );
 }
 
 static UINT ios_ShowWindow( HWND hwnd, INT cmd, RECT *rect, UINT swp )
 {
-    if (winios_pShowWindow) return winios_pShowWindow( hwnd, cmd, rect, swp );
+    if (pgios_pShowWindow) return pgios_pShowWindow( hwnd, cmd, rect, swp );
     return ~0u;   /* upstream's default */
 }
 
 static BOOL ios_ProcessEvents( DWORD mask )
 {
-    if (winios_pProcessEvents) return winios_pProcessEvents( mask );
+    if (pgios_pProcessEvents) return pgios_pProcessEvents( mask );
     return FALSE;
 }
 

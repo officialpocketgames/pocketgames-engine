@@ -413,7 +413,7 @@ static void layout_from_mask( AVChannelLayout *layout, uint32_t channels, uint32
     av_channel_layout_default( layout, channels );
 }
 
-/* the native video format: NV12 unless MADEIRA_WG_VIDEO_FORMAT names another (rule 5) */
+/* the native video format: NV12 unless PG_WG_VIDEO_FORMAT names another (rule 5) */
 static void native_video_format( enum wgv_format *v, wg_video_format *w )
 {
     static const struct { const char *name; enum wgv_format v; wg_video_format w; } names[] =
@@ -427,7 +427,7 @@ static void native_video_format( enum wgv_format *v, wg_video_format *w )
         { "argb32", WGV_BGRA, WG_VIDEO_FORMAT_BGRA },
         { "abgr32", WGV_RGBA, WG_VIDEO_FORMAT_RGBA },
     };
-    const char *env = getenv( "MADEIRA_WG_VIDEO_FORMAT" );
+    const char *env = getenv( "PG_WG_VIDEO_FORMAT" );
     unsigned int i;
 
     *v = WGV_NV12;
@@ -440,7 +440,7 @@ static void native_video_format( enum wgv_format *v, wg_video_format *w )
         *w = names[i].w;
         return;
     }
-    parser_log( "MADEIRA_WG_VIDEO_FORMAT=%s is not a known format; using NV12", env );
+    parser_log( "PG_WG_VIDEO_FORMAT=%s is not a known format; using NV12", env );
 }
 
 static int video_format_from_wg( wg_video_format w, enum wgv_format *v )
@@ -1289,9 +1289,9 @@ static NTSTATUS do_connect( struct parser *p, uint64_t file_size, char *why, siz
     }
     if (p->container == CONTAINER_MP4)
     {
-        if (iom_env_is( "MADEIRA_WG_VIDEO", "0" ))
+        if (iom_env_is( "PG_WG_VIDEO", "0" ))
         {
-            snprintf( why, why_size, "mp4 refused (MADEIRA_WG_VIDEO=0)" );
+            snprintf( why, why_size, "mp4 refused (PG_WG_VIDEO=0)" );
             return VFW_E_UNSUPPORTED_STREAM;
         }
         if (score < AVPROBE_SCORE_MAX / 2)
@@ -1496,7 +1496,7 @@ NTSTATUS wg_ios_parser_create( void *args )
     struct parser *p;
 
     params->parser = 0;
-    if (iom_env_is( "MADEIRA_WG_PARSER", "0" )) return STATUS_NOT_IMPLEMENTED;
+    if (iom_env_is( "PG_WG_PARSER", "0" )) return STATUS_NOT_IMPLEMENTED;
     if (!(p = calloc( 1, sizeof(*p) ))) return E_OUTOFMEMORY;
     pthread_mutex_init( &p->lock, NULL );
     pthread_mutex_init( &p->io_lock, NULL );

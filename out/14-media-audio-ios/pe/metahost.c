@@ -172,7 +172,7 @@ static void CDECL set_log_handler_dummy (MonoLogCallback callback, void *user_da
  * keeps running, so the GC would move objects under a live thread: use cooperative suspend.
  * Delegates handed to native code were finalised while still being called back: keep them.
  * Mono reads both while mono_jit_init_version runs; afterwards the previous values are put back
- * so child processes don't inherit them. A value the user set wins. MADEIRA_MONO_DEFAULTS=0
+ * so child processes don't inherit them. A value the user set wins. PG_MONO_DEFAULTS=0
  * turns this off. */
 static BOOL ios_mono_env_changed;
 static char *ios_mono_saved_suspend;   /* NULL: was unset */
@@ -214,7 +214,7 @@ static BOOL ios_mono_has_option( const char *list, const char *option )
 
 static void ios_mono_set_defaults(void)
 {
-    char *defaults = ios_mono_getenv( "MADEIRA_MONO_DEFAULTS" ), *suspend, *debug;
+    char *defaults = ios_mono_getenv( "PG_MONO_DEFAULTS" ), *suspend, *debug;
     BOOL off = defaults && !strcmp( defaults, "0" );
 
     free( defaults );

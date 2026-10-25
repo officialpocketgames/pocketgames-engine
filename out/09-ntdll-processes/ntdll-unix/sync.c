@@ -1114,7 +1114,7 @@ done:
 /***********************************************************************
  * MYIOSDECK, spec 16 Part D: fastsync, the client side.
  *
- * Events (and with MADEIRA_FASTSYNC_SEM semaphores) keep their state in cells the server shares
+ * Events (and with PG_FASTSYNC_SEM semaphores) keep their state in cells the server shares
  * (out/16-sync-ios/include/ios_fastsync.h). These helpers return STATUS_NOT_IMPLEMENTED when
  * the caller must take upstream's server path; the cell logic itself is out/16-sync-ios/src/
  * ios_fastsync_cli.c.

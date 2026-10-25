@@ -661,11 +661,11 @@ static void put_u32( FILE *f, uint32_t v )
 
 static void open_dump( struct wma_core *c )
 {
-    const char *dir = getenv( "MADEIRA_DOCS_DIR" );
+    const char *dir = getenv( "PG_DOCS_DIR" );
     char path[1024];
     int n;
 
-    if (!iom_env_set( "MADEIRA_WMA_DUMP" ) || !dir || !*dir) return;
+    if (!iom_env_set( "PG_WMA_DUMP" ) || !dir || !*dir) return;
     n = __atomic_fetch_add( &dump_counter, 1, __ATOMIC_RELAXED );
     snprintf( path, sizeof(path), "%s/wma-dump-%d.bin", dir, n );
     if (!(c->dump = fopen( path, "wb" )))
@@ -736,7 +736,7 @@ int wma_core_create( const struct wma_core_format *in, const struct wma_core_out
             c->alt_rate = c->header_rate;
         }
     }
-    c->search_enabled = (c->version == 1 || c->version == 2) && !iom_env_is( "MADEIRA_WMA_SEARCH", "0" );
+    c->search_enabled = (c->version == 1 || c->version == 2) && !iom_env_is( "PG_WMA_SEARCH", "0" );
     c->slack = 3;
     c->discontinuity = 0;
 

@@ -92,8 +92,8 @@ static volatile int32_t stale_logs;
 
 static void read_config( void )
 {
-    lead_ms = ia_parse_lead_ms( getenv( "MADEIRA_AUDIO_LEAD_MS" ) );
-    downmix = !iom_env_is( "MADEIRA_AUDIO_DOWNMIX", "0" );
+    lead_ms = ia_parse_lead_ms( getenv( "PG_AUDIO_LEAD_MS" ) );
+    downmix = !iom_env_is( "PG_AUDIO_DOWNMIX", "0" );
 }
 
 static void render( float *out, uint32_t frames, uint32_t bytes )

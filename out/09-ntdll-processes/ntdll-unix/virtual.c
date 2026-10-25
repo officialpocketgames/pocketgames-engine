@@ -5368,15 +5368,15 @@ void virtual_set_large_address_space(void)
 {
 #ifdef WINE_IOS
     /* MYIOSDECK (spec 10 Parts A1 and E5): the lowest address stays above 4 GB; a 32-bit program
-     * gets 4 GB of guest space unless it lacks LARGE_ADDRESS_AWARE and MADEIRA_LAA=0, and one
+     * gets 4 GB of guest space unless it lacks LARGE_ADDRESS_AWARE and PG_LAA=0, and one
      * without the flag fills its low 2 GB first */
     if (is_wow64())
     {
         BOOL laa = !!(main_image_info.ImageCharacteristics & IMAGE_FILE_LARGE_ADDRESS_AWARE);
-        ULONG64 ceiling = ios_wow_ceiling( laa, getenv( "MADEIRA_LAA" ));
+        ULONG64 ceiling = ios_wow_ceiling( laa, getenv( "PG_LAA" ));
 
         user_space_wow_limit = ceiling - 1;
-        ios_proc_current()->wow_lowfirst = ios_wow_lowfirst( laa, ceiling, getenv( "MADEIRA_LAA_LOWFIRST" ));
+        ios_proc_current()->wow_lowfirst = ios_wow_lowfirst( laa, ceiling, getenv( "PG_LAA_LOWFIRST" ));
     }
     else ios_vm_window_abandon( ios_proc_current() );  /* Part E8 */
     user_space_limit = working_set_limit = address_space_limit;

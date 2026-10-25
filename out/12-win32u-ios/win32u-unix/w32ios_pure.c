@@ -18,7 +18,7 @@ struct window_rects;
 struct window_surface;
 #include "wine_unix_contract.h"
 
-_Static_assert( sizeof(struct winios_gamepad) == 20, "struct winios_gamepad is 20 bytes" );
+_Static_assert( sizeof(struct pgios_gamepad) == 20, "struct pgios_gamepad is 20 bytes" );
 
 /* ===================== Part B ===================== */
 
@@ -507,7 +507,7 @@ int w32ios_dialog_candidate( int l, int t, int r, int b, int screen_w, int scree
 uint32_t w32ios_gamepad_answer( const struct w32ios_pad_source *src, uint32_t arg1, void *buffer )
 {
     int index = arg1 & 0xff, op = (arg1 >> 8) & 0xff;
-    struct winios_gamepad pad;
+    struct pgios_gamepad pad;
 
     if (!buffer || index > 3) return 0;
 

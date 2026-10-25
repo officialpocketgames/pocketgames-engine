@@ -70,7 +70,7 @@ static const char *const ios_nsi_module_names[IOS_NSI_MODULES] = { "ndis", "ipv4
 
 /* ---------------------------------------------------------------- environment, read once */
 
-/* MADEIRA_NSI_NETWORK_TABLES=0 serves none of the NDIS, IPv4 and IPv6 modules */
+/* PG_NSI_NETWORK_TABLES=0 serves none of the NDIS, IPv4 and IPv6 modules */
 static BOOL ios_nsi_network_tables(void)
 {
     static int on = -1;
@@ -78,14 +78,14 @@ static BOOL ios_nsi_network_tables(void)
 
     if (value < 0)
     {
-        value = ios_nsi_env_on( getenv( "MADEIRA_NSI_NETWORK_TABLES" ));
-        if (!value) fprintf( stderr, "[nsi-ios] MADEIRA_NSI_NETWORK_TABLES=0: interface, address and route tables off\n" );
+        value = ios_nsi_env_on( getenv( "PG_NSI_NETWORK_TABLES" ));
+        if (!value) fprintf( stderr, "[nsi-ios] PG_NSI_NETWORK_TABLES=0: interface, address and route tables off\n" );
         __atomic_store_n( &on, value, __ATOMIC_RELAXED );
     }
     return value;
 }
 
-/* MADEIRA_NSI_CACHE_MS: default 500, 0 off, capped at 5000 */
+/* PG_NSI_CACHE_MS: default 500, 0 off, capped at 5000 */
 static UINT ios_nsi_cache_ms(void)
 {
     static int ms = -1;
@@ -93,7 +93,7 @@ static UINT ios_nsi_cache_ms(void)
 
     if (value < 0)
     {
-        value = ios_nsi_cache_ttl_from_env( getenv( "MADEIRA_NSI_CACHE_MS" ));
+        value = ios_nsi_cache_ttl_from_env( getenv( "PG_NSI_CACHE_MS" ));
         __atomic_store_n( &ms, value, __ATOMIC_RELAXED );
     }
     return value;

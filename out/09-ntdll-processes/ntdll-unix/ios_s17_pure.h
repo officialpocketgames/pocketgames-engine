@@ -20,25 +20,25 @@ int ios_s17_switch_value( const char *value );
 /* ---- Part B: which pseudo-process is asking ---- */
 
 /* B1: TRUE for a thread whose TEB has a 32-bit TEB, else the process-wide answer;
- * by_teb = 0 (MADEIRA_WOW64_BY_TEB=0) uses only the process-wide answer */
+ * by_teb = 0 (PG_WOW64_BY_TEB=0) uses only the process-wide answer */
 int ios_s17_is_wow64( int by_teb, int teb_has_wow_teb, int process_wide );
 
 /* B2 (64-bit build): TRUE exactly when the caller's pseudo-process has a guest window;
- * owner = 0 (MADEIRA_IO_STATUS_OWNER=0) gives upstream's answer */
+ * owner = 0 (PG_IO_STATUS_OWNER=0) gives upstream's answer */
 int ios_s17_in_wow64_call( int owner, unsigned long wow_base, int upstream );
 
 /* B3: the bit of ptr's page in an EcCodeBitMap; a NULL map is "not ARM64EC code" */
 int ios_s17_ec_bit( const uint64_t *map, uintptr_t ptr, unsigned long page_size );
 
 /* B4: the ceiling ntdll's own section views use: the guest ceiling only for a pseudo-process
- * with a guest window, else 0; per_process = 0 (MADEIRA_SECTION_PROCESS_LIMIT=0) keeps the old
+ * with a guest window, else 0; per_process = 0 (PG_SECTION_PROCESS_LIMIT=0) keeps the old
  * behaviour (always the guest ceiling) */
 unsigned long ios_s17_section_limit( int per_process, unsigned long wow_base,
                                      unsigned long wow_limit );
 
 /* ---- Part C1: a volume serial for 32-bit programs ---- */
 
-#define IOS_S17_SERIAL_FILE ".madeira-volume-serial"
+#define IOS_S17_SERIAL_FILE ".pocketgames-volume-serial"
 
 /* 32-bit FNV-1a over the stored value (4 bytes, least significant first) and the drive letter
  * byte; 0 or 0xffffffff becomes the stored value; no stored value (0): 0 */
@@ -47,7 +47,7 @@ uint32_t ios_s17_volume_serial( uint32_t stored, unsigned char letter );
 /* the stored value from the file's first bytes (at most 15 are read), hex; 0 if none */
 uint32_t ios_s17_parse_serial( const char *buf, size_t len );
 
-/* the stored value of a prefix: read <config_dir>/.madeira-volume-serial, or draw one with
+/* the stored value of a prefix: read <config_dir>/.pocketgames-volume-serial, or draw one with
  * rnd() (never 0 or 0xffffffff) and create the file (O_CREAT | O_EXCL, 0600, "%08x\n"); a
  * creator that loses the race takes the winner's value. 0: no config dir, or no value. */
 typedef uint32_t (*ios_s17_random_fn)(void);
@@ -94,13 +94,13 @@ void ios_s17_ascii_a( char *dst, size_t cap, const char *src );
 
 /* the settings file (spec 02 Part G): the value of key in text, trimmed; 1 if found */
 int ios_s17_cfg_lookup( const char *text, size_t len, const char *key, char *out, size_t cap );
-/* the same on <docs_dir>/madeira.cfg; 0 when there is no file or no key */
+/* the same on <docs_dir>/pocketgames.cfg; 0 when there is no file or no key */
 int ios_s17_cfg_file_get( const char *docs_dir, const char *key, char *out, size_t cap );
 
 /* a whole decimal integer (surrounding blanks allowed); 1 if value holds one */
 int ios_s17_parse_int( const char *value, long *out );
 
-/* the number Windows code sees: MADEIRA_CPU_COUNT if a positive integer, else the settings
+/* the number Windows code sees: PG_CPU_COUNT if a positive integer, else the settings
  * file's cpu-count (absent or 0: none); applied only if 1 to 63. 0: no override. */
 int ios_s17_cpu_override( const char *env_value, const char *cfg_value );
 

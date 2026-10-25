@@ -62,7 +62,7 @@ int ios_hidpad_handle_lost(struct ios_hidpad_handle *handle, int present)
 
 enum ios_hidpad_read_outcome ios_hidpad_read_decide(struct ios_hidpad_device *dev,
                                                     struct ios_hidpad_handle *handle,
-                                                    const struct winios_hidpad *pad,
+                                                    const struct pgios_hidpad *pad,
                                                     int queued, uint64_t now_us)
 {
     if (ios_hidpad_handle_lost(handle, ios_hidpad_presence(dev, pad->connected, now_us)))
@@ -75,7 +75,7 @@ enum ios_hidpad_read_outcome ios_hidpad_read_decide(struct ios_hidpad_device *de
 }
 
 uint32_t ios_hidpad_read_report(struct ios_hidpad_device *dev, struct ios_hidpad_handle *handle,
-                                const struct winios_hidpad *pad, uint64_t now_us, uint8_t *out)
+                                const struct pgios_hidpad *pad, uint64_t now_us, uint8_t *out)
 {
     handle->have_last = 1;
     handle->last_report_us = now_us;
@@ -179,7 +179,7 @@ static const struct ios_hidparse_report *check_report(const struct ios_hidpad_de
 static void take_output(struct ios_hidpad_device *dev, const uint8_t *data, uint32_t len,
                         struct ios_hidpad_reply *reply)
 {
-    struct winios_hidpad_output before = *dev->output;
+    struct pgios_hidpad_output before = *dev->output;
 
     reply->output_report = 1;
     reply->output_result = ios_hidpad_decode_output(data, len, dev->output, &reply->output_flags);
@@ -188,7 +188,7 @@ static void take_output(struct ios_hidpad_device *dev, const uint8_t *data, uint
 }
 
 void ios_hidpad_write(struct ios_hidpad_device *dev, struct ios_hidpad_handle *handle,
-                      const struct winios_hidpad *pad, uint64_t now_us, const uint8_t *data,
+                      const struct pgios_hidpad *pad, uint64_t now_us, const uint8_t *data,
                       uint32_t size, struct ios_hidpad_reply *reply)
 {
     const struct ios_hidparse_report *report;
@@ -205,7 +205,7 @@ void ios_hidpad_write(struct ios_hidpad_device *dev, struct ios_hidpad_handle *h
 
 void ios_hidpad_ioctl(struct ios_hidpad_device *dev, struct ios_hidpad_handle *handle, uint32_t code,
                       const uint8_t *data, uint32_t data_size, uint32_t out_size,
-                      const struct winios_hidpad *pad, uint64_t now_us, struct ios_hidpad_reply *reply)
+                      const struct pgios_hidpad *pad, uint64_t now_us, struct ios_hidpad_reply *reply)
 {
     const struct ios_hidparse_report *report;
     uint32_t in_size = ios_hidpad_input_size(code, data_size, out_size), value;

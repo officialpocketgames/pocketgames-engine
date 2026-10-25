@@ -6,7 +6,7 @@
 // setupapi lists HID devices from the registry, and on iOS no device manager writes them.
 // ios_hidpad_publish() is called by spec 09 (clarification 1) in the session's first program,
 // after the drive links and before the program's code runs. It publishes only the identity
-// whose \??\<link> symlink exists: the server read MADEIRA_HIDPAD when it started, and the
+// whose \??\<link> symlink exists: the server read PG_HIDPAD when it started, and the
 // registry must name exactly the device that exists. Clarification 8a: the four XInput slot
 // devices are published the same way, in every session.
 //
@@ -179,7 +179,7 @@ void ios_hidpad_publish(void)
 {
     static const enum ios_hidpad_kind kinds[] = { IOS_HIDPAD_DUALSENSE, IOS_HIDPAD_GENERIC };
     struct ios_hidpad_identity id;
-    const char *env = getenv( "MADEIRA_HIDPAD" );
+    const char *env = getenv( "PG_HIDPAD" );
     unsigned int i, written;
     int found = 0;
 
@@ -191,12 +191,12 @@ void ios_hidpad_publish(void)
 
     for (i = 0; i < sizeof(kinds) / sizeof(kinds[0]) && !found; i++)
     {
-        ios_hidpad_identity_get( kinds[i], getenv( "MADEIRA_HIDPAD_NAME" ), &id );
+        ios_hidpad_identity_get( kinds[i], getenv( "PG_HIDPAD_NAME" ), &id );
         found = link_exists( &id );
     }
     if (!found)
     {
-        PUBLISH_LOG( "[hidpad] MADEIRA_HIDPAD=%s but no HID pad link exists in the server: no registry entries\n", env );
+        PUBLISH_LOG( "[hidpad] PG_HIDPAD=%s but no HID pad link exists in the server: no registry entries\n", env );
         return;
     }
 

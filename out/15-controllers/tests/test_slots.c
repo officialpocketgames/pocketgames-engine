@@ -110,11 +110,11 @@ static void test_identity_and_names(void)
     CHECK_STR(buf, "HID\\VID_054C&PID_0CE6&REV_0100&MI_03");
 }
 
-static struct winios_hidpad slot_state(uint16_t buttons, int16_t lx, int16_t ly, int16_t rx, int16_t ry,
+static struct pgios_hidpad slot_state(uint16_t buttons, int16_t lx, int16_t ly, int16_t rx, int16_t ry,
                                        uint8_t lt, uint8_t rt)
 {
-    struct winios_gamepad g;
-    struct winios_hidpad pad;
+    struct pgios_gamepad g;
+    struct pgios_hidpad pad;
 
     memset(&g, 0, sizeof(g));
     g.packet = 7;
@@ -132,8 +132,8 @@ static struct winios_hidpad slot_state(uint16_t buttons, int16_t lx, int16_t ly,
 
 static void test_input_report(void)
 {
-    struct winios_hidpad pad;
-    struct winios_gamepad g;
+    struct pgios_hidpad pad;
+    struct pgios_gamepad g;
     uint8_t r[IOS_HIDPAD_XINPUT_INPUT_LEN];
 
     /* at rest */
@@ -303,11 +303,11 @@ static void test_requests(const struct ios_hidparse_desc *desc)
 {
     struct ios_hidpad_identity id;
     struct ios_hidpad_report_state state;
-    struct winios_hidpad_output output;
+    struct pgios_hidpad_output output;
     struct ios_hidpad_device dev;
     struct ios_hidpad_handle handle;
     struct ios_hidpad_reply reply;
-    struct winios_hidpad pad;
+    struct pgios_hidpad pad;
     uint8_t out[512], report[IOS_HIDPAD_XINPUT_INPUT_LEN], fx[8];
     char text[128];
     uint64_t now = 1000;

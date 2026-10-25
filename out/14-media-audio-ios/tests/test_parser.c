@@ -5,7 +5,7 @@
 // MPEG layer II (FFmpeg's mp2 encoder), MP3 (hand-made silent layer III frames, with and without
 // ID3 cover art), a synthetic MP4 with stub H.264 (B-frame order) and AAC (late answers); the
 // read protocol with a scripted reader (short reads, end of file, a read error, disconnect while
-// waiting); refusals (low probe score, compressed output, MADEIRA_WG_VIDEO=0); seek with exact
+// waiting); refusals (low probe score, compressed output, PG_WG_VIDEO=0); seek with exact
 // trim and stop; audio conversion and S24 packing; the reorder rule; the 32-bit table.
 
 #if 0
@@ -786,13 +786,13 @@ static void test_refusals( void )
     close_session( &s );
     free( w.file );
 
-    setenv( "MADEIRA_WG_PARSER", "0", 1 );
+    setenv( "PG_WG_PARSER", "0", 1 );
     {
         struct wg_parser_create_params create;
         memset( &create, 0, sizeof(create) );
         CHECK_INT( CALL( unix_wg_parser_create, &create ), STATUS_NOT_IMPLEMENTED );
     }
-    unsetenv( "MADEIRA_WG_PARSER" );
+    unsetenv( "PG_WG_PARSER" );
 }
 
 static void test_mp4( void )
@@ -879,10 +879,10 @@ static void test_mp4( void )
     close_session( &s );
     CHECK_INT( stub_pictures_alive, 0 );
 
-    setenv( "MADEIRA_WG_VIDEO", "0", 1 );
+    setenv( "PG_WG_VIDEO", "0", 1 );
     CHECK( open_session( &s, data, size, 0, 0, -1 ) != S_OK );
     close_session( &s );
-    unsetenv( "MADEIRA_WG_VIDEO" );
+    unsetenv( "PG_WG_VIDEO" );
     free( data );
 }
 

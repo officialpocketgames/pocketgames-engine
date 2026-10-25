@@ -17,7 +17,7 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
- * Changed for MYIOSDECK, 2026 (spec 16 Part C4: with MADEIRA_FASTSYNC_SEM a semaphore's count
+ * Changed for MYIOSDECK, 2026 (spec 16 Part C4: with PG_FASTSYNC_SEM a semaphore's count
  * lives in a shared cell, out/16-sync-ios/include/ios_fastsync.h). The changes sit under
  * WINE_IOS; out/08-wineserver-ios/CHANGES.md lists them ("spec 16").
  */
@@ -262,7 +262,7 @@ static struct object *create_semaphore_sync( unsigned int initial, unsigned int 
     sem->max   = max;
 #ifdef WINE_IOS
     sem->ios_claims = 0;
-    sem->ios_cell = ios_fs_srv_sem_alloc( initial, max );   /* only with MADEIRA_FASTSYNC_SEM */
+    sem->ios_cell = ios_fs_srv_sem_alloc( initial, max );   /* only with PG_FASTSYNC_SEM */
 #endif
     return &sem->obj;
 }

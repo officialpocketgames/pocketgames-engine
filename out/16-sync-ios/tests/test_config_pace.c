@@ -136,7 +136,7 @@ static void test_fs_config(void)
     for (i = 0; i < sizeof(modes) / sizeof(modes[0]); i++)
     {
         fake_env[0][0] = NULL;
-        if (modes[i].value) set_env( 0, "MADEIRA_FASTSYNC", modes[i].value );
+        if (modes[i].value) set_env( 0, "PG_FASTSYNC", modes[i].value );
         ios_fs_config_parse( &c, fake_getenv );
         CHECK_EQ( c.mode, modes[i].mode );
     }
@@ -149,11 +149,11 @@ static void test_fs_config(void)
     CHECK_EQ( c.cap_us, 2000 );
     CHECK_EQ( c.auto_reqs, 20000 );
 
-    set_env( 0, "MADEIRA_FASTSYNC_SEM", "on" );
-    set_env( 1, "MADEIRA_FS_POLLPEEK", "off" );
-    set_env( 2, "MADEIRA_FASTSYNC_SPIN_US", "5000" );
-    set_env( 3, "MADEIRA_FASTSYNC_CAP_US", "10" );
-    set_env( 4, "MADEIRA_FS_AUTO_REQS", "5" );
+    set_env( 0, "PG_FASTSYNC_SEM", "on" );
+    set_env( 1, "PG_FS_POLLPEEK", "off" );
+    set_env( 2, "PG_FASTSYNC_SPIN_US", "5000" );
+    set_env( 3, "PG_FASTSYNC_CAP_US", "10" );
+    set_env( 4, "PG_FS_AUTO_REQS", "5" );
     ios_fs_config_parse( &c, fake_getenv );
     CHECK_EQ( c.sem, 1 );
     CHECK_EQ( c.pollpeek, 0 );
@@ -161,38 +161,38 @@ static void test_fs_config(void)
     CHECK_EQ( c.cap_us, 50 );
     CHECK_EQ( c.auto_reqs, 1000 );
 
-    set_env( 0, "MADEIRA_FASTSYNC_SPIN_US", "0" );
-    set_env( 1, "MADEIRA_FASTSYNC_CAP_US", "99999" );
-    set_env( 2, "MADEIRA_FS_POLLPEEK", "no" );
+    set_env( 0, "PG_FASTSYNC_SPIN_US", "0" );
+    set_env( 1, "PG_FASTSYNC_CAP_US", "99999" );
+    set_env( 2, "PG_FS_POLLPEEK", "no" );
     ios_fs_config_parse( &c, fake_getenv );
     CHECK_EQ( c.spin_us, 0 );
     CHECK_EQ( c.cap_us, 50000 );
     CHECK_EQ( c.pollpeek, 0 );
-    set_env( 0, "MADEIRA_FS_POLLPEEK", "1" );
+    set_env( 0, "PG_FS_POLLPEEK", "1" );
     ios_fs_config_parse( &c, fake_getenv );
     CHECK_EQ( c.pollpeek, 1 );
 }
 
-/* the real file through $MADEIRA_DOCS_DIR, read once */
+/* the real file through $PG_DOCS_DIR, read once */
 static void test_settings_file(void)
 {
     char dir[] = "/tmp/ios_sync_cfgXXXXXX", path[64];
     FILE *f;
 
     CHECK( mkdtemp( dir ) != NULL );
-    snprintf( path, sizeof(path), "%s/madeira.cfg", dir );
+    snprintf( path, sizeof(path), "%s/pocketgames.cfg", dir );
     CHECK( (f = fopen( path, "w" )) != NULL );
     if (!f) return;
     fputs( "inproc-sync = yes\neco-qos = background\nyield-streak = 3\nyield-sleep-us = 50\n", f );
     fclose( f );
-    setenv( "MADEIRA_DOCS_DIR", dir, 1 );
-    unsetenv( "MADEIRA_MADSYNC_SESSION" );
+    setenv( "PG_DOCS_DIR", dir, 1 );
+    unsetenv( "PG_MADSYNC_SESSION" );
 
     CHECK( ios_sync_settings()->file_found );
     CHECK_EQ( ios_sync_settings()->inproc_sync, 1 );
     CHECK( ios_usync_engine_selected() );
     /* once per app run: a later change is not seen */
-    setenv( "MADEIRA_MADSYNC_SESSION", "0", 1 );
+    setenv( "PG_MADSYNC_SESSION", "0", 1 );
     CHECK( ios_usync_engine_selected() );
     ios_usync_engine_recheck();   /* logged once ... */
     ios_usync_engine_recheck();   /* ... not twice */
@@ -244,20 +244,20 @@ static void test_eco(void)
     CHECK( ios_eco_must_apply( &applied, 5, 1 ));
 
     /* the generation starts at 1 and moves on every switch */
-    CHECK( !madeira_get_eco() );
+    CHECK( !pg_get_eco() );
     gen = ios_eco_generation();
     CHECK_EQ( gen, 1 );
     ios_eco_apply();
     CHECK_EQ( ios_eco_last_class, -1 );   /* eco never on: no call */
-    madeira_set_eco( 1 );
-    CHECK( madeira_get_eco() );
+    pg_set_eco( 1 );
+    CHECK( pg_get_eco() );
     CHECK_EQ( ios_eco_generation(), gen + 1 );
     ios_eco_apply();
     CHECK_EQ( ios_eco_last_class, IOS_QOS_BACKGROUND );   /* eco-qos of the file */
     ios_eco_last_class = -1;
     ios_eco_apply();
     CHECK_EQ( ios_eco_last_class, -1 );   /* same generation: nothing */
-    madeira_set_eco( 0 );
+    pg_set_eco( 0 );
     CHECK_EQ( ios_eco_generation(), gen + 2 );
     ios_eco_apply();
     CHECK_EQ( ios_eco_last_class, IOS_QOS_USER_INTERACTIVE );

@@ -10,7 +10,7 @@
 //                      and the server list DNS_ERROR_NO_DNS_SERVERS; set_serverlist's NULL
 //                      block arriving as B is NULL in the 32-bit table; a configured server
 //                      appears in the list
-//   test_dnsapi off    with MADEIRA_DNSAPI_UNIXLIB=0 every entry gives STATUS_NOT_SUPPORTED
+//   test_dnsapi off    with PG_DNSAPI_UNIXLIB=0 every entry gives STATUS_NOT_SUPPORTED
 
 #include <stdarg.h>
 #include <pthread.h>
@@ -108,8 +108,8 @@ int main( int argc, char **argv )
     IP4_ARRAY ip4 = { 1, { 0x08080808 } };
     int off = argc > 1 && !strcmp( argv[1], "off" );
 
-    if (off) setenv( "MADEIRA_DNSAPI_UNIXLIB", "0", 1 );
-    else unsetenv( "MADEIRA_DNSAPI_UNIXLIB" );
+    if (off) setenv( "PG_DNSAPI_UNIXLIB", "0", 1 );
+    else unsetenv( "PG_DNSAPI_UNIXLIB" );
 
     if (off)
     {

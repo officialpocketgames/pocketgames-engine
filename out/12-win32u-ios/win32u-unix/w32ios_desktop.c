@@ -11,7 +11,7 @@
 //    process, register the desktop and message classes for its process and ask again; if the
 //    thread has no desktop at all, connect it the way winstation_init connects the session
 //    (WinSta0 and the default desktop, unless its process parameters name others) and ask once
-//    more. MADEIRA_CHILD_DESKTOP=0 turns this off.
+//    more. PG_CHILD_DESKTOP=0 turns this off.
 
 #include "ntstatus.h"
 #include "win32u_private.h"
@@ -38,7 +38,7 @@ static BOOL query_desktop_window( struct ntuser_thread_info *thread_info )
 static BOOL child_desktop_enabled( void )
 {
     static int enabled = -1;
-    if (enabled < 0) enabled = w32ios_env_bool( "MADEIRA_CHILD_DESKTOP", TRUE );
+    if (enabled < 0) enabled = w32ios_env_bool( "PG_CHILD_DESKTOP", TRUE );
     return enabled;
 }
 

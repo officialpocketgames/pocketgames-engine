@@ -40,10 +40,10 @@ uint32_t ia_ring_capacity( int64_t duration, uint32_t rate );
 uint32_t ia_standard_mask( uint32_t channels );
 
 /* Fills gain_l/gain_r (IA_MAX_GAINS entries each) and returns how many channels get a gain
- * (min(channels, 12)). downmix == 0: MADEIRA_AUDIO_DOWNMIX=0. */
+ * (min(channels, 12)). downmix == 0: PG_AUDIO_DOWNMIX=0. */
 unsigned int ia_downmix_gains( uint32_t channels, uint32_t mask, int downmix, float *gain_l, float *gain_r );
 
-/* MADEIRA_AUDIO_LEAD_MS: 10-500, default 60; a value starting with '0' turns the lead off (0);
+/* PG_AUDIO_LEAD_MS: 10-500, default 60; a value starting with '0' turns the lead off (0);
  * anything else outside 10-500 means 60. */
 uint32_t ia_parse_lead_ms( const char *value );
 

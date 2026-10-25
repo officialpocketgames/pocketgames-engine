@@ -43,7 +43,7 @@ static WINDOWPROC *w32ios_find_winproc( WNDPROC func, BOOL ansi )
 static BOOL w32ios_winproc_handles( void )
 {
     static int enabled = -1;
-    if (enabled < 0) enabled = w32ios_env_bool( "MADEIRA_WINPROC_HANDLE", TRUE );
+    if (enabled < 0) enabled = w32ios_env_bool( "PG_WINPROC_HANDLE", TRUE );
     return enabled;
 }
 

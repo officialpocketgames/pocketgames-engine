@@ -17,7 +17,7 @@
  *
  * Changed for MYIOSDECK (2026, spec 13 Parts B and F, clarifications 11-13): GnuTLS replaced by
  * Security.framework: PFX import through SecPKCS12Import, and the root certificates of
- * MADEIRA_CA_BUNDLE kept only where the device trusts them as anchors (SecTrust); the roots are
+ * PG_CA_BUNDLE kept only where the device trusts them as anchors (SecTrust); the roots are
  * loaded once per app run and every enumeration sees all of them; the 32-bit thunks convert guest
  * addresses with ios_g2h(). See out/13-net-crypto-ios/CHANGES.md.
  */
@@ -497,7 +497,7 @@ static uint64_t ios_now_ms(void)
     return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
-/* MYIOSDECK (spec 13 Part F1): the PEM file named by MADEIRA_CA_BUNDLE, a regular file of
+/* MYIOSDECK (spec 13 Part F1): the PEM file named by PG_CA_BUNDLE, a regular file of
  * concatenated certificates (a directory is refused); FALSE when nothing could be read */
 static BOOL ios_load_ca_bundle( const char *path )
 {
@@ -505,12 +505,12 @@ static BOOL ios_load_ca_bundle( const char *path )
 
     if (stat( path, &st ))
     {
-        fprintf( stderr, "[crypt32-ios] MADEIRA_CA_BUNDLE=%s: cannot open it, no root certificates\n", path );
+        fprintf( stderr, "[crypt32-ios] PG_CA_BUNDLE=%s: cannot open it, no root certificates\n", path );
         return FALSE;
     }
     if (!S_ISREG( st.st_mode ))
     {
-        fprintf( stderr, "[crypt32-ios] MADEIRA_CA_BUNDLE=%s: not a regular file, refused: no root certificates\n",
+        fprintf( stderr, "[crypt32-ios] PG_CA_BUNDLE=%s: not a regular file, refused: no root certificates\n",
                  path );
         return FALSE;
     }
@@ -519,11 +519,11 @@ static BOOL ios_load_ca_bundle( const char *path )
 }
 
 /* MYIOSDECK (spec 13 clarification 12): keep a bundle certificate only if the device trusts it
- * as an anchor; if that keeps fewer than half, keep them all; MADEIRA_CA_FILTER=0 turns the
+ * as an anchor; if that keeps fewer than half, keep them all; PG_CA_FILTER=0 turns the
  * filter off. One log line. */
 static void ios_filter_roots( const char *path, uint64_t start )
 {
-    const char *flag = getenv( "MADEIRA_CA_FILTER" );
+    const char *flag = getenv( "PG_CA_FILTER" );
     struct root_cert *cert, *next;
     unsigned int total = 0, kept = 0, dropped = 0, i = 0, j;
     unsigned char *keep, digest[32];
@@ -534,8 +534,8 @@ static void ios_filter_roots( const char *path, uint64_t start )
 
     if (flag && !strcmp( flag, "0" ))
     {
-        fprintf( stderr, "[crypt32-ios] MADEIRA_CA_BUNDLE=%s: %u certificates in the bundle, filter off "
-                 "(MADEIRA_CA_FILTER=0): kept %u of %u roots, %u ms\n", path, total, total, total,
+        fprintf( stderr, "[crypt32-ios] PG_CA_BUNDLE=%s: %u certificates in the bundle, filter off "
+                 "(PG_CA_FILTER=0): kept %u of %u roots, %u ms\n", path, total, total, total,
                  (unsigned int)(ios_now_ms() - start) );
         return;
     }
@@ -549,7 +549,7 @@ static void ios_filter_roots( const char *path, uint64_t start )
 
     if (kept * 2 < total)
     {
-        fprintf( stderr, "[crypt32-ios] MADEIRA_CA_BUNDLE=%s: %u certificates in the bundle, the device trusts "
+        fprintf( stderr, "[crypt32-ios] PG_CA_BUNDLE=%s: %u certificates in the bundle, the device trusts "
                  "only %u: filter not applied, kept %u of %u roots, %u ms\n", path, total, kept, total, total,
                  (unsigned int)(ios_now_ms() - start) );
         free( keep );
@@ -575,19 +575,19 @@ static void ios_filter_roots( const char *path, uint64_t start )
         }
     }
     free( keep );
-    fprintf( stderr, "[crypt32-ios] MADEIRA_CA_BUNDLE=%s: %u certificates in the bundle, kept %u of %u roots, "
+    fprintf( stderr, "[crypt32-ios] PG_CA_BUNDLE=%s: %u certificates in the bundle, kept %u of %u roots, "
              "dropped %u%s%s, %u ms\n", path, total, kept, total, dropped, dropped ? ", first SHA-256:" : "",
              fingerprints, (unsigned int)(ios_now_ms() - start) );
 }
 
 static void load_root_certs(void)
 {
-    const char *path = getenv( "MADEIRA_CA_BUNDLE" );
+    const char *path = getenv( "PG_CA_BUNDLE" );
     uint64_t start = ios_now_ms();
 
     if (!path || !path[0])
     {
-        fprintf( stderr, "[crypt32-ios] MADEIRA_CA_BUNDLE is not set: no root certificates\n" );
+        fprintf( stderr, "[crypt32-ios] PG_CA_BUNDLE is not set: no root certificates\n" );
         return;
     }
     if (ios_load_ca_bundle( path )) ios_filter_roots( path, start );

@@ -1080,14 +1080,14 @@ void stop_thread( struct thread *thread )
 }
 
 #ifdef WINE_IOS
-/* spec 08 Part E2: MADEIRA_REAL_SUSPEND=1 really stops suspended threads. Off by default: the
+/* spec 08 Part E2: PG_REAL_SUSPEND=1 really stops suspended threads. Off by default: the
  * server shares the app's allocator (and log) with every thread, so freezing a thread that
  * holds such a lock can deadlock the server itself. */
 static int ios_real_suspend(void)
 {
     static int real = -1;
 
-    if (real == -1) real = ios_env_int( "MADEIRA_REAL_SUSPEND", 0 ) == 1;
+    if (real == -1) real = ios_env_int( "PG_REAL_SUSPEND", 0 ) == 1;
     return real;
 }
 

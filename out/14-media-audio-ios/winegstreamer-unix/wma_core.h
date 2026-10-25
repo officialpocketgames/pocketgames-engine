@@ -68,7 +68,7 @@ void wma_core_read( struct wma_core *core, uint8_t *dst, uint32_t max, struct wm
 void wma_core_drain( struct wma_core *core );   /* rule 12 */
 void wma_core_flush( struct wma_core *core );   /* rule 12 */
 
-/* "[wma] " lines: at most 200 per app, then one "suppressed" line (MADEIRA_DIAG=1 lifts it) */
+/* "[wma] " lines: at most 200 per app, then one "suppressed" line (PG_DIAG=1 lifts it) */
 void wma_log( const char *fmt, ... ) __attribute__((format(printf, 1, 2)));
 
 /* for tests and logs */

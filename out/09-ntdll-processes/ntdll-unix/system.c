@@ -1663,7 +1663,7 @@ void init_cpu_info(void)
     FIXME("Detecting the number of processors is not supported.\n");
 #endif
 #ifdef WINE_IOS
-    /* MYIOSDECK (spec 17 D3): MADEIRA_CPU_COUNT or the settings file's cpu-count (1 to 63)
+    /* MYIOSDECK (spec 17 D3): PG_CPU_COUNT or the settings file's cpu-count (1 to 63)
      * replaces the number Windows code sees */
     num = ios_s17_cpu_count( num );
 #endif

@@ -1,6 +1,6 @@
 Spec 12 Part D: the D3DKMT adapter (w32ios_kmt.c). Adapters remember the LUID they were opened
 for; OpenAdapterFromHdc, QueryAdapterInfo, QueryStatistics and QueryVideoMemoryInfo answer for
-the adapter when MADEIRA_KMT_ADAPTER is on.
+the adapter when PG_KMT_ADAPTER is on.
 
 --- a/dlls/win32u/d3dkmt.c
 +++ b/dlls/win32u/d3dkmt.c

@@ -3326,7 +3326,7 @@ done:
  *	use_builtin_xinput
  *
  * MYIOSDECK (spec 18 Part H5): games ship Microsoft's XInput next to the executable, but only
- * the built-in one sees the app's controllers; MADEIRA_NATIVE_XINPUT=1 restores the search.
+ * the built-in one sees the app's controllers; PG_NATIVE_XINPUT=1 restores the search.
  */
 static BOOL use_builtin_xinput( const WCHAR *libname )
 {
@@ -3338,7 +3338,7 @@ static BOOL use_builtin_xinput( const WCHAR *libname )
         UNICODE_STRING value;
 
         native_allowed = 0;
-        if (!get_env_var( L"MADEIRA_NATIVE_XINPUT", 0, &value ))
+        if (!get_env_var( L"PG_NATIVE_XINPUT", 0, &value ))
         {
             native_allowed = value.Length == sizeof(WCHAR) && value.Buffer[0] == '1';
             RtlFreeUnicodeString( &value );
@@ -4789,7 +4789,7 @@ void loader_init( CONTEXT *context, void **entry )
 
         init_user_process_params();
 #ifdef __i386__
-        heap_init_madeira_policy();  /* MYIOSDECK (spec 18 Part I1): before any other thread runs */
+        heap_init_pg_policy();  /* MYIOSDECK (spec 18 Part I1): before any other thread runs */
 #endif
         load_global_options();
         version_init();

@@ -115,7 +115,7 @@ static void copy_string(char *dst, const char *src)
     dst[n] = 0;
 }
 
-/* MADEIRA_HIDPAD_NAME, printable ASCII only: other bytes are dropped, surrounding spaces
+/* PG_HIDPAD_NAME, printable ASCII only: other bytes are dropped, surrounding spaces
  * trimmed. An empty result means "no usable name". */
 static void copy_printable(char *dst, const char *src)
 {
@@ -405,16 +405,16 @@ static uint8_t stick_byte(int16_t v)
 }
 
 /* The DualSense battery byte: level 0-10 in the low nibble, the charging state above. */
-static uint8_t battery_byte(const struct winios_hidpad *pad)
+static uint8_t battery_byte(const struct pgios_hidpad *pad)
 {
     unsigned int level;
 
-    if (!pad->connected || pad->battery == WINIOS_HIDPAD_BATTERY_UNKNOWN) return 0x2a;
+    if (!pad->connected || pad->battery == PGIOS_HIDPAD_BATTERY_UNKNOWN) return 0x2a;
     level = pad->battery >= 100 ? 10u : pad->battery / 10u;
     return (uint8_t)(((pad->charging & 0x0f) << 4) | level);
 }
 
-static void put_touch(uint8_t *p, const struct winios_hidpad *pad,
+static void put_touch(uint8_t *p, const struct pgios_hidpad *pad,
                       struct ios_hidpad_report_state *state, int i)
 {
     int down = pad->connected && pad->touch[i];
@@ -437,11 +437,11 @@ static void put_touch(uint8_t *p, const struct winios_hidpad *pad,
     p[3] = (uint8_t)(y >> 4);
 }
 
-size_t ios_hidpad_build_dualsense_input(const struct winios_hidpad *pad,
+size_t ios_hidpad_build_dualsense_input(const struct pgios_hidpad *pad,
                                         struct ios_hidpad_report_state *state,
                                         uint64_t now_us, uint8_t *out)
 {
-    struct winios_hidpad rest;
+    struct pgios_hidpad rest;
     uint32_t b;
     uint8_t byte;
     int i;
@@ -475,8 +475,8 @@ size_t ios_hidpad_build_dualsense_input(const struct winios_hidpad *pad,
     byte = 0;
     if (b & PAD_LEFT_SHOULDER) byte |= 0x01;
     if (b & PAD_RIGHT_SHOULDER) byte |= 0x02;
-    if (b & WINIOS_HIDPAD_L2) byte |= 0x04;
-    if (b & WINIOS_HIDPAD_R2) byte |= 0x08;
+    if (b & PGIOS_HIDPAD_L2) byte |= 0x04;
+    if (b & PGIOS_HIDPAD_R2) byte |= 0x08;
     if (b & PAD_BACK) byte |= 0x10;            /* Create */
     if (b & PAD_START) byte |= 0x20;           /* Options */
     if (b & PAD_LEFT_THUMB) byte |= 0x40;
@@ -485,8 +485,8 @@ size_t ios_hidpad_build_dualsense_input(const struct winios_hidpad *pad,
 
     byte = 0;
     if (b & PAD_GUIDE) byte |= 0x01;           /* PS */
-    if (b & WINIOS_HIDPAD_TOUCHPAD) byte |= 0x02;
-    if (b & WINIOS_HIDPAD_MUTE) byte |= 0x04;
+    if (b & PGIOS_HIDPAD_TOUCHPAD) byte |= 0x02;
+    if (b & PGIOS_HIDPAD_MUTE) byte |= 0x04;
     out[10] = byte;
 
     if (pad->connected && pad->motion == 1)
@@ -516,7 +516,7 @@ static int16_t sym(int16_t v)
     return v == -32768 ? (int16_t)-32767 : v;
 }
 
-size_t ios_hidpad_build_generic_input(const struct winios_hidpad *pad, uint8_t *out)
+size_t ios_hidpad_build_generic_input(const struct pgios_hidpad *pad, uint8_t *out)
 {
     static const struct { uint32_t mask; unsigned int bit; } buttons[] =
     {
@@ -549,7 +549,7 @@ size_t ios_hidpad_build_generic_input(const struct winios_hidpad *pad, uint8_t *
     return IOS_HIDPAD_GENERIC_INPUT_LEN;
 }
 
-size_t ios_hidpad_build_input(const struct ios_hidpad_identity *id, const struct winios_hidpad *pad,
+size_t ios_hidpad_build_input(const struct ios_hidpad_identity *id, const struct pgios_hidpad *pad,
                               struct ios_hidpad_report_state *state, uint64_t now_us, uint8_t *out)
 {
     switch (id->kind)
@@ -660,7 +660,7 @@ enum
 };
 
 enum ios_hidpad_output_result ios_hidpad_decode_output(const uint8_t *data, size_t len,
-                                                       struct winios_hidpad_output *out,
+                                                       struct pgios_hidpad_output *out,
                                                        struct ios_hidpad_output_flags *flags)
 {
     struct ios_hidpad_output_flags f;
@@ -735,9 +735,9 @@ enum ios_hidpad_output_result ios_hidpad_decode_output(const uint8_t *data, size
     return IOS_HIDPAD_OUTPUT_FOLDED;
 }
 
-int ios_hidpad_output_release(struct winios_hidpad_output *out)
+int ios_hidpad_output_release(struct pgios_hidpad_output *out)
 {
-    struct winios_hidpad_output before = *out;
+    struct pgios_hidpad_output before = *out;
 
     if (out->rumble_valid)
     {
@@ -753,9 +753,9 @@ int ios_hidpad_output_release(struct winios_hidpad_output *out)
     return !ios_hidpad_output_same(&before, out);
 }
 
-int ios_hidpad_output_same(const struct winios_hidpad_output *a, const struct winios_hidpad_output *b)
+int ios_hidpad_output_same(const struct pgios_hidpad_output *a, const struct pgios_hidpad_output *b)
 {
-    struct winios_hidpad_output x = *a, y = *b;
+    struct pgios_hidpad_output x = *a, y = *b;
     x.serial = y.serial = 0;
     return !memcmp(&x, &y, sizeof(x));
 }

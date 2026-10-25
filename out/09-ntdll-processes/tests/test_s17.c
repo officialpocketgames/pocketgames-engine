@@ -109,7 +109,7 @@ static void test_part_b(void)
     CHECK( ios_s17_is_wow64( 1, 1, 0 ) );    /* 32-bit thread, process-wide answer changed */
     CHECK( ios_s17_is_wow64( 1, 1, 1 ) );    /* 32-bit thread */
     CHECK( ios_s17_is_wow64( 1, 0, 1 ) );    /* a TEB-less thread: the process-wide answer */
-    CHECK( !ios_s17_is_wow64( 0, 1, 0 ) );   /* MADEIRA_WOW64_BY_TEB=0 */
+    CHECK( !ios_s17_is_wow64( 0, 1, 0 ) );   /* PG_WOW64_BY_TEB=0 */
     CHECK( ios_s17_is_wow64( 0, 1, 1 ) );
 
     /* B2 in_wow64_call(owner switch, window base, upstream) */
@@ -117,14 +117,14 @@ static void test_part_b(void)
     CHECK( ios_s17_in_wow64_call( 1, B, 1 ) );    /* 32-bit thread */
     CHECK( !ios_s17_in_wow64_call( 1, 0, 1 ) );   /* 64-bit process while a 32-bit one exists */
     CHECK( ios_s17_in_wow64_call( 1, B, 0 ) );    /* 32-bit process, stale global */
-    CHECK( ios_s17_in_wow64_call( 0, 0, 1 ) );    /* MADEIRA_IO_STATUS_OWNER=0: upstream's */
+    CHECK( ios_s17_in_wow64_call( 0, 0, 1 ) );    /* PG_IO_STATUS_OWNER=0: upstream's */
     CHECK( !ios_s17_in_wow64_call( 0, B, 0 ) );
 
     /* B4 section ceiling(per-process switch, window base, guest ceiling) */
     CHECK_EQ( ios_s17_section_limit( 1, 0, 0 ), 0 );          /* 64-bit process */
     CHECK_EQ( ios_s17_section_limit( 1, B, CEIL ), CEIL );    /* 32-bit process */
     CHECK_EQ( ios_s17_section_limit( 1, 0, CEIL ), 0 );       /* 64-bit helper after a 32-bit one */
-    CHECK_EQ( ios_s17_section_limit( 0, 0, CEIL ), CEIL );    /* MADEIRA_SECTION_PROCESS_LIMIT=0 */
+    CHECK_EQ( ios_s17_section_limit( 0, 0, CEIL ), CEIL );    /* PG_SECTION_PROCESS_LIMIT=0 */
     CHECK_EQ( ios_s17_section_limit( 0, B, CEIL ), CEIL );
 
     /* B3 is_ec_code: NULL bitmap is FALSE, never a dereference */
@@ -495,7 +495,7 @@ static void test_cpu_count(void)
     static const char cfg[] =
         "\xef\xbb\xbf# settings\n"
         "cpu-count = 2\n"
-        "  env.MADEIRA_X = a=b  \n"
+        "  env.PG_X = a=b  \n"
         "no equals here\n"
         "  # cpu-count = 9\n"
         "cpu-count\t=  4 \r\n";
@@ -505,7 +505,7 @@ static void test_cpu_count(void)
     /* the settings file reader */
     CHECK( ios_s17_cfg_lookup( cfg, sizeof(cfg) - 1, "cpu-count", value, sizeof(value) ) );
     CHECK_STR( value, "4" );   /* the last occurrence wins; # lines don't count */
-    CHECK( ios_s17_cfg_lookup( cfg, sizeof(cfg) - 1, "env.MADEIRA_X", value, sizeof(value) ) );
+    CHECK( ios_s17_cfg_lookup( cfg, sizeof(cfg) - 1, "env.PG_X", value, sizeof(value) ) );
     CHECK_STR( value, "a=b" );
     CHECK( !ios_s17_cfg_lookup( cfg, sizeof(cfg) - 1, "cpu", value, sizeof(value) ) );
     CHECK( !ios_s17_cfg_lookup( cfg, sizeof(cfg) - 1, "no equals here", value, sizeof(value) ) );
@@ -536,19 +536,19 @@ static void test_cpu_count(void)
     CHECK_EQ( ios_s17_cpu_override( "1", NULL ), 1 );
     CHECK_EQ( ios_s17_cpu_override( NULL, "64" ), 0 );
 
-    /* the file through MADEIRA_DOCS_DIR, decided once and logged once */
-    write_file( "madeira.cfg", "cpu-count = 4\n", 14 );
+    /* the file through PG_DOCS_DIR, decided once and logged once */
+    write_file( "pocketgames.cfg", "cpu-count = 4\n", 14 );
     CHECK( ios_s17_cfg_file_get( dir, "cpu-count", value, sizeof(value) ) );
     CHECK_STR( value, "4" );
     CHECK( !ios_s17_cfg_file_get( "/nonexistent-dir", "cpu-count", value, sizeof(value) ) );
     CHECK( !ios_s17_cfg_file_get( NULL, "cpu-count", value, sizeof(value) ) );
-    setenv( "MADEIRA_DOCS_DIR", dir, 1 );
-    setenv( "MADEIRA_CPU_COUNT", "2", 1 );
+    setenv( "PG_DOCS_DIR", dir, 1 );
+    setenv( "PG_CPU_COUNT", "2", 1 );
     log_lines = 0;
     CHECK_EQ( ios_s17_cpu_count( 6 ), 2 );
     CHECK_EQ( log_lines, 1 );
     CHECK( strstr( last_log, "reporting 2 (host has 6)" ) != NULL );
-    unsetenv( "MADEIRA_CPU_COUNT" );          /* later pseudo-processes keep the decision */
+    unsetenv( "PG_CPU_COUNT" );          /* later pseudo-processes keep the decision */
     CHECK_EQ( ios_s17_cpu_count( 6 ), 2 );
     CHECK_EQ( log_lines, 1 );
 }
@@ -808,14 +808,14 @@ static void test_unix_calls(void)
 
 static void test_switch_env(void)
 {
-    setenv( "MADEIRA_WOW64_BY_TEB", "0", 1 );
-    unsetenv( "MADEIRA_IO_STATUS_OWNER" );
-    setenv( "MADEIRA_SECTION_PROCESS_LIMIT", "1", 1 );
+    setenv( "PG_WOW64_BY_TEB", "0", 1 );
+    unsetenv( "PG_IO_STATUS_OWNER" );
+    setenv( "PG_SECTION_PROCESS_LIMIT", "1", 1 );
     CHECK( !ios_s17_switch( IOS_S17_WOW64_BY_TEB ) );
     CHECK( ios_s17_switch( IOS_S17_IO_STATUS_OWNER ) );
     CHECK( ios_s17_switch( IOS_S17_SECTION_LIMIT ) );
     /* read once per app run */
-    setenv( "MADEIRA_WOW64_BY_TEB", "1", 1 );
+    setenv( "PG_WOW64_BY_TEB", "1", 1 );
     CHECK( !ios_s17_switch( IOS_S17_WOW64_BY_TEB ) );
 }
 

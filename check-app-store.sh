@@ -19,5 +19,23 @@ for dir in "$@"; do
         status=1
     fi
 done
-[ $status -eq 0 ] && echo "check-app-store: clean" || echo "check-app-store: forbidden API found (the App Store rules)"
+
+# Part G.4: the old working name (any case) and "winios" (any case) appear nowhere in the
+# engine, comments and tests included, outside refs/; the one exception is Wine's time zone
+# Atlantic/<the old word>. The word is assembled here so this script doesn't carry it.
+old_word='made''ira'
+old_zone='Atlantic/Made''ira'
+names=$(dirname "$0")/interfaces
+for dir in "$@" "$names"; do
+    [ -e "$dir" ] || continue
+    hits=$(grep -rnIiE "${old_word}|winios" "$dir" 2>/dev/null |
+        grep -v '/refs/' | sed "s#${old_zone}##g" | grep -iE "${old_word}|winios")
+    if [ -n "$hits" ]; then
+        echo "$hits"
+        echo "check-app-store: an old name is left (the App Store rules Part G)"
+        status=1
+    fi
+done
+
+[ $status -eq 0 ] && echo "check-app-store: clean" || echo "check-app-store: forbidden API or name found (the App Store rules)"
 exit $status

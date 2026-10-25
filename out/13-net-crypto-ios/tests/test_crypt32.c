@@ -4,7 +4,7 @@
 // Spec 13 clarification 15, crypt32: crypt32/unixlib.c (included below, with
 // common/ios_rootenum.c) through its unix-call tables on the fake of include/ios_applecrypto.h:
 // the root filter of clarification 12 (the fake distrusts certificates holding a marker; counts,
-// the half-kept fallback, MADEIRA_CA_FILTER=0, the log line) and the PFX import of clarification 11
+// the half-kept fallback, PG_CA_FILTER=0, the log line) and the PFX import of clarification 11
 // (PKCS #1 -> PRIVATEKEYBLOB from the fixture key of tests/fixtures/fixtures.h).
 
 #include "crypt32/unixlib.c"
@@ -162,14 +162,14 @@ static void test_roots( void )
     fake_ac_set_distrust_marker( "BAD!", 4 );
 
     /* unset: no roots */
-    unsetenv( "MADEIRA_CA_BUNDLE" );
+    unsetenv( "PG_CA_BUNDLE" );
     reset_roots();
     CHECK_EQ( count_roots(), 0 );
-    CHECK( strstr( log_text, "MADEIRA_CA_BUNDLE is not set" ) != NULL );
+    CHECK( strstr( log_text, "PG_CA_BUNDLE is not set" ) != NULL );
 
     /* 10 certificates, 3 distrusted (1, 4, 9): 7 kept */
-    setenv( "MADEIRA_CA_BUNDLE", bundle, 1 );
-    unsetenv( "MADEIRA_CA_FILTER" );
+    setenv( "PG_CA_BUNDLE", bundle, 1 );
+    unsetenv( "PG_CA_FILTER" );
     write_bundle( 10, (1 << 1) | (1 << 4) | (1 << 9) );
     reset_roots();
     fake_ac_reset_counts();
@@ -197,18 +197,18 @@ static void test_roots( void )
     reset_roots();
     CHECK_EQ( count_roots(), 5 );
 
-    /* MADEIRA_CA_FILTER=0: no trust calls, all kept */
-    setenv( "MADEIRA_CA_FILTER", "0", 1 );
+    /* PG_CA_FILTER=0: no trust calls, all kept */
+    setenv( "PG_CA_FILTER", "0", 1 );
     write_bundle( 10, (1 << 1) | (1 << 4) | (1 << 9) );
     reset_roots();
     fake_ac_reset_counts();
     CHECK_EQ( count_roots(), 10 );
     CHECK_EQ( fake_ac_route_calls( FAKE_AC_TRUST ), 0 );
-    CHECK( strstr( log_text, "filter off (MADEIRA_CA_FILTER=0): kept 10 of 10 roots" ) != NULL );
-    unsetenv( "MADEIRA_CA_FILTER" );
+    CHECK( strstr( log_text, "filter off (PG_CA_FILTER=0): kept 10 of 10 roots" ) != NULL );
+    unsetenv( "PG_CA_FILTER" );
 
     /* a directory is refused */
-    setenv( "MADEIRA_CA_BUNDLE", dir, 1 );
+    setenv( "PG_CA_BUNDLE", dir, 1 );
     reset_roots();
     CHECK_EQ( count_roots(), 0 );
     CHECK( strstr( log_text, "not a regular file" ) != NULL );

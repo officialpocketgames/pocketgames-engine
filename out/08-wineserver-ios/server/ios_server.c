@@ -215,8 +215,8 @@ int ios_get_screen_size( int *width, int *height )
     }
     if (env_width == -1)  /* read once, on the server thread */
     {
-        env_width = ios_env_int( "MADEIRA_SCREEN_W", 0 );
-        env_height = ios_env_int( "MADEIRA_SCREEN_H", 0 );
+        env_width = ios_env_int( "PG_SCREEN_W", 0 );
+        env_height = ios_env_int( "PG_SCREEN_H", 0 );
     }
     if (env_width <= 0 || env_height <= 0) return 0;
     *width = env_width;

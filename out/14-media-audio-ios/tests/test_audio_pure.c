@@ -76,7 +76,7 @@ static void test_gains( void )
         check_gains( 4, 0x4 | 0x100 | 0x800 | 0x2000, 1, 4, l, r, __LINE__ );
     }
     {
-        /* MADEIRA_AUDIO_DOWNMIX=0 */
+        /* PG_AUDIO_DOWNMIX=0 */
         const float l[] = { 1, 0, 0, 0, 0, 0 }, r[] = { 0, 1, 0, 0, 0, 0 };
         check_gains( 6, 0x3f, 0, 6, l, r, __LINE__ );
     }

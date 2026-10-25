@@ -92,7 +92,7 @@ unsigned int ia_downmix_gains( uint32_t channels, uint32_t mask, int downmix, fl
     }
     if (!downmix)
     {
-        /* MADEIRA_AUDIO_DOWNMIX=0: channel 0 -> L, channel 1 -> R, the rest dropped */
+        /* PG_AUDIO_DOWNMIX=0: channel 0 -> L, channel 1 -> R, the rest dropped */
         gl[0] = 1.0f;
         gr[1] = 1.0f;
         return n;

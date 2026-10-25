@@ -58,7 +58,7 @@ extern void ios_wait_for_wake( long long nsec );
 extern void ios_drain_wakes(void);
 
 /* Part F5: the screen size (the virtual monitor): from wineserver_set_screen_size(), else from
- * MADEIRA_SCREEN_W/H. Returns 0 if unknown. ios_take_screen_change() reports (once) that the
+ * PG_SCREEN_W/H. Returns 0 if unknown. ios_take_screen_change() reports (once) that the
  * app changed it. */
 extern void wineserver_set_screen_size( int width, int height );
 extern int ios_get_screen_size( int *width, int *height );

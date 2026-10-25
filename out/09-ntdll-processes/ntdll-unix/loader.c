@@ -2513,7 +2513,7 @@ DECLSPEC_EXPORT void __wine_main( int argc, char *argv[] )
  *
  * MYIOSDECK (spec 22 Part C1): boots a later program of a kept session on the calling thread, as
  * a new top-level pseudo-process: a child's boot (Part C4) with no parent. Its parameters,
- * command line, working folder (MADEIRA_INITIAL_CWD) and environment come from argv and the
+ * command line, working folder (PG_INITIAL_CWD) and environment come from argv and the
  * environment as for the first program (the server took server_fd's other end as a new process
  * with no parent, so it has no startup info: init_startup_info builds it). Its end longjmps to
  * the app's wine_ios_exit_jmpbuf like the first program's (Part C2). Returns non-zero when the

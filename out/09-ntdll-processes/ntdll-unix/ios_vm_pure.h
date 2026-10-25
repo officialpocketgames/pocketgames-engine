@@ -26,11 +26,11 @@ uint64_t ios_vm_user_limit( uint64_t task_max_address, uint64_t windows_limit );
 /* ---------- Part E4/E5: guest limits ---------- */
 
 /* The ceiling reported to 32-bit code (exclusive): 4 GB, or 2 GB for an image without
- * IMAGE_FILE_LARGE_ADDRESS_AWARE when MADEIRA_LAA is "0". */
+ * IMAGE_FILE_LARGE_ADDRESS_AWARE when PG_LAA is "0". */
 uint64_t ios_wow_ceiling( int large_address_aware, const char *env_laa );
 
 /* Whether allocations try the low 2 GB first: an image without the flag that was given 4 GB,
- * unless MADEIRA_LAA_LOWFIRST is "0". */
+ * unless PG_LAA_LOWFIRST is "0". */
 int ios_wow_lowfirst( int large_address_aware, uint64_t ceiling, const char *env_lowfirst );
 
 /* Translates an allocation's limits (inclusive high limit, 0: none). For a 32-bit process

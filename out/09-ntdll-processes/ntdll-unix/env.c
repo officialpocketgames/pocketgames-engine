@@ -1903,7 +1903,7 @@ static RTL_USER_PROCESS_PARAMETERS *build_initial_params( void **module )
     WCHAR *dst, *cmdline, *path, *bootstrap;
     WCHAR *env = get_initial_environment( &env_pos, &env_size );
 #ifdef WINE_IOS
-    /* MYIOSDECK (spec 09 Part C3): the program's working folder comes from MADEIRA_INITIAL_CWD;
+    /* MYIOSDECK (spec 09 Part C3): the program's working folder comes from PG_INITIAL_CWD;
      * the unix working directory is not looked at or changed */
     WCHAR *curdir = ios_initial_directory();
     if (!curdir) curdir = get_initial_directory();

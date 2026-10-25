@@ -25,7 +25,7 @@ extern int ios_wow_session_armed( void ) __attribute__((weak));   /* spec 10 cla
 
 /* One line to the unix side's log, with a "[win32u] " prefix (no newline needed). */
 void w32ios_log( const char *fmt, ... ) __attribute__((format(printf, 1, 2)));
-/* The same, unless MADEIRA_QUIET=1. */
+/* The same, unless PG_QUIET=1. */
 void w32ios_log_verbose( const char *fmt, ... ) __attribute__((format(printf, 1, 2)));
 /* An environment switch: unset or empty gives def, then w32ios_parse_bool. */
 BOOL w32ios_env_bool( const char *name, BOOL def );
@@ -167,8 +167,8 @@ void w32ios_monitor_resized( void );
 struct w32ios_size w32ios_display_default( void );
 struct w32ios_size w32ios_display_current( void );
 void w32ios_display_set_current( struct w32ios_size size );
-BOOL w32ios_display_extended_modes( void );          /* MADEIRA_EXTENDED_MODES=1 */
-BOOL w32ios_display_mode_set_enabled( void );        /* MADEIRA_VIRTUAL_MODE_SET != 0 */
+BOOL w32ios_display_extended_modes( void );          /* PG_EXTENDED_MODES=1 */
+BOOL w32ios_display_mode_set_enabled( void );        /* PG_VIRTUAL_MODE_SET != 0 */
 /* the session default goes to the server once per session (C5): returns TRUE the first time */
 BOOL w32ios_display_take_report( void );
 /* fill a DEVMODEW's display fields (32 bpp, 60 Hz, at 0,0) */
@@ -187,13 +187,13 @@ struct w32ios_gpu
 };
 /* the identity this launch uses: Apple 106B:0001, or NVIDIA 10DE:2544 with DXMT_ENABLE_NVEXT=1 */
 void w32ios_gpu_identity( UINT16 *vendor, UINT16 *device, const char **name );
-/* the app's winios_display_mode_changed, if it provides one (w32ios_display.c) */
+/* the app's pgios_display_mode_changed, if it provides one (w32ios_display.c) */
 void w32ios_app_display_mode_changed( int w, int h );
 
 /* ---------------------------------------------------------------- Part D: D3DKMT adapter */
 
 /* w32ios_kmt.c */
-BOOL w32ios_kmt_enabled( void );                 /* MADEIRA_KMT_ADAPTER=1/on/true/yes */
+BOOL w32ios_kmt_enabled( void );                 /* PG_KMT_ADAPTER=1/on/true/yes */
 BOOL w32ios_kmt_luid( LUID *luid );              /* with the adapter on: Metal's LUID */
 ULONGLONG w32ios_kmt_memory( void );             /* the registry GPU's dedicated memory */
 
@@ -202,7 +202,7 @@ ULONGLONG w32ios_kmt_memory( void );             /* the registry GPU's dedicated
 /* w32ios_driver.c */
 void w32ios_driver_install( void );              /* __wine_set_user_driver, once */
 void w32ios_driver_session_start( void );
-BOOL w32ios_desktop_mode( void );                /* MADEIRA_DESKTOP=1 */
+BOOL w32ios_desktop_mode( void );                /* PG_DESKTOP=1 */
 /* E2: a pure poll may skip its set_queue_mask request (TRUE) unless a second passed */
 BOOL w32ios_skip_queue_mask( void );
 /* E2: NtWaitForMultipleObjects for a message wait, in 16 ms slices when the thread slices */

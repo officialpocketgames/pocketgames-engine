@@ -228,7 +228,7 @@ enum { W32IOS_PAD_STATE = 0, W32IOS_PAD_CAPS = 1, W32IOS_PAD_VIBRATION = 2 };
 /* The contract's snapshot, read through these so this file needs no Wine types. */
 struct w32ios_pad_source
 {
-    int  (*get_state)( int index, void *winios_gamepad );   /* winios_gamepad_get_state */
+    int  (*get_state)( int index, void *pgios_gamepad );   /* pgios_gamepad_get_state */
     void (*set_vibration)( int index, uint16_t left, uint16_t right );
     int  (*rumble_caps)( void );
 };

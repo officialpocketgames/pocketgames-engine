@@ -113,7 +113,7 @@ static char boot_last_step[160] = "(none)";
 /***********************************************************************
  *           ios_boot_mark
  *
- * One line per boot step, always (MADEIRA_QUIET doesn't silence it), written at once with a
+ * One line per boot step, always (PG_QUIET doesn't silence it), written at once with a
  * single write() to the log fd, so a log ends at the last step reached even if the app dies.
  */
 void ios_boot_mark( const char *fmt, ... )
@@ -243,7 +243,7 @@ extern void (*wineserver_thread_alert_hook)( unsigned int unix_tid );
 
 static void init_process_once(void)
 {
-    const char *quiet = getenv( "MADEIRA_QUIET" );
+    const char *quiet = getenv( "PG_QUIET" );
 
     /* Part E2: our own key, no destructor; never a raw TSD slot */
     if (pthread_key_create( &teb_key, NULL ))

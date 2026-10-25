@@ -49,7 +49,7 @@ WINE_DECLARE_DEBUG_CHANNEL(relay);
  *
  * MYIOSDECK (spec 18 Part G3): in a WoW64 process, a walk whose steps leave pc and sp where they
  * were (a leaf fallback whose return address is its own pc) repeats forever. TRUE when this step
- * stops the walk; MADEIRA_UNWIND_GUARD=0, read only once a stall is seen, keeps walking.
+ * stops the walk; PG_UNWIND_GUARD=0, read only once a stall is seen, keeps walking.
  */
 static BOOL unwind_stalled( struct arm64_stall_guard *guard, const CONTEXT *context, DWORD code )
 {
@@ -60,7 +60,7 @@ static BOOL unwind_stalled( struct arm64_stall_guard *guard, const CONTEXT *cont
     if (!arm64_stall_step( guard, context->Pc, context->Sp )) return FALSE;
     if (guard_enabled < 0)
     {
-        static const WCHAR name[] = L"MADEIRA_UNWIND_GUARD";
+        static const WCHAR name[] = L"PG_UNWIND_GUARD";
         WCHAR value[4];
         SIZE_T len = 0;
 

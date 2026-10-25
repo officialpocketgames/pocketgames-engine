@@ -53,11 +53,11 @@ double ios_monotonic_seconds(void)
  *           ios_boot_phase
  *
  * Part C1: boot milestones of a program the app started (the session's first, and spec 22's
- * later ones) go to the app (winios_phase).
+ * later ones) go to the app (pgios_phase).
  */
 void ios_boot_phase( const char *name )
 {
-    if (ios_proc_current()->top_level) winios_phase( name );
+    if (ios_proc_current()->top_level) pgios_phase( name );
 }
 
 
@@ -152,7 +152,7 @@ static BOOL first_time_for( const char *name )
  *           ios_check_refused_spawn
  *
  * Part C6: STATUS_ACCESS_DENIED for optional helpers that can only fault here, and for
- * conhost.exe in an ARM64EC process unless MADEIRA_EC_CONHOST=1. The reason is logged once
+ * conhost.exe in an ARM64EC process unless PG_EC_CONHOST=1. The reason is logged once
  * per name.
  */
 NTSTATUS ios_check_refused_spawn( const UNICODE_STRING *image )
@@ -175,11 +175,11 @@ NTSTATUS ios_check_refused_spawn( const UNICODE_STRING *image )
     }
     if (is_arm64ec() && ios_is_conhost( path ))
     {
-        allow = getenv( "MADEIRA_EC_CONHOST" );
+        allow = getenv( "PG_EC_CONHOST" );
         if (allow && !strcmp( allow, "1" )) return STATUS_SUCCESS;
         if (first_time_for( ios_file_part( path )))
             ios_log( "refused to start conhost.exe in an ARM64EC process: its threads would have no "
-                     "CPU area for the x64 emulator (MADEIRA_EC_CONHOST=1 allows it)\n" );
+                     "CPU area for the x64 emulator (PG_EC_CONHOST=1 allows it)\n" );
         return STATUS_ACCESS_DENIED;
     }
     return STATUS_SUCCESS;
@@ -199,12 +199,12 @@ void ios_mark_system_process(void)
 
 
 /***********************************************************************
- *           madeira_live_game_children   (contract Section A)
+ *           pg_live_game_children   (contract Section A)
  *
  * Part C5: how many children are alive, not helpers, and started at most max_age seconds ago
  * (max_age < 0: any age); their names, comma-separated, go to buf.
  */
-int madeira_live_game_children( char *buf, int len, double max_age )
+int pg_live_game_children( char *buf, int len, double max_age )
 {
     return ios_children_live( buf, len, max_age, ios_monotonic_seconds() );
 }
@@ -213,13 +213,13 @@ int madeira_live_game_children( char *buf, int len, double max_age )
 /***********************************************************************
  *           ios_initial_directory
  *
- * Part C3: MADEIRA_INITIAL_CWD (a Windows path ending in '\') as the NT path the process
+ * Part C3: PG_INITIAL_CWD (a Windows path ending in '\') as the NT path the process
  * parameters are built from, or NULL when it isn't set.
  */
 WCHAR *ios_initial_directory(void)
 {
     static const WCHAR prefixW[] = {'\\','?','?','\\'};
-    const char *cwd = getenv( "MADEIRA_INITIAL_CWD" );
+    const char *cwd = getenv( "PG_INITIAL_CWD" );
     size_t len;
     WCHAR *ret;
     DWORD n;

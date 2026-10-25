@@ -234,8 +234,8 @@ static void run_tone( int version, int rate, int channels, int64_t bit_rate, int
         fprintf( stderr, "can't encode v%d %d Hz %d ch %lld bps; skipped\n", version, rate, channels, (long long)bit_rate );
         return;
     }
-    if (search) unsetenv( "MADEIRA_WMA_SEARCH" );
-    else setenv( "MADEIRA_WMA_SEARCH", "0", 1 );
+    if (search) unsetenv( "PG_WMA_SEARCH" );
+    else setenv( "PG_WMA_SEARCH", "0", 1 );
 
     input_format( &in, version, rate, channels, bit_rate, &enc );
     output_format( &out, rate, channels, is_float );
@@ -342,7 +342,7 @@ static void test_summary( void )
     uint8_t *junk;
 
     CHECK_INT( encode_tone( 2, 44100, 2, 128000, 0.5, &enc ), 0 );
-    setenv( "MADEIRA_WMA_SEARCH", "0", 1 );
+    setenv( "PG_WMA_SEARCH", "0", 1 );
     input_format( &in, 2, 44100, 2, 128000, &enc );
     output_format( &out, 44100, 2, 0 );
     memset( &create, 0, sizeof(create) );
@@ -375,7 +375,7 @@ static void test_summary( void )
     CHECK_INT( test_log_count( " flushed: " ), 0 );   /* nothing new since the last summary */
     CHECK_INT( CALL( unix_wg_transform_destroy, &create.transform ), STATUS_SUCCESS );
     CHECK_INT( test_log_count( " destroyed: " ), 0 );
-    unsetenv( "MADEIRA_WMA_SEARCH" );
+    unsetenv( "PG_WMA_SEARCH" );
     free( pcm.data );
     free( junk );
     free( enc.data );

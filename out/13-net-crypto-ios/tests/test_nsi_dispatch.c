@@ -8,7 +8,7 @@
 //   test_nsi_dispatch       unserved tables, the parameter checks, the cache through the table
 //                           (hit, TCP never cached, failures never cached, the providers' own
 //                           lookups never cached), the 32-bit entries with a fake window base
-//   test_nsi_dispatch off   MADEIRA_NSI_NETWORK_TABLES=0: NDIS/IPv4/IPv6 not served, TCP still
+//   test_nsi_dispatch off   PG_NSI_NETWORK_TABLES=0: NDIS/IPv4/IPv6 not served, TCP still
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -294,9 +294,9 @@ int main( int argc, char **argv )
 {
     int off = argc > 1 && !strcmp( argv[1], "off" );
 
-    setenv( "MADEIRA_NSI_CACHE_MS", "5000", 1 );   /* long enough that the test can't race it */
-    if (off) setenv( "MADEIRA_NSI_NETWORK_TABLES", "0", 1 );
-    else unsetenv( "MADEIRA_NSI_NETWORK_TABLES" );
+    setenv( "PG_NSI_CACHE_MS", "5000", 1 );   /* long enough that the test can't race it */
+    if (off) setenv( "PG_NSI_NETWORK_TABLES", "0", 1 );
+    else unsetenv( "PG_NSI_NETWORK_TABLES" );
 
     if (off) test_off();
     else test_on();

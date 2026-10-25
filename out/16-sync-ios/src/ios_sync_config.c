@@ -2,7 +2,7 @@
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 16 Part A: which engine runs. The settings file (spec 02 Part G's format, read from
-// $MADEIRA_DOCS_DIR/madeira.cfg) gives inproc-sync and the tuning keys of Parts E and G; the
+// $PG_DOCS_DIR/pocketgames.cfg) gives inproc-sync and the tuning keys of Parts E and G; the
 // environment gives the fastsync switches. Both are read once per app run: objects and cells
 // outlive a session (spec 08 clarification 1).
 
@@ -119,12 +119,12 @@ static pthread_once_t settings_once = PTHREAD_ONCE_INIT;
 
 static void read_settings(void)
 {
-    const char *docs = getenv( "MADEIRA_DOCS_DIR" );
+    const char *docs = getenv( "PG_DOCS_DIR" );
     char path[1024], *text = NULL;
     long size = 0;
     FILE *file = NULL;
 
-    if (docs && *docs && snprintf( path, sizeof(path), "%s/madeira.cfg", docs ) < (int)sizeof(path))
+    if (docs && *docs && snprintf( path, sizeof(path), "%s/pocketgames.cfg", docs ) < (int)sizeof(path))
         file = fopen( path, "rb" );
     if (file)
     {
@@ -170,7 +170,7 @@ static unsigned int env_uint( const char *v, unsigned int def, unsigned int min,
 
 void ios_fs_config_parse( struct ios_fs_config *c, ios_getenv_fn get )
 {
-    const char *mode = get( "MADEIRA_FASTSYNC" ), *peek = get( "MADEIRA_FS_POLLPEEK" );
+    const char *mode = get( "PG_FASTSYNC" ), *peek = get( "PG_FS_POLLPEEK" );
 
     memset( c, 0, sizeof(*c) );
     if (env_true( mode )) c->mode = IOS_FS_ON;
@@ -178,11 +178,11 @@ void ios_fs_config_parse( struct ios_fs_config *c, ios_getenv_fn get )
     else if (mode && !strcmp( mode, "cells" )) c->mode = IOS_FS_CELLS;
     else c->mode = IOS_FS_OFF;
 
-    c->sem = env_true( get( "MADEIRA_FASTSYNC_SEM" ));
+    c->sem = env_true( get( "PG_FASTSYNC_SEM" ));
     c->pollpeek = !(peek && (!strcmp( peek, "0" ) || !strcasecmp( peek, "off" ) || !strcasecmp( peek, "no" )));
-    c->spin_us = env_uint( get( "MADEIRA_FASTSYNC_SPIN_US" ), 40, 0, 1000 );
-    c->cap_us = env_uint( get( "MADEIRA_FASTSYNC_CAP_US" ), 2000, 50, 50000 );
-    c->auto_reqs = env_uint( get( "MADEIRA_FS_AUTO_REQS" ), 20000, 1000, UINT32_MAX );
+    c->spin_us = env_uint( get( "PG_FASTSYNC_SPIN_US" ), 40, 0, 1000 );
+    c->cap_us = env_uint( get( "PG_FASTSYNC_CAP_US" ), 2000, 50, 50000 );
+    c->auto_reqs = env_uint( get( "PG_FS_AUTO_REQS" ), 20000, 1000, UINT32_MAX );
 }
 
 static const char *libc_getenv( const char *name )
@@ -232,10 +232,10 @@ static pthread_once_t engine_once = PTHREAD_ONCE_INIT;
 static void decide_engine(void)
 {
     const struct ios_sync_settings *s = ios_sync_settings();
-    const char *session = getenv( "MADEIRA_MADSYNC_SESSION" );
+    const char *session = getenv( "PG_MADSYNC_SESSION" );
 
     engine = ios_usync_engine_decide( s->inproc_sync, session );
-    ios_sync_log( "in-process ntsync: inproc-sync = %s (settings file %s), MADEIRA_MADSYNC_SESSION %s%s -> %s",
+    ios_sync_log( "in-process ntsync: inproc-sync = %s (settings file %s), PG_MADSYNC_SESSION %s%s -> %s",
                   s->inproc_sync >= 0 ? s->inproc_raw : "unset", s->file_found ? "found" : "not found",
                   session ? "= " : "unset", session ? session : "", engine ? "on" : "off" );
 }
@@ -250,7 +250,7 @@ void ios_usync_engine_recheck(void)
 {
     static int logged;
     int selected = ios_usync_engine_selected();
-    int now = ios_usync_engine_decide( ios_sync_settings()->inproc_sync, getenv( "MADEIRA_MADSYNC_SESSION" ));
+    int now = ios_usync_engine_decide( ios_sync_settings()->inproc_sync, getenv( "PG_MADSYNC_SESSION" ));
 
     if (now != selected && !__atomic_exchange_n( &logged, 1, __ATOMIC_RELAXED ))
         ios_sync_log( "in-process ntsync: this session asks for %s; the app run keeps %s",

@@ -18,7 +18,7 @@ void iom_logv( const char *prefix, const char *fmt, va_list args );
 /* Environment switches, read on every call (callers cache them when it matters). */
 int iom_env_is( const char *name, const char *value );      /* getenv(name) equals value */
 int iom_env_set( const char *name );                        /* set at all (even empty) */
-int iom_diag( void );                                       /* MADEIRA_DIAG=1, read once */
+int iom_diag( void );                                       /* PG_DIAG=1, read once */
 
 /* A per-app line cap: lines up to `max` are printed, then one "<prefix>... further lines
  * suppressed" line, then nothing. Lock-free; the struct must start zeroed. */

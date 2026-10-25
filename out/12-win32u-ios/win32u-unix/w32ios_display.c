@@ -3,7 +3,7 @@
 //
 // Spec 12 Part C: the size of the one virtual monitor.
 //
-// The session default is MADEIRA_SCREEN_W x MADEIRA_SCREEN_H (1024 x 768 when unset or not
+// The session default is PG_SCREEN_W x PG_SCREEN_H (1024 x 768 when unset or not
 // positive), read when a program with no parent creates its slot (w32ios_proc.c, clarifications
 // 6, 7 and 10). The current size starts there and otherwise changes only through
 // ChangeDisplaySettingsEx (sysparams_ios.inc). Both are single atomic words, so code that holds
@@ -45,12 +45,12 @@ static LONG64 load_size( const LONG64 *word )
 }
 
 /* A program with no parent creates its slot (w32ios_proc.c): the app booted it, first or as a
- * later program of a kept session. Clarification 10: its launch's MADEIRA_SCREEN_W/H become the
+ * later program of a kept session. Clarification 10: its launch's PG_SCREEN_W/H become the
  * monitor's size before it runs, unless another user program of the session still runs. */
 void w32ios_display_session_start( void )
 {
-    const char *src = getenv( "MADEIRA_SCREEN_SRC" );
-    struct w32ios_size want = w32ios_session_default( getenv( "MADEIRA_SCREEN_W" ), getenv( "MADEIRA_SCREEN_H" ) );
+    const char *src = getenv( "PG_SCREEN_SRC" );
+    struct w32ios_size want = w32ios_session_default( getenv( "PG_SCREEN_W" ), getenv( "PG_SCREEN_H" ) );
     LONG64 cur_word = load_size( &current_size );
     struct w32ios_size cur = cur_word ? unpack( cur_word ) : want;
     enum w32ios_launch_size what = w32ios_launch_size( !load_size( &default_size ), cur, want, FALSE );
@@ -64,7 +64,7 @@ void w32ios_display_session_start( void )
         store_size( &default_size, pack( want ) );
         store_size( &current_size, pack( want ) );
         InterlockedExchange( &reported, 0 );
-        w32ios_log( "virtual monitor %dx%d, 32 bpp, 60 Hz (MADEIRA_SCREEN_SRC=%s)", want.w, want.h,
+        w32ios_log( "virtual monitor %dx%d, 32 bpp, 60 Hz (PG_SCREEN_SRC=%s)", want.w, want.h,
                     src && *src ? src : "unset" );
         break;
     case W32IOS_LAUNCH_SAME:
@@ -117,14 +117,14 @@ void w32ios_display_set_current( struct w32ios_size size )
 BOOL w32ios_display_extended_modes( void )
 {
     static int value = -1;
-    if (value < 0) value = w32ios_env_bool( "MADEIRA_EXTENDED_MODES", FALSE );
+    if (value < 0) value = w32ios_env_bool( "PG_EXTENDED_MODES", FALSE );
     return value;
 }
 
 BOOL w32ios_display_mode_set_enabled( void )
 {
     static int value = -1;
-    if (value < 0) value = w32ios_env_bool( "MADEIRA_VIRTUAL_MODE_SET", TRUE );
+    if (value < 0) value = w32ios_env_bool( "PG_VIRTUAL_MODE_SET", TRUE );
     return value;
 }
 
@@ -150,7 +150,7 @@ void w32ios_display_fill_devmode( DEVMODEW *devmode, struct w32ios_size size )
 
 void w32ios_app_display_mode_changed( int w, int h )
 {
-    if (winios_display_mode_changed) winios_display_mode_changed( w, h );
+    if (pgios_display_mode_changed) pgios_display_mode_changed( w, h );
 }
 
 void w32ios_gpu_identity( UINT16 *vendor, UINT16 *device, const char **name )

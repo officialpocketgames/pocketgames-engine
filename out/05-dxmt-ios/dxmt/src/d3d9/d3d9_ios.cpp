@@ -26,13 +26,13 @@ D9IosConfig
 ReadConfig() {
   D9IosConfig c{};
   c.upload_commit_bytes = d9ios::UploadCommitThresholdBytes(env::getEnvVar("DXMT_D9_UPLOAD_COMMIT_MB").c_str());
-  c.batch_budget = Switch("MADEIRA_D3D9_BATCH_BUDGET", true);
+  c.batch_budget = Switch("PG_D3D9_BATCH_BUDGET", true);
   c.scene_batch = Switch("DXMT_D9_SCENE_BATCH", true);
   // Either variable set to 0 turns batched readbacks off.
-  c.batch_readback = Switch("DXMT_D9_BATCH_READBACK", true) && Switch("MADEIRA_D3D9_MIRROR_BATCH", true);
+  c.batch_readback = Switch("DXMT_D9_BATCH_READBACK", true) && Switch("PG_D3D9_MIRROR_BATCH", true);
   c.query_adaptive = Switch("DXMT_D9_QUERY_ADAPTIVE", true);
-  // The virtual monitor exists only when the app set MADEIRA_SCREEN_W (spec 02).
-  c.virtual_mode = Switch("DXMT_D9_VIRTUAL_MODE", true) && !env::getEnvVar("MADEIRA_SCREEN_W").empty();
+  // The virtual monitor exists only when the app set PG_SCREEN_W (spec 02).
+  c.virtual_mode = Switch("DXMT_D9_VIRTUAL_MODE", true) && !env::getEnvVar("PG_SCREEN_W").empty();
   c.canonical_blend = Switch("DXMT_D9_CANONICAL_BLEND", true);
   c.binding_prune = Switch("DXMT_D9_BINDING_PRUNE", true);
   c.shader_prune = Switch("DXMT_D9_SHADER_PRUNE", true);

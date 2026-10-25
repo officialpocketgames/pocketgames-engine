@@ -103,7 +103,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(winsock);
  * the caller is 32-bit: B + (low 32 bits), 0 stays NULL; as upstream for a 64-bit caller */
 #define u64_to_user_ptr(u) ios_afd_user_ptr(u)
 
-/* MYIOSDECK (spec 13 Part G3): MADEIRA_AFD_EVENT_HANDLE=0 turns the GET_EVENTS handle correction
+/* MYIOSDECK (spec 13 Part G3): PG_AFD_EVENT_HANDLE=0 turns the GET_EVENTS handle correction
  * off; read once per app run (spec 02 sets the environment before the first boot) */
 static int ios_afd_event_fix_enabled(void)
 {
@@ -112,7 +112,7 @@ static int ios_afd_event_fix_enabled(void)
 
     if (value < 0)
     {
-        value = ios_afd_event_env_enabled( getenv( "MADEIRA_AFD_EVENT_HANDLE" ));
+        value = ios_afd_event_env_enabled( getenv( "PG_AFD_EVENT_HANDLE" ));
         __atomic_store_n( &enabled, value, __ATOMIC_RELAXED );
     }
     return value;

@@ -96,7 +96,7 @@ struct pad_device
     struct ios_hidpad_identity id;
     struct ios_hidparse_desc desc;          /* B6: built once from the descriptor */
     struct ios_hidpad_report_state report_state;
-    struct winios_hidpad_output output;     /* the last output snapshot (A6; HID pad only) */
+    struct pgios_hidpad_output output;     /* the last output snapshot (A6; HID pad only) */
     struct list files;                      /* open file objects */
     uint32_t opens;                         /* clarification 8g: opens, the first few logged */
     uint32_t open_refusals;                 /* clarification 4: opens refused, no pad */
@@ -137,26 +137,26 @@ static uint64_t now_us(void)
     return (uint64_t)monotonic_time / 10;   /* 100 ns units */
 }
 
-static void get_store( struct winios_hidpad *pad )
+static void get_store( struct pgios_hidpad *pad )
 {
     memset( pad, 0, sizeof(*pad) );
-    winios_hidpad_get_state( pad );
+    pgios_hidpad_get_state( pad );
 }
 
-static int slot_connected( unsigned int slot, struct winios_gamepad *gamepad )
+static int slot_connected( unsigned int slot, struct pgios_gamepad *gamepad )
 {
     memset( gamepad, 0, sizeof(*gamepad) );
-    return winios_gamepad_get_state( (int)slot, gamepad ) != 0;
+    return pgios_gamepad_get_state( (int)slot, gamepad ) != 0;
 }
 
 /* Read a device's store into `pad` and feed the presence rule; returns whether the device is
  * present (clarification 5: published, or unpublished for less than the grace). The HID pad
  * reads the HID store; slot n reads XInput slot n, listed only while clarification 8f allows
  * (slot 0 isn't while the HID pad is present), so an unlisted slot reads as a pad at rest. */
-static int sample_device( struct pad_device *dev, struct winios_hidpad *pad )
+static int sample_device( struct pad_device *dev, struct pgios_hidpad *pad )
 {
-    struct winios_gamepad gamepad;
-    struct winios_hidpad hid;
+    struct pgios_gamepad gamepad;
+    struct pgios_hidpad hid;
     int connected, hid_present = 0;
 
     if (dev->slot < 0) get_store( pad );
@@ -267,7 +267,7 @@ static const struct fd_ops hidpad_file_fd_ops =
 /* Why an open was refused, for the log. */
 static void log_refusal( const struct pad_device *dev )
 {
-    struct winios_gamepad gamepad;
+    struct pgios_gamepad gamepad;
 
     if (dev->slot < 0)
         ws_log( "[hid-pad] open refused: no PlayStation pad published" );
@@ -282,7 +282,7 @@ static struct object *hidpad_device_open_file( struct object *obj, unsigned int 
 {
     struct pad_device *dev = ((struct pad_device_object *)obj)->dev;
     struct hidpad_file *file;
-    struct winios_hidpad pad;
+    struct pgios_hidpad pad;
     int log;
 
     if (!dev || !dev->enabled)
@@ -332,7 +332,7 @@ static struct fd *hidpad_file_get_fd( struct object *obj )
 
 static void log_output( const char *why )
 {
-    const struct winios_hidpad_output *o = &hidpad.output;
+    const struct pgios_hidpad_output *o = &hidpad.output;
 
     ws_log( "[hidpad] %s: rumble %u L%u R%u, lightbar %u #%02x%02x%02x, player LEDs %u %#x, mute LED %u %u, "
             "triggers L%u R%u, power %u %#x", why,
@@ -356,7 +356,7 @@ static void hidpad_file_destroy( struct object *obj )
 
     if (dev->slot < 0 && list_empty( &dev->files ) && ios_hidpad_output_release( &dev->output ))
     {
-        winios_hidpad_set_output( &dev->output );
+        pgios_hidpad_set_output( &dev->output );
         log_output( "last handle closed, motors stopped and trigger effects released" );
     }
 }
@@ -429,7 +429,7 @@ static void hidpad_tick( void *private )
 {
     struct pad_device *dev = private;
     uint8_t report[IOS_HIDPAD_DUALSENSE_INPUT_LEN];
-    struct winios_hidpad pad;
+    struct pgios_hidpad pad;
     struct hidpad_file *file;
     struct async *async;
     data_size_t len;
@@ -465,7 +465,7 @@ static void hidpad_file_read( struct fd *fd, struct async *async, file_pos_t pos
     uint8_t report[IOS_HIDPAD_DUALSENSE_INPUT_LEN];
     struct iosb *iosb = async_get_iosb( async );
     data_size_t size = iosb->out_size, len;
-    struct winios_hidpad pad;
+    struct pgios_hidpad pad;
 
     release_object( iosb );
     if (size < dev->desc.input_len)
@@ -544,7 +544,7 @@ static void finish_request( struct pad_device *dev, struct async *async, const u
     if (reply->output_report && dev->slot < 0)
     {
         log_output_report( data, reply );
-        if (reply->output_changed) winios_hidpad_set_output( &dev->output );
+        if (reply->output_changed) pgios_hidpad_set_output( &dev->output );
     }
     if (reply->status != STATUS_SUCCESS) set_error( reply->status );
     else complete( async, STATUS_SUCCESS, reply->information, reply->data, reply->size );
@@ -556,7 +556,7 @@ static void hidpad_file_write( struct fd *fd, struct async *async, file_pos_t po
     struct hidpad_file *file = get_fd_user( fd );
     struct iosb *iosb = async_get_iosb( async );
     struct ios_hidpad_reply reply;
-    struct winios_hidpad pad;
+    struct pgios_hidpad pad;
 
     sample_device( file->dev, &pad );
     ios_hidpad_write( &file->dev->requests, &file->requests, &pad, now_us(), iosb->in_data, iosb->in_size, &reply );
@@ -589,7 +589,7 @@ static void hidpad_file_ioctl( struct fd *fd, ioctl_code_t code, struct async *a
     struct hidpad_file *file = get_fd_user( fd );
     struct iosb *iosb = async_get_iosb( async );
     struct ios_hidpad_reply reply;
-    struct winios_hidpad pad;
+    struct pgios_hidpad pad;
 
     sample_device( file->dev, &pad );
     ios_hidpad_ioctl( &file->dev->requests, &file->requests, code, iosb->in_data, iosb->in_size,
@@ -633,7 +633,7 @@ static void rawinput_start(void)
 static void rawinput_tick( void *private )
 {
     uint8_t report[IOS_HIDPAD_XINPUT_INPUT_LEN];
-    struct winios_hidpad pad;
+    struct pgios_hidpad pad;
     unsigned int i;
     size_t len;
 
@@ -853,8 +853,8 @@ static void pnp_poll( void *private )
     struct ios_pnp_change changes[IOS_PNP_MAX_CHANGES];
     struct ios_pnp_sample sample;
     struct ios_pnp_record record;
-    struct winios_hidpad pad;
-    struct winios_gamepad gamepad;
+    struct pgios_hidpad pad;
+    struct pgios_gamepad gamepad;
     struct pnp_listener *listener;
     unsigned int i, n;
 
@@ -1024,7 +1024,7 @@ void ios_hidpad_server_init(void)
         create_device( &slots[i], name, IOS_HIDPAD_SLOT_RAWINPUT_HANDLE( i ) );
     }
 
-    if (!ios_hidpad_identity_select( getenv( "MADEIRA_HIDPAD" ), getenv( "MADEIRA_HIDPAD_NAME" ), &hidpad.id ))
+    if (!ios_hidpad_identity_select( getenv( "PG_HIDPAD" ), getenv( "PG_HIDPAD_NAME" ), &hidpad.id ))
         return;
     create_device( &hidpad, IOS_HIDPAD_DEVICE_OBJECT, 0 );
 }

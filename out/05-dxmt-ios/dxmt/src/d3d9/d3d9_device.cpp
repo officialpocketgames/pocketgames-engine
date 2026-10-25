@@ -2178,7 +2178,7 @@ void
 MTLD3D9Device::enterFullscreenWindow(HWND window, UINT width, UINT height) {
   if (!window)
     return;
-  // MYIOSDECK spec 07 C8: on the app's virtual monitor (MADEIRA_SCREEN_W set)
+  // MYIOSDECK spec 07 C8: on the app's virtual monitor (PG_SCREEN_W set)
   // a fullscreen device changes the display mode to the back buffer size,
   // remembering the mode it found the first time. Done before the monitor rect
   // below is read, so the window lands on the new mode's extent.

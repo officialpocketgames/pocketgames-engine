@@ -101,14 +101,14 @@ void dxmt_ios_will_commit(id<MTLCommandBuffer> cmdbuf);
 
 /* E3: exported for the app's frame-rate setting and performance overlay
    (names and types fixed by the spec). */
-void madeira_set_vsync_locked(int mode);
-int madeira_get_vsync_locked(void);
-void madeira_set_display_max_fps(int panel_hz, int intent_hz);
-uint64_t madeira_get_present_count(void);
-int madeira_dxmt_has_40_cap(void);
-void madeira_gpu_meter_enable(int on);
-double madeira_gpu_meter_busy_seconds(void);
-uint64_t madeira_gpu_meter_cmdbufs(void);
+void pg_set_vsync_locked(int mode);
+int pg_get_vsync_locked(void);
+void pg_set_display_max_fps(int panel_hz, int intent_hz);
+uint64_t pg_get_present_count(void);
+int pg_dxmt_has_40_cap(void);
+void pg_gpu_meter_enable(int on);
+double pg_gpu_meter_busy_seconds(void);
+uint64_t pg_gpu_meter_cmdbufs(void);
 
 /* ---- Spec 06 (32-bit callers) ---- */
 

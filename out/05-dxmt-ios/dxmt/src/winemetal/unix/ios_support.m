@@ -249,7 +249,7 @@ dxmt_ios_physical_format(MTLPixelFormat format) {
 
 #define MB (1024ull * 1024ull)
 
-/* The app's settings file, <Documents>/madeira.cfg (format of spec 02 Part G):
+/* The app's settings file, <Documents>/pocketgames.cfg (format of spec 02 Part G):
    UTF-8, optional BOM, one "key = value" per line, whitespace around key and
    value trimmed, '#' lines and lines without '=' ignored, last occurrence
    wins. Read once; only the keys this file needs are kept. */
@@ -284,7 +284,7 @@ static void
 cfg_load(void) {
   NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
   NSArray *dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-  NSString *path = dirs.count ? [dirs[0] stringByAppendingPathComponent:@"madeira.cfg"] : nil;
+  NSString *path = dirs.count ? [dirs[0] stringByAppendingPathComponent:@"pocketgames.cfg"] : nil;
   FILE *f = path ? fopen(path.fileSystemRepresentation, "r") : NULL;
   [pool release];
   g_cfg.loaded = true;
@@ -488,7 +488,7 @@ static _Atomic uint64_t g_last_real_acquire = 0; /* mach_absolute_time */
 static _Atomic int g_panel_hz = 0, g_intent_hz = 0;
 
 DXMT_IOS_EXPORT void
-madeira_set_vsync_locked(int mode) {
+pg_set_vsync_locked(int mode) {
   if (mode < 0 || mode > 4) {
     fprintf(stderr, "dxmt: ignoring unknown pacing mode %d\n", mode);
     return;
@@ -499,24 +499,24 @@ madeira_set_vsync_locked(int mode) {
 }
 
 DXMT_IOS_EXPORT int
-madeira_get_vsync_locked(void) {
+pg_get_vsync_locked(void) {
   return atomic_load(&g_vsync_mode);
 }
 
 DXMT_IOS_EXPORT void
-madeira_set_display_max_fps(int panel_hz, int intent_hz) {
+pg_set_display_max_fps(int panel_hz, int intent_hz) {
   atomic_store(&g_panel_hz, panel_hz);
   atomic_store(&g_intent_hz, intent_hz);
   fprintf(stderr, "dxmt: display max %d Hz, intended %d fps\n", panel_hz, intent_hz);
 }
 
 DXMT_IOS_EXPORT uint64_t
-madeira_get_present_count(void) {
+pg_get_present_count(void) {
   return atomic_load(&g_present_count);
 }
 
 DXMT_IOS_EXPORT int
-madeira_dxmt_has_40_cap(void) {
+pg_dxmt_has_40_cap(void) {
   return 1;
 }
 
@@ -601,12 +601,12 @@ static double g_meter_busy = 0, g_meter_prev_end = 0;
 static uint64_t g_meter_cmdbufs = 0;
 
 DXMT_IOS_EXPORT void
-madeira_gpu_meter_enable(int on) {
+pg_gpu_meter_enable(int on) {
   atomic_store(&g_meter_enabled, on != 0);
 }
 
 DXMT_IOS_EXPORT double
-madeira_gpu_meter_busy_seconds(void) {
+pg_gpu_meter_busy_seconds(void) {
   pthread_mutex_lock(&g_meter_lock);
   double v = g_meter_busy;
   pthread_mutex_unlock(&g_meter_lock);
@@ -614,7 +614,7 @@ madeira_gpu_meter_busy_seconds(void) {
 }
 
 DXMT_IOS_EXPORT uint64_t
-madeira_gpu_meter_cmdbufs(void) {
+pg_gpu_meter_cmdbufs(void) {
   pthread_mutex_lock(&g_meter_lock);
   uint64_t v = g_meter_cmdbufs;
   pthread_mutex_unlock(&g_meter_lock);

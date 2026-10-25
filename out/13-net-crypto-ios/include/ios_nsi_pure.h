@@ -157,7 +157,7 @@ struct ios_nsi_cache
     struct ios_nsi_cache_entry slot[IOS_NSI_CACHE_SLOTS];
 };
 
-/* MADEIRA_NSI_CACHE_MS -> the time to live in ms: unset, empty or not a number gives 500,
+/* PG_NSI_CACHE_MS -> the time to live in ms: unset, empty or not a number gives 500,
  * 0 turns the cache off, anything above 5000 is 5000 */
 extern uint32_t ios_nsi_cache_ttl_from_env( const char *value );
 
@@ -180,7 +180,7 @@ extern void ios_nsi_cache_store( struct ios_nsi_cache *c, const struct ios_nsi_c
 extern int ios_nsi_cache_slot_of( const struct ios_nsi_cache *c, const struct ios_nsi_cache_key *key );
 
 /* ---------------------------------------------------------------- environment */
-/* "0" turns a MADEIRA_NSI_* switch off; anything else (or unset) leaves it on */
+/* "0" turns a PG_NSI_* switch off; anything else (or unset) leaves it on */
 extern int ios_nsi_env_on( const char *value );
 
 /* ---------------------------------------------------------------- I6: routing messages */

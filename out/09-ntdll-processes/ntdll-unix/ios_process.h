@@ -161,13 +161,13 @@ struct ios_proc
 extern void __wine_main( int argc, char *argv[] );                       /* Section A */
 extern void wine_log_set_file( const char *path );                        /* Section A */
 extern int ios_main_image_i386;                                           /* Section A */
-extern int madeira_live_game_children( char *buf, int len, double max_age ); /* Section A */
+extern int pg_live_game_children( char *buf, int len, double max_age ); /* Section A */
 extern _Thread_local jmp_buf wine_ios_exit_jmpbuf;                        /* Section B */
 extern _Thread_local volatile int wine_ios_exit_code;
 extern _Thread_local pthread_t wine_ios_main_thread;
 extern _Thread_local int wine_ios_exit_initialized;
 extern void wine_launched_process_did_exit( int status ) __attribute__((weak_import));
-extern void winios_phase( const char *name );
+extern void pgios_phase( const char *name );
 
 /* ---- the calling thread's pseudo-process ---- */
 
@@ -219,7 +219,7 @@ extern ULONG_PTR ios_wow64_thread_start(void);   /* the block's pRtlUserThreadSt
 /* ---- logging (to stderr, which the app points at its log) ---- */
 extern void ios_log( const char *fmt, ... ) __attribute__((format(printf,1,2)));
 extern void ios_log_write( const char *buf, int len );   /* debug.c: the log fd */
-extern int ios_quiet;   /* MADEIRA_QUIET=1: no routine lines */
+extern int ios_quiet;   /* PG_QUIET=1: no routine lines */
 
 /* ---- Part A ---- */
 extern NTSTATUS ios_unixlib_table( const char *dll_name, BOOL wow64, const void **funcs );
@@ -245,7 +245,7 @@ static inline void *ios_host_ptr( const void *ptr )
 
 /* ---- Part C ---- */
 extern void ios_boot_pseudo_process( struct ios_proc *proc ) __attribute__((noreturn)); /* loader.c */
-extern void ios_boot_phase( const char *name );   /* winios_phase for the first program */
+extern void ios_boot_phase( const char *name );   /* pgios_phase for the first program */
 /* one immediate, always-on "ntdll-ios: boot: ..." log line per boot step (ios_process.c) */
 extern void ios_boot_mark( const char *fmt, ... ) __attribute__((format(printf,1,2)));
 /* a fault logger for the boot thread before spec 11's handlers exist (ios_process.c) */
@@ -256,7 +256,7 @@ extern void ios_vlog( const char *prefix, const char *fmt, va_list args );
 extern NTSTATUS ios_start_boot_thread( struct ios_proc *proc );   /* ios_spawn.c */
 extern NTSTATUS ios_check_refused_spawn( const UNICODE_STRING *image );
 extern void ios_mark_system_process(void);
-extern WCHAR *ios_initial_directory(void);         /* MADEIRA_INITIAL_CWD as an NT path */
+extern WCHAR *ios_initial_directory(void);         /* PG_INITIAL_CWD as an NT path */
 extern double ios_monotonic_seconds(void);
 
 /* ---- Part D ---- */

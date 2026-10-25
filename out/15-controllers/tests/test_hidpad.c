@@ -207,7 +207,7 @@ static void test_dualsense_input(void)
 {
     struct ios_hidpad_identity id;
     struct ios_hidpad_report_state st;
-    struct winios_hidpad pad;
+    struct pgios_hidpad pad;
     uint8_t r[64];
     int i;
 
@@ -217,7 +217,7 @@ static void test_dualsense_input(void)
     pad.packet = 7;
     pad.connected = 1;
     pad.buttons = BTN_A | DPAD_UP | DPAD_RIGHT | BTN_LB | BTN_START | BTN_GUIDE |
-                  WINIOS_HIDPAD_TOUCHPAD | WINIOS_HIDPAD_L2;
+                  PGIOS_HIDPAD_TOUCHPAD | PGIOS_HIDPAD_L2;
     pad.lx = -32768;
     pad.ly = -32768;    /* fully down */
     pad.rx = 32767;
@@ -304,7 +304,7 @@ static void test_dualsense_input(void)
 
     /* every face, shoulder and stick button */
     pad.buttons = 0x4000 /* X */ | 0x2000 /* B */ | BTN_Y | 0x0200 /* RB */ | BTN_BACK |
-                  0x0040 | 0x0080 | WINIOS_HIDPAD_R2 | WINIOS_HIDPAD_MUTE | DPAD_LEFT | DPAD_RIGHT;
+                  0x0040 | 0x0080 | PGIOS_HIDPAD_R2 | PGIOS_HIDPAD_MUTE | DPAD_LEFT | DPAD_RIGHT;
     ios_hidpad_build_input(&id, &pad, &st, 0, r);
     CHECK_EQ(r[8], 0x08 | 0x10 | 0x40 | 0x80);       /* hat centred (cancelled), square, circle, triangle */
     CHECK_EQ(r[9], 0x02 | 0x08 | 0x10 | 0x40 | 0x80);
@@ -327,7 +327,7 @@ static void test_dualsense_input(void)
     CHECK_EQ(le16(r + 24), 8192);
 
     /* battery byte */
-    pad.battery = WINIOS_HIDPAD_BATTERY_UNKNOWN; pad.charging = 0;
+    pad.battery = PGIOS_HIDPAD_BATTERY_UNKNOWN; pad.charging = 0;
     ios_hidpad_build_input(&id, &pad, &st, 0, r);
     CHECK_EQ(r[53], 0x2a);
     pad.battery = 100; pad.charging = 2;
@@ -364,7 +364,7 @@ static void test_generic_input(void)
 {
     struct ios_hidpad_identity id;
     struct ios_hidpad_report_state st;
-    struct winios_hidpad pad;
+    struct pgios_hidpad pad;
     uint8_t r[14];
     int i;
 
@@ -487,7 +487,7 @@ static void put_crc(uint8_t *bt)
 
 static void test_output(void)
 {
-    struct winios_hidpad_output out, before;
+    struct pgios_hidpad_output out, before;
     struct ios_hidpad_output_flags flags;
     uint8_t usb[48], bt[78];
     uint8_t *c = usb + 1;
@@ -656,7 +656,7 @@ static void test_gate(void)
 {
     struct ios_hidpad_identity id;
     struct ios_hidpad_report_state st;
-    struct winios_hidpad pad, rest;
+    struct pgios_hidpad pad, rest;
     uint8_t live[IOS_HIDPAD_DUALSENSE_INPUT_LEN], gone[IOS_HIDPAD_DUALSENSE_INPUT_LEN];
     uint8_t at_rest[IOS_HIDPAD_DUALSENSE_INPUT_LEN];
     uint32_t refusals = 0;
@@ -692,13 +692,13 @@ static void test_gate(void)
     memset(&pad, 0, sizeof(pad));
     pad.packet = 41;
     pad.connected = 1;
-    pad.buttons = 0x1000 | WINIOS_HIDPAD_R2;
+    pad.buttons = 0x1000 | PGIOS_HIDPAD_R2;
     pad.lx = 30000;
     pad.right_trigger = 255;
     pad.battery = 80;
     ios_hidpad_build_input(&id, &pad, &st, 1000, live);
     memset(&rest, 0, sizeof(rest));
-    rest.packet = 42;                       /* what winios_hidpad_get_state gives when unplugged */
+    rest.packet = 42;                       /* what pgios_hidpad_get_state gives when unplugged */
     ios_hidpad_build_input(&id, &rest, &st, 1000, gone);
     CHECK(memcmp(live, gone, sizeof(live)) != 0);
     CHECK_EQ(gone[1], 128);                 /* sticks centred */

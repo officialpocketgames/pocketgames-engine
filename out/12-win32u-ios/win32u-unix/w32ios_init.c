@@ -54,7 +54,7 @@ void w32ios_log_verbose( const char *fmt, ... )
     static int quiet = -1;
     va_list args;
 
-    if (quiet < 0) quiet = w32ios_env_bool( "MADEIRA_QUIET", FALSE );
+    if (quiet < 0) quiet = w32ios_env_bool( "PG_QUIET", FALSE );
     if (quiet) return;
     va_start( args, fmt );
     log_line( fmt, args );

@@ -19,7 +19,7 @@ extern "C" {
 
 /* ======== Part A: choosing the engine (src/ios_sync_config.c) ======== */
 
-/* the settings file (spec 02 Part G's format), $MADEIRA_DOCS_DIR/madeira.cfg */
+/* the settings file (spec 02 Part G's format), $PG_DOCS_DIR/pocketgames.cfg */
 struct ios_sync_settings
 {
     int      file_found;
@@ -58,12 +58,12 @@ enum ios_fs_mode
 
 struct ios_fs_config
 {
-    int      mode;           /* enum ios_fs_mode, MADEIRA_FASTSYNC */
-    int      sem;            /* MADEIRA_FASTSYNC_SEM */
-    int      pollpeek;       /* MADEIRA_FS_POLLPEEK (default on) */
-    unsigned spin_us;        /* MADEIRA_FASTSYNC_SPIN_US: 0..1000, default 40 */
-    unsigned cap_us;         /* MADEIRA_FASTSYNC_CAP_US: 50..50000, default 2000 */
-    unsigned auto_reqs;      /* MADEIRA_FS_AUTO_REQS: at least 1000, default 20000 */
+    int      mode;           /* enum ios_fs_mode, PG_FASTSYNC */
+    int      sem;            /* PG_FASTSYNC_SEM */
+    int      pollpeek;       /* PG_FS_POLLPEEK (default on) */
+    unsigned spin_us;        /* PG_FASTSYNC_SPIN_US: 0..1000, default 40 */
+    unsigned cap_us;         /* PG_FASTSYNC_CAP_US: 50..50000, default 2000 */
+    unsigned auto_reqs;      /* PG_FS_AUTO_REQS: at least 1000, default 20000 */
 };
 
 typedef const char *(*ios_getenv_fn)( const char *name );
@@ -73,7 +73,7 @@ extern void ios_fs_config_parse( struct ios_fs_config *c, ios_getenv_fn get );
 extern const struct ios_fs_config *ios_fs_config(void);
 /* A5: a later session asks for something else: logged once, ignored */
 extern void ios_fs_config_recheck(void);
-/* A2: in-process ntsync for this inproc-sync value and MADEIRA_MADSYNC_SESSION */
+/* A2: in-process ntsync for this inproc-sync value and PG_MADSYNC_SESSION */
 extern int ios_usync_engine_decide( int inproc_sync, const char *madsync_session );
 /* A2: the server's decision, made once (the first get_inproc_device_fd) and logged */
 extern int ios_usync_engine_selected(void);
@@ -223,8 +223,8 @@ extern unsigned int ios_yield_step( struct ios_yield_state *st, uint64_t now_ns,
 extern unsigned int ios_yield_decide(void);
 
 /* G2: eco mode */
-extern void madeira_set_eco( int on );
-extern int madeira_get_eco(void);
+extern void pg_set_eco( int on );
+extern int pg_get_eco(void);
 extern unsigned int ios_eco_generation(void);
 /* the calling thread applies the current choice if its generation is older (cheap otherwise) */
 extern void ios_eco_apply(void);

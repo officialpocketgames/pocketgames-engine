@@ -35,7 +35,7 @@ int main( void )
     CHECK_EQ( ios_afd_event_handle_at( B, B + 0x1a4, 0 ), B + 0x1a4 );
     CHECK_EQ( ios_afd_event_handle_at( B, B, 0 ), B );
 
-    /* MADEIRA_AFD_EVENT_HANDLE: only "0" turns it off */
+    /* PG_AFD_EVENT_HANDLE: only "0" turns it off */
     CHECK( ios_afd_event_env_enabled( NULL ) );
     CHECK( ios_afd_event_env_enabled( "" ) );
     CHECK( ios_afd_event_env_enabled( "1" ) );

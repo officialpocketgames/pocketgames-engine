@@ -604,9 +604,9 @@ static void test_table_full(void)
 
 int main(void)
 {
-    setenv( "MADEIRA_FASTSYNC", "on", 1 );
-    setenv( "MADEIRA_FASTSYNC_SEM", "1", 1 );
-    setenv( "MADEIRA_FASTSYNC_CAP_US", "500", 1 );
+    setenv( "PG_FASTSYNC", "on", 1 );
+    setenv( "PG_FASTSYNC_SEM", "1", 1 );
+    setenv( "PG_FASTSYNC_CAP_US", "500", 1 );
 
     test_stale_generation();
     test_disable_folds();

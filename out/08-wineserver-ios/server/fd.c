@@ -391,11 +391,11 @@ static void set_user_shared_data_time(void)
 
 #ifdef WINE_IOS
     /* spec 08 Part F1: published on every loop iteration (set_current_time), in upstream's
-     * high/low/high order; MADEIRA_USD_TIME=0 turns it off. TimeZoneBias is not published:
+     * high/low/high order; PG_USD_TIME=0 turns it off. TimeZoneBias is not published:
      * it needs localtime, whose lock and static buffer every guest thread shares. */
     static int publish = -1;
 
-    if (publish == -1) publish = ios_env_int( "MADEIRA_USD_TIME", 1 ) != 0;
+    if (publish == -1) publish = ios_env_int( "PG_USD_TIME", 1 ) != 0;
     if (!publish) return;
     (void)last_timezone_update; (void)timezone_bias; (void)tm; (void)tm1; (void)tm2; (void)now;
 #else

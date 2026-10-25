@@ -14,7 +14,7 @@
 
 /* ---- F2: is this a 32-bit session? ---- */
 
-/* MADEIRA_GDI_SHARED_SECTION set and not "0": yes; "0": no; otherwise (unset or empty) the
+/* PG_GDI_SHARED_SECTION set and not "0": yes; "0": no; otherwise (unset or empty) the
  * session's arming (spec 10 clarification 3; armed < 0: the function isn't linked, no) */
 int w32ios_s17_session_32bit( const char *switch_value, int armed );
 

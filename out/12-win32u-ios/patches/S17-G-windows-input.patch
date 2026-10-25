@@ -153,9 +153,9 @@ spec 12's unconditional call in dibdrv/bitblt.c). Applied after spec 12's patche
  #include "wine/debug.h"
  #ifdef WINE_IOS
 -/* interfaces/wine_unix_contract.h, Section B */
--extern void winios_dump_srcbits( const void *bits, int w, int h, int stride );
+-extern void pgios_dump_srcbits( const void *bits, int w, int h, int stride );
 +/* interfaces/wine_unix_contract.h, Section B; weak since spec 17 G5 */
-+extern void winios_dump_srcbits( const void *bits, int w, int h, int stride ) __attribute__((weak));
++extern void pgios_dump_srcbits( const void *bits, int w, int h, int stride ) __attribute__((weak));
  #endif
  
  WINE_DEFAULT_DEBUG_CHANNEL(dib);
@@ -163,14 +163,14 @@ spec 12's unconditional call in dibdrv/bitblt.c). Applied after spec 12's patche
      init_dib_info_from_bitmapinfo( &src_dib, info, bits->ptr );
      src_dib.bits.is_copy = bits->is_copy;
  #ifdef WINE_IOS
--    winios_dump_srcbits( src_dib.bits.ptr, src_dib.width, src_dib.height, src_dib.stride );
+-    pgios_dump_srcbits( src_dib.bits.ptr, src_dib.width, src_dib.height, src_dib.stride );
 +    /* MYIOSDECK (spec 17 G5): only a destination whose visible rectangle is at least 640 x 400,
 +     * only with source bits, only if the app provides the hook; nothing else on this path */
-+    if (winios_dump_srcbits && src_dib.bits.ptr &&
++    if (pgios_dump_srcbits && src_dib.bits.ptr &&
 +        dst->visrect.right - dst->visrect.left >= 640 && dst->visrect.bottom - dst->visrect.top >= 400)
 +    {
 +        int w = dst->visrect.right - dst->visrect.left, h = dst->visrect.bottom - dst->visrect.top;
-+        winios_dump_srcbits( src_dib.bits.ptr, w, h, w * 4 );
++        pgios_dump_srcbits( src_dib.bits.ptr, w, h, w * 4 );
 +    }
  #endif
  

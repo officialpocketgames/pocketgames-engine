@@ -7,7 +7,7 @@
 // to the method's exact type; sel_registerName). All three are public SDK symbols, looked up in
 // the app's own image (RTLD_DEFAULT); nothing is dlopened. No Wine header here.
 //
-// Also the settings file of spec 02 Part G (<Documents>/madeira.cfg) for spec 05's vram-mb.
+// Also the settings file of spec 02 Part G (<Documents>/pocketgames.cfg) for spec 05's vram-mb.
 
 #include <dlfcn.h>
 #include <stdint.h>
@@ -41,15 +41,15 @@ int w32ios_metal_registry_id( uint64_t *id )
 
 int w32ios_settings_get( const char *key, char *value, size_t size )
 {
-    const char *docs = getenv( "MADEIRA_DOCS_DIR" ), *home = getenv( "HOME" );
+    const char *docs = getenv( "PG_DOCS_DIR" ), *home = getenv( "HOME" );
     char path[1024], *text;
     size_t len;
     long file_size;
     FILE *file;
     int found;
 
-    if (docs && *docs) snprintf( path, sizeof(path), "%s/madeira.cfg", docs );
-    else if (home && *home) snprintf( path, sizeof(path), "%s/Documents/madeira.cfg", home );
+    if (docs && *docs) snprintf( path, sizeof(path), "%s/pocketgames.cfg", docs );
+    else if (home && *home) snprintf( path, sizeof(path), "%s/Documents/pocketgames.cfg", home );
     else return 0;
 
     if (!(file = fopen( path, "rb" ))) return 0;

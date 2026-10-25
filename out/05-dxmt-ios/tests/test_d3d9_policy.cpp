@@ -78,7 +78,7 @@ TestUploadPressure() {
 void
 TestRecordedWorkBudget() {
   // C4 (clarification 1): 16 MiB of used bytes after a batch;
-  // MADEIRA_D3D9_BATCH_BUDGET=0 disables.
+  // PG_D3D9_BATCH_BUDGET=0 disables.
   CHECK(!RecordedWorkOverBudget((16ull << 20) - 1, true));
   CHECK(RecordedWorkOverBudget(16ull << 20, true));
   CHECK(RecordedWorkOverBudget(100ull << 20, true));

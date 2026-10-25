@@ -11,9 +11,9 @@
 
 /* ---- the switches of Part B, read once per app run ---- */
 
-#define IOS_S17_WOW64_BY_TEB     0x1   /* MADEIRA_WOW64_BY_TEB, B1 */
-#define IOS_S17_IO_STATUS_OWNER  0x2   /* MADEIRA_IO_STATUS_OWNER, B2 */
-#define IOS_S17_SECTION_LIMIT    0x4   /* MADEIRA_SECTION_PROCESS_LIMIT, B4 */
+#define IOS_S17_WOW64_BY_TEB     0x1   /* PG_WOW64_BY_TEB, B1 */
+#define IOS_S17_IO_STATUS_OWNER  0x2   /* PG_IO_STATUS_OWNER, B2 */
+#define IOS_S17_SECTION_LIMIT    0x4   /* PG_SECTION_PROCESS_LIMIT, B4 */
 
 extern int ios_s17_switch_bits;        /* -1 until read */
 extern int ios_s17_switches_init(void);

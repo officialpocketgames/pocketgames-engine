@@ -50,7 +50,7 @@ void w32ios_gdi_attach_proc( struct w32ios_proc *proc )
 
 /* ---------------------------------------------------------------- spec 17 Part F */
 
-/* F2: decided from MADEIRA_GDI_SHARED_SECTION when it is set; otherwise from the session's
+/* F2: decided from PG_GDI_SHARED_SECTION when it is set; otherwise from the session's
  * arming (spec 10 clarification 3), which never goes back to 0: a "yes" is final, a "no" is
  * asked again (one acquire load) until the session arms. See QUESTIONS.md, spec 17 #5. */
 static int session_32bit = -1;   /* -1: not read yet, 0: no (final), 1: yes (final), 2: not armed yet */
@@ -62,12 +62,12 @@ BOOL w32ios_gdi_session_32bit( void )
     if (state == 0 || state == 1) return state;
     if (state < 0)
     {
-        const char *value = getenv( "MADEIRA_GDI_SHARED_SECTION" );
+        const char *value = getenv( "PG_GDI_SHARED_SECTION" );
         if (value && value[0])
         {
             state = w32ios_s17_session_32bit( value, 0 );
             __atomic_store_n( &session_32bit, state, __ATOMIC_RELEASE );
-            w32ios_log( "GDI table shared with 32-bit programs: %s (MADEIRA_GDI_SHARED_SECTION=%s)",
+            w32ios_log( "GDI table shared with 32-bit programs: %s (PG_GDI_SHARED_SECTION=%s)",
                         state ? "yes" : "no", value );
             return state;
         }

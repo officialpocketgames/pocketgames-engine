@@ -4,7 +4,7 @@
 // Spec 15 Part E: an opt-in DirectInput joystick backed by host controller slot 0.
 //
 // Without winebus.sys, IDirectInput8::EnumDevices(DI8DEVCLASS_GAMECTRL) finds nothing, so a
-// game that reads only DirectInput sees no controller. With MADEIRA_DINPUT_PAD starting with
+// game that reads only DirectInput sees no controller. With PG_DINPUT_PAD starting with
 // '1', this device offers slot 0 (read through win32u, NtUserGetGamepadState, spec 12 Part F)
 // as one standard gamepad. It plugs into dinput's generic device code (device.c) the way the
 // HID joystick does, and scales its axes with the HID joystick's own functions
@@ -74,7 +74,7 @@ static BOOL env_starts_with_1( const WCHAR *name, char *copy, DWORD copy_size )
     return value[0] == '1';
 }
 
-/* MADEIRA_DINPUT_PAD, read once and logged once. */
+/* PG_DINPUT_PAD, read once and logged once. */
 static BOOL ios_joystick_enabled(void)
 {
     static LONG state = -1;     /* -1 not read yet, 0 off, 1 on */
@@ -82,20 +82,20 @@ static BOOL ios_joystick_enabled(void)
     LONG enabled;
 
     if (state >= 0) return state;
-    enabled = env_starts_with_1( L"MADEIRA_DINPUT_PAD", copy, sizeof(copy) );
+    enabled = env_starts_with_1( L"PG_DINPUT_PAD", copy, sizeof(copy) );
     if (InterlockedCompareExchange( &state, enabled, -1 ) == -1)
-        MESSAGE( "[dinput-ios] MADEIRA_DINPUT_PAD=%s: the DirectInput joystick for host slot 0 is %s\n",
+        MESSAGE( "[dinput-ios] PG_DINPUT_PAD=%s: the DirectInput joystick for host slot 0 is %s\n",
                  copy, enabled ? "on" : "off" );
     return state;
 }
 
-/* MADEIRA_DINPUT_TRACE, read once. */
+/* PG_DINPUT_TRACE, read once. */
 static BOOL ios_joystick_trace(void)
 {
     static LONG state = -1;
     char copy[64];
 
-    if (state < 0) InterlockedCompareExchange( &state, env_starts_with_1( L"MADEIRA_DINPUT_TRACE", copy, sizeof(copy) ), -1 );
+    if (state < 0) InterlockedCompareExchange( &state, env_starts_with_1( L"PG_DINPUT_TRACE", copy, sizeof(copy) ), -1 );
     return state;
 }
 

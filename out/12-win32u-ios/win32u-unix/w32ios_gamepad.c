@@ -2,7 +2,7 @@
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 12 Part F: XInput through win32u. NtUserCallTwoParam_GetGamepadState reads the app's
-// controller snapshot (contract Section B/C: winios_gamepad_get_state, set_vibration,
+// controller snapshot (contract Section B/C: pgios_gamepad_get_state, set_vibration,
 // rumble_caps) without allocating or asking the server. arg1 = user index (bits 0-7) | operation
 // (bits 8-15: 0 State, 1 Caps, 2 SetVibration); arg2 = the caller's XINPUT_STATE /
 // XINPUT_CAPABILITIES / XINPUT_VIBRATION (a host address: WoW64's thunk converts it). The
@@ -17,14 +17,14 @@
 
 static int get_state( int index, void *pad )
 {
-    return winios_gamepad_get_state( index, pad );
+    return pgios_gamepad_get_state( index, pad );
 }
 
 static const struct w32ios_pad_source source =
 {
     get_state,
-    winios_gamepad_set_vibration,
-    winios_gamepad_rumble_caps,
+    pgios_gamepad_set_vibration,
+    pgios_gamepad_rumble_caps,
 };
 
 ULONG_PTR w32ios_gamepad_call( ULONG_PTR arg1, ULONG_PTR arg2 )

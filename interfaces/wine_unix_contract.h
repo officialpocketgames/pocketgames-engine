@@ -31,10 +31,10 @@
 
 /* Declared here at file scope so the prototypes in Section B name the same types that
  * Section C defines (a struct first named inside a parameter list is a different type). */
-struct winios_gamepad;
-struct winios_hidpad;
-struct winios_hidpad_output;
-struct winios_gamepad_vibration;
+struct pgios_gamepad;
+struct pgios_hidpad;
+struct pgios_hidpad_output;
+struct pgios_gamepad_vibration;
 
 /* ================= Section A: provided by the unix side ================= */
 
@@ -60,7 +60,7 @@ extern int ios_main_image_i386;
 /* ntdll: how many child processes started by the session's program are still alive and were
  * started at most max_age seconds ago (max_age < 0: any age). Crash reporters and helper
  * tools are not counted. Fills buf with their names, comma separated. */
-extern int madeira_live_game_children(char *buf, int len, double max_age);
+extern int pg_live_game_children(char *buf, int len, double max_age);
 
 /* wineserver: its main(), renamed. Runs the server loop on the calling thread until stopped. */
 extern int wineserver_main(int argc, char *argv[]);
@@ -82,12 +82,12 @@ extern void wine_ui_log(const char *message);
 
 /* win32u (the iOS user driver's unix half): queue hardware input for the Windows side.
  * Must be called on a Wine thread (with a Windows thread context), so the app queues input
- * and the driver hook winios_pProcessEvents drains it there.
+ * and the driver hook pgios_pProcessEvents drains it there.
  *   mouse: x, y and flags exactly as the Win32 MOUSEINPUT (MOUSEEVENTF_*; with ABSOLUTE the
  *          coordinates are desktop pixels), mouse_data the wheel delta / XBUTTON, hwnd NULL.
  *   key:   a virtual-key code, flags KEYEVENTF_* (0x0002 = key up). */
-extern void winios_drv_post_mouse(int x, int y, unsigned int flags, unsigned int mouse_data, HWND hwnd);
-extern void winios_drv_post_key(unsigned short vk, unsigned int flags);
+extern void pgios_drv_post_mouse(int x, int y, unsigned int flags, unsigned int mouse_data, HWND hwnd);
+extern void pgios_drv_post_key(unsigned short vk, unsigned int flags);
 
 /* ================= Section B: provided by the app (spec 02) ================= */
 
@@ -105,7 +105,7 @@ extern _Thread_local int wine_ios_exit_initialized;
 void wine_launched_process_did_exit(int status);
 
 /* ntdll calls this with a short milestone name during process start-up (hard dependency). */
-void winios_phase(const char *name);
+void pgios_phase(const char *name);
 
 /* wineserver: its fatal error handler is replaced by the app's (hard dependency). It must log
  * the message and end only the calling thread, never the app. */
@@ -124,17 +124,17 @@ extern const char wine_build[];
    CFDictionaryRef IOPSGetPowerSourceDescription(CFTypeRef blob, CFTypeRef ps); */
 
 /* --- user driver hooks (all weak), called by win32u on Wine threads --- */
-BOOL winios_pCreateWindow(HWND hwnd);
-void winios_pDestroyWindow(HWND hwnd);
+BOOL pgios_pCreateWindow(HWND hwnd);
+void pgios_pDestroyWindow(HWND hwnd);
 /* Must return ~0u ("no override") unless it deliberately changes the SWP_* flags: win32u
  * uses any other value as the complete new flag set. */
-UINT winios_pShowWindow(HWND hwnd, INT cmd, RECT *rect, UINT swp);
-void winios_pWindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags,
+UINT pgios_pShowWindow(HWND hwnd, INT cmd, RECT *rect, UINT swp);
+void pgios_pWindowPosChanged(HWND hwnd, HWND insert_after, HWND owner_hint, UINT swp_flags,
                               const struct window_rects *new_rects, struct window_surface *surface);
 /* Called from the thread's message pump: deliver queued input. Return 1 if any was delivered. */
-BOOL winios_pProcessEvents(DWORD mask);
-void winios_pSetCursor(HWND hwnd, HCURSOR cursor);
-void winios_pDestroyCursorIcon(HCURSOR cursor);
+BOOL pgios_pProcessEvents(DWORD mask);
+void pgios_pSetCursor(HWND hwnd, HCURSOR cursor);
+void pgios_pDestroyCursorIcon(HCURSOR cursor);
 
 /* --- window images (weak), Wine threads ---
  * A top-level window's GDI surface was flushed. The whole surface is a 32-bit BGRX DIB of
@@ -142,37 +142,37 @@ void winios_pDestroyCursorIcon(HCURSOR cursor);
  * rectangle is informational. Return 1 when handled; return 0 only if the bits could not be
  * copied, and win32u then keeps the damage and flushes again later. Surfaces may be larger
  * than the window (sizes are rounded up); crop to the window's size when drawing. */
-int winios_surface_present(HWND hwnd, int dirty_x, int dirty_y, int dirty_w, int dirty_h,
+int pgios_surface_present(HWND hwnd, int dirty_x, int dirty_y, int dirty_w, int dirty_h,
                            int surf_w, int surf_h, int stride, const void *bits);
 /* A top-level window moved, resized, or was shown or hidden. (x, y, w, h): its visible
  * rectangle; (cx, cy, cw, ch): its client rectangle; both in desktop pixels. */
-void winios_window_frame(HWND hwnd, int x, int y, int w, int h, int visible,
+void pgios_window_frame(HWND hwnd, int x, int y, int w, int h, int visible,
                          int cx, int cy, int cw, int ch);
 /* The program's cursor image changed (straight-alpha BGRA, w*h*4 bytes, valid during the
  * call), or it was shown or hidden. Used by desktop sessions only; spec 02 may ignore them. */
-void winios_cursor_set(unsigned int id, int w, int h, int hot_x, int hot_y, const void *bgra);
-void winios_cursor_show(int show);
+void pgios_cursor_set(unsigned int id, int w, int h, int hot_x, int hot_y, const void *bgra);
+void pgios_cursor_show(int show);
 /* win32u's DIB driver calls this (hard dependency) with the source bits of every PutImage
  * (w x h pixels, `stride` bytes per row, valid only during the call) for an optional diagnostic
  * dump. A no-op is enough. */
-void winios_dump_srcbits(const void *bits, int w, int h, int stride);
+void pgios_dump_srcbits(const void *bits, int w, int h, int stride);
 
 /* --- the program's cursor for hardware-mouse users (weak). If wanted() returns 0 the driver
  * never calls the other three. Spec 02 returns 0 and makes the others no-ops. --- */
-int  winios_direct_cursor_wanted(void);
-void winios_direct_cursor_set(unsigned int id, int w, int h, int hot_x, int hot_y, const void *bgra);
-void winios_direct_cursor_show(int show);
-void winios_direct_cursor_pos(int x, int y);
+int  pgios_direct_cursor_wanted(void);
+void pgios_direct_cursor_set(unsigned int id, int w, int h, int hot_x, int hot_y, const void *bgra);
+void pgios_direct_cursor_show(int show);
+void pgios_direct_cursor_pos(int x, int y);
 
 /* --- display (weak) --- win32u calls this when a program changes the display mode. */
-void winios_display_mode_changed(int w, int h);
+void pgios_display_mode_changed(int w, int h);
 
 /* --- controllers (hard dependencies), any thread, see Section C --- */
-int  winios_gamepad_get_state(int index, struct winios_gamepad *out);
-void winios_gamepad_set_vibration(int index, uint16_t left, uint16_t right);
-int  winios_gamepad_rumble_caps(void);
-int  winios_hidpad_get_state(struct winios_hidpad *out);
-void winios_hidpad_set_output(const struct winios_hidpad_output *output);
+int  pgios_gamepad_get_state(int index, struct pgios_gamepad *out);
+void pgios_gamepad_set_vibration(int index, uint16_t left, uint16_t right);
+int  pgios_gamepad_rumble_caps(void);
+int  pgios_hidpad_get_state(struct pgios_hidpad *out);
+void pgios_hidpad_set_output(const struct pgios_hidpad_output *output);
 
 /* --- the app's CPU modules and signed-image loader (hard dependencies) ---
  * Defined by the app, called by ntdll's unix side. Exact rules: spec 10 Part C (images from
@@ -192,12 +192,12 @@ void *mid_fxi_wow_host_table(int tsd_offset);
 
 /* ================= Section C: shared structures ================= */
 
-#define WINIOS_GAMEPAD_MAX 4
+#define PGIOS_GAMEPAD_MAX 4
 
 /* One XInput slot. 20 bytes, no padding. `packet` is owned by the store: it increases by one
  * every time a stored value actually changes, and the unix side uses it as XInput's
  * dwPacketNumber. Buttons are XINPUT_GAMEPAD_* bits; sticks full signed range, +y up. */
-struct winios_gamepad {
+struct pgios_gamepad {
     uint32_t packet;
     uint16_t buttons;
     uint8_t left_trigger, right_trigger;
@@ -207,21 +207,21 @@ struct winios_gamepad {
 };
 
 /* Extra button bits of the HID gamepad, above the XINPUT_GAMEPAD_* bits in the low 16. */
-#define WINIOS_HIDPAD_TOUCHPAD 0x00010000u
-#define WINIOS_HIDPAD_MUTE     0x00020000u
-#define WINIOS_HIDPAD_L2       0x00040000u   /* trigger past its digital threshold */
-#define WINIOS_HIDPAD_R2       0x00080000u
-#define WINIOS_HIDPAD_BATTERY_UNKNOWN 0xff
+#define PGIOS_HIDPAD_TOUCHPAD 0x00010000u
+#define PGIOS_HIDPAD_MUTE     0x00020000u
+#define PGIOS_HIDPAD_L2       0x00040000u   /* trigger past its digital threshold */
+#define PGIOS_HIDPAD_R2       0x00080000u
+#define PGIOS_HIDPAD_BATTERY_UNKNOWN 0xff
 
 /* Player 1 as a virtual HID gamepad (served by the wineserver). 48 bytes, no padding; the
  * reader compares whole structs bytewise, so unused fields must be zero. */
-struct winios_hidpad {
+struct pgios_hidpad {
     uint32_t packet;              /* owned by the store, as above */
     uint32_t buttons;
     int16_t lx, ly, rx, ry;
     uint8_t left_trigger, right_trigger;
     uint8_t connected;
-    uint8_t battery;              /* 0-100, or WINIOS_HIDPAD_BATTERY_UNKNOWN */
+    uint8_t battery;              /* 0-100, or PGIOS_HIDPAD_BATTERY_UNKNOWN */
     uint8_t charging;             /* 0 discharging, 1 charging, 2 full */
     uint8_t motion;               /* 1: gyro/accel are live */
     uint8_t touch[2];             /* touchpad points 0/1 down */
@@ -235,7 +235,7 @@ struct winios_hidpad {
 
 /* What a game last sent to the HID gamepad (rumble, light bar, LEDs, trigger effects).
  * 44 bytes, no padding. `serial` is owned by the store and increases on every change. */
-struct winios_hidpad_output {
+struct pgios_hidpad_output {
     uint32_t serial;
     uint8_t rumble_valid, rumble_left, rumble_right;
     uint8_t lightbar_valid, red, green, blue;
@@ -250,7 +250,7 @@ struct winios_hidpad_output {
 
 /* XInput rumble per slot. `serial` is 0 until first set, then increases on every change
  * (skipping 0 on wrap). */
-struct winios_gamepad_vibration {
+struct pgios_gamepad_vibration {
     uint32_t serial;
     uint16_t left;    /* XINPUT_VIBRATION.wLeftMotorSpeed */
     uint16_t right;   /* wRightMotorSpeed */
@@ -263,19 +263,19 @@ struct winios_gamepad_vibration {
  *   WINEDLLPATH                 the app bundle directory (holds the DLL farms)
  *   WINESERVERSOCKET            decimal fd of the client end of the server socket pair
  *   WINEDEBUG                   Wine's debug channel string
- *   MADEIRA_WIN32U=1            use the iOS win32u paths
- *   MADEIRA_QUIET=1             turn off the unix side's heavy diagnostics
- *   MADEIRA_INITIAL_CWD         the program's working folder as a Windows path ending in '\'
- *   MADEIRA_DOCS_DIR            the app's Documents directory
- *   MADEIRA_CA_BUNDLE           path of a PEM file of trusted root certificates
- *   MADEIRA_JIT_WRITE_OFFSET    "0x..." RX->RW offset of the JIT pool (JIT builds only)
- *   FEX_MADEIRA_HOSTPROBE       CPU feature list for the x86 translator (format in spec 02)
+ *   PG_WIN32U=1            use the iOS win32u paths
+ *   PG_QUIET=1             turn off the unix side's heavy diagnostics
+ *   PG_INITIAL_CWD         the program's working folder as a Windows path ending in '\'
+ *   PG_DOCS_DIR            the app's Documents directory
+ *   PG_CA_BUNDLE           path of a PEM file of trusted root certificates
+ *   PG_JIT_WRITE_OFFSET    "0x..." RX->RW offset of the JIT pool (JIT builds only)
+ *   FEX_PG_HOSTPROBE       CPU feature list for the x86 translator (format in spec 02)
  *   SteamAppId, SteamGameId, SteamAppPath   a Steam game's identity (spec 02 says when)
  * Set by the app's Swift/C code before boot and only passed through (spec 02 must not clear
  * them unless it says so): WINE_IOS_NOJIT, WINE_IOS_JIT_RX/RW/SIZE, WINE_IOS_EXE_WINDOW,
- * MYIOSDECK_PE_DIR, MYIOSDECK_PE_DIR_A64, MADEIRA_SCREEN_W/H, MADEIRA_HIDPAD,
- * MADEIRA_HIDPAD_NAME, MADEIRA_DINPUT_PAD, MADEIRA_DINPUT_TRACE, MADEIRA_DOCK*,
- * MADEIRA_STEAM_HOST_*, MADEIRA_GAME_WINDOWS, MYIOSDECK_SESSION_REUSE ("1": keep the session for
+ * MYIOSDECK_PE_DIR, MYIOSDECK_PE_DIR_A64, PG_SCREEN_W/H, PG_HIDPAD,
+ * PG_HIDPAD_NAME, PG_DINPUT_PAD, PG_DINPUT_TRACE, PG_DOCK*,
+ * PG_STEAM_HOST_*, PG_GAME_WINDOWS, MYIOSDECK_SESSION_REUSE ("1": keep the session for
  * another program, spec 22; read by the bridge at a program's end, the server and the audio
  * driver). */
 

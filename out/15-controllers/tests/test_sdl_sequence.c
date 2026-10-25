@@ -64,10 +64,10 @@ _Static_assert(IOS_HIDPAD_COLLECTION_INFO_SIZE == sizeof(HID_COLLECTION_INFORMAT
 static struct ios_hidpad_identity id;
 static struct ios_hidparse_desc desc;
 static struct ios_hidpad_report_state report_state;
-static struct winios_hidpad_output output;
+static struct pgios_hidpad_output output;
 static struct ios_hidpad_device dev;
 static struct ios_hidpad_handle handle;
-static struct winios_hidpad pad;
+static struct pgios_hidpad pad;
 static struct ios_hidpad_reply reply;
 static uint64_t now = 1000;      /* the device clock the requests see, in microseconds */
 
@@ -236,7 +236,7 @@ static void test_dualsense_driver(void)
 {
     uint8_t in[64], out[64], report[64], fx[48], bt[78];
     char serial[32];
-    struct winios_hidpad store;
+    struct pgios_hidpad store;
 
     open_device("dualsense", NULL);
 
