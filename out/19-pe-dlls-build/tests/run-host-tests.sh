@@ -8,6 +8,7 @@
 # COMPILERS lists the compilers (default "gcc clang", each skipped when missing). WINE_SRC is the
 # Wine 11.4 tree (default refs/wine-11.4), WINE_BUILD a configured Wine build directory for the
 # PE syntax check (default ~/wine-build). SLOW=1 also runs test-tree.sh (TREE_SCRATCH: where).
+# VKD3D_RELEASE, an unpacked vkd3d 1.19 release, runs test-vkd3d-hlsl.sh (skipped without it).
 
 set -eu
 
@@ -89,6 +90,9 @@ fi
 
 # Part A's PE files, compiled for the three farms' targets
 sh "$here/pe-syntax-check.sh" || fail "pe-syntax-check.sh"
+
+# A14: vkd3d-shader's HLSL compiler with the overlay, built natively, on its test shaders
+sh "$here/test-vkd3d-hlsl.sh" "$build/vkd3d-hlsl" || fail "test-vkd3d-hlsl.sh"
 
 # spec 00 F: no API an App Store build must not use
 repo=$(cd "$top/../.." && pwd)
