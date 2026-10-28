@@ -245,86 +245,15 @@ dxmt_ios_physical_format(MTLPixelFormat format) {
   }
 }
 
-/* ---- Part D1: settings file, memory cap, video memory budget ------------- */
+/* ---- Part D1: memory cap, video memory budget ---------------------------- */
 
 #define MB (1024ull * 1024ull)
 
-/* The app's settings file, <Documents>/pocketgames.cfg (format of spec 02 Part G):
-   UTF-8, optional BOM, one "key = value" per line, whitespace around key and
-   value trimmed, '#' lines and lines without '=' ignored, last occurrence
-   wins. Read once; only the keys this file needs are kept. */
-static struct {
-  bool loaded;
-  bool has_ram_reserve, has_vram, has_vram_trim;
-  int64_t ram_reserve_mb, vram_mb, vram_trim_mb;
-} g_cfg;
-static pthread_once_t g_cfg_once = PTHREAD_ONCE_INIT;
-
-static char *
-trim(char *s) {
-  while (*s == ' ' || *s == '\t')
-    s++;
-  char *end = s + strlen(s);
-  while (end > s && (end[-1] == ' ' || end[-1] == '\t' || end[-1] == '\r' || end[-1] == '\n'))
-    *--end = 0;
-  return s;
-}
-
-static bool
-parse_int(const char *s, int64_t *out) {
-  char *end = NULL;
-  long long v = strtoll(s, &end, 10);
-  if (end == s || *end)
-    return false;
-  *out = v;
-  return true;
-}
-
-static void
-cfg_load(void) {
-  NSAutoreleasePool *pool = [[NSAutoreleasePool alloc] init];
-  NSArray *dirs = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-  NSString *path = dirs.count ? [dirs[0] stringByAppendingPathComponent:@"pocketgames.cfg"] : nil;
-  FILE *f = path ? fopen(path.fileSystemRepresentation, "r") : NULL;
-  [pool release];
-  g_cfg.loaded = true;
-  if (!f)
-    return;
-  char line[1024];
-  bool first = true;
-  while (fgets(line, sizeof(line), f)) {
-    char *p = line;
-    if (first && (unsigned char)p[0] == 0xEF && (unsigned char)p[1] == 0xBB && (unsigned char)p[2] == 0xBF)
-      p += 3;
-    first = false;
-    char *eq = strchr(p, '=');
-    if (!eq)
-      continue;
-    *eq = 0;
-    char *key = trim(p), *value = trim(eq + 1);
-    if (key[0] == '#')
-      continue;
-    int64_t v;
-    if (!parse_int(value, &v))
-      continue;
-    if (!strcmp(key, "ram-reserve-mb")) {
-      g_cfg.has_ram_reserve = true;
-      g_cfg.ram_reserve_mb = v;
-    } else if (!strcmp(key, "vram-mb")) {
-      g_cfg.has_vram = true;
-      g_cfg.vram_mb = v;
-    } else if (!strcmp(key, "vram-trim-mb")) {
-      g_cfg.has_vram_trim = true;
-      g_cfg.vram_trim_mb = v;
-    }
-  }
-  fclose(f);
-}
-
-static void
-cfg_ensure(void) {
-  pthread_once(&g_cfg_once, cfg_load);
-}
+/* Spec 00 Part I: the engine reads no settings file, so these are always the
+   defaults: 1536 MB kept back from hw.memsize, the computed budget, and 1536 MB
+   of headroom before the budget is trimmed. */
+#define RAM_RESERVE_MB 1536
+#define VRAM_TRIM_MB 1536
 
 uint64_t
 dxmt_ios_footprint(void) {
@@ -346,22 +275,20 @@ memory_cap(void) {
   uint64_t c = atomic_load_explicit(&cap, memory_order_relaxed);
   if (c != UINT64_MAX)
     return c;
-  cfg_ensure();
   uint64_t memsize = 0;
   size_t size = sizeof(memsize);
   if (sysctlbyname("hw.memsize", &memsize, &size, NULL, 0) != 0)
     memsize = 0;
-  int64_t reserve_mb = g_cfg.has_ram_reserve ? g_cfg.ram_reserve_mb : 1536;
-  if (reserve_mb <= 0 || memsize == 0) {
+  if (memsize == 0) {
     c = 0; /* 0 turns the cap off */
   } else {
-    uint64_t reserve = (uint64_t)reserve_mb * MB;
+    uint64_t reserve = (uint64_t)RAM_RESERVE_MB * MB;
     c = memsize > reserve ? memsize - reserve : 0;
   }
   atomic_store_explicit(&cap, c, memory_order_relaxed);
   fprintf(
-      stderr, "dxmt: memory cap %llu MB (hw.memsize %llu MB, ram-reserve-mb %lld)%s\n", (unsigned long long)(c / MB),
-      (unsigned long long)(memsize / MB), (long long)reserve_mb, c ? "" : ", off"
+      stderr, "dxmt: memory cap %llu MB (hw.memsize %llu MB, reserve %d MB)%s\n", (unsigned long long)(c / MB),
+      (unsigned long long)(memsize / MB), RAM_RESERVE_MB, c ? "" : ", off"
   );
   return c;
 }
@@ -385,9 +312,6 @@ dxmt_ios_memory_limit(uint64_t footprint) {
 
 uint64_t
 dxmt_ios_vram_budget_base(uint64_t limit, uint64_t metal_value) {
-  cfg_ensure();
-  if (g_cfg.has_vram && g_cfg.vram_mb >= 256)
-    return (uint64_t)g_cfg.vram_mb * MB;
   const uint64_t reserved = 4096 * MB + 2560 * MB; /* guest system memory + translator/Wine/app */
   uint64_t base = limit > reserved ? limit - reserved : 0;
   if (base < 1024 * MB)
@@ -439,7 +363,7 @@ dxmt_ios_working_set_budget(uint64_t metal_value) {
         (unsigned long long)(limit == UINT64_MAX ? 0 : limit / MB), (unsigned long long)(metal_value / MB)
     );
   }
-  uint64_t trim = (uint64_t)(g_cfg.has_vram_trim ? (g_cfg.vram_trim_mb > 0 ? g_cfg.vram_trim_mb : 0) : 1536) * MB;
+  uint64_t trim = (uint64_t)VRAM_TRIM_MB * MB;
   last = dxmt_ios_vram_budget_trimmed(base, limit, footprint, trim);
   uint64_t moved = last > last_logged ? last - last_logged : last_logged - last;
   if (moved >= 64 * MB) {

@@ -68,10 +68,10 @@ uint64_t dxmt_ios_footprint(void);
 uint64_t dxmt_ios_available_memory(void);
 
 /* min(footprint + os_proc_available_memory(), cap), cap = hw.memsize -
-   ram-reserve-mb (default 1536; 0 = no cap). UINT64_MAX if neither is known. */
+   1536 MB (spec 00 Part I). UINT64_MAX if neither is known. */
 uint64_t dxmt_ios_memory_limit(uint64_t footprint);
 
-/* The base budget: vram-mb if >= 256, else limit - 4096 MB - 2560 MB, at least
+/* The base budget: limit - 4096 MB - 2560 MB (spec 00 Part I), at least
    1024 MB and at most metal_value (when known). */
 uint64_t dxmt_ios_vram_budget_base(uint64_t limit, uint64_t metal_value);
 

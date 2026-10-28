@@ -371,24 +371,6 @@ uint64_t w32ios_luid_from_registry_id( uint64_t id )
     return __builtin_bswap64( id );
 }
 
-uint64_t w32ios_dedicated_memory( const char *vram_mb, uint64_t fallback )
-{
-    uint64_t mb = 0;
-    const char *p = vram_mb;
-
-    if (!p) return fallback;
-    while (*p == ' ' || *p == '\t') p++;
-    if (*p < '0' || *p > '9') return fallback;
-    while (*p >= '0' && *p <= '9')
-    {
-        mb = mb * 10 + (uint64_t)(*p++ - '0');
-        if (mb > (1ull << 30)) return fallback;
-    }
-    while (*p == ' ' || *p == '\t') p++;
-    if (*p || mb < 256) return fallback;
-    return mb << 20;
-}
-
 /* ===================== Part E ===================== */
 
 static int mask_bit( const uint8_t *mask, int stride, int x, int y )
@@ -616,48 +598,6 @@ int w32ios_parse_bool( const char *value, int def )
     if (equal_nocase( value, "0" ) || equal_nocase( value, "off" ) || equal_nocase( value, "false" ) ||
         equal_nocase( value, "no" )) return 0;
     return def;
-}
-
-static int is_space( char c ) { return c == ' ' || c == '\t' || c == '\r'; }
-
-int w32ios_cfg_find( const char *text, size_t len, const char *key, char *out, size_t cap )
-{
-    size_t pos = 0, keylen = strlen( key );
-    int found = 0;
-
-    if (len >= 3 && (uint8_t)text[0] == 0xef && (uint8_t)text[1] == 0xbb && (uint8_t)text[2] == 0xbf)
-        pos = 3;   /* UTF-8 byte order mark */
-
-    while (pos < len)
-    {
-        size_t start = pos, end, eq, ks, ke, vs, ve;
-
-        while (pos < len && text[pos] != '\n') pos++;
-        end = pos;
-        if (pos < len) pos++;   /* the newline */
-
-        ks = start;
-        while (ks < end && is_space( text[ks] )) ks++;
-        if (ks == end || text[ks] == '#') continue;
-        for (eq = ks; eq < end && text[eq] != '='; eq++) ;
-        if (eq == end) continue;   /* no '=' */
-        ke = eq;
-        while (ke > ks && is_space( text[ke - 1] )) ke--;
-        if (ke - ks != keylen || memcmp( text + ks, key, keylen )) continue;
-
-        vs = eq + 1;
-        while (vs < end && is_space( text[vs] )) vs++;
-        ve = end;
-        while (ve > vs && is_space( text[ve - 1] )) ve--;
-        if (cap)
-        {
-            size_t n = ve - vs < cap - 1 ? ve - vs : cap - 1;
-            memcpy( out, text + vs, n );
-            out[n] = 0;
-        }
-        found = 1;   /* keep going: the last occurrence wins */
-    }
-    return found;
 }
 
 /* ===================== spec 22 Part E ===================== */

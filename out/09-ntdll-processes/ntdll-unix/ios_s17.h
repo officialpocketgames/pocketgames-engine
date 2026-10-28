@@ -66,11 +66,11 @@ extern BOOL ios_s17_query_futex_queues( void *info, ULONG size, ULONG *ret_size,
 /* D5 */
 extern const char *ntdll_syscall_name( UINT id );
 /* D6: ntdll's unix calls 8-12 (64-bit layout), and their 32-bit answer */
-extern NTSTATUS ios_unixcall_push_jit_aliases( void *args );
+extern NTSTATUS ios_unixcall_push_aliases( void *args );
 extern NTSTATUS ios_unixcall_register_hold_release( void *args );
-extern NTSTATUS ios_unixcall_jit_alias_probe( void *args );
+extern NTSTATUS ios_unixcall_alias_probe( void *args );
 extern NTSTATUS ios_unixcall_mono_bridge_ptr( void *args );
-extern NTSTATUS ios_unixcall_get_fex_arena( void *args );
+extern NTSTATUS ios_unixcall_get_arena( void *args );
 extern NTSTATUS ios_unixcall_wow64_not_supported( void *args );
 
 #endif /* MYIOSDECK_IOS_S17_H */

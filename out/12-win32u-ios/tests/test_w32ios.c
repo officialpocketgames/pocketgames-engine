@@ -830,38 +830,15 @@ static void test_kmt( void )
     }
 }
 
-static void test_memory_and_luid( void )
+static void test_luid( void )
 {
-    CHECK_EQ( w32ios_dedicated_memory( "2048", 99 ), 2048ll << 20 );
-    CHECK_EQ( w32ios_dedicated_memory( "256", 99 ), 256ll << 20 );
-    CHECK_EQ( w32ios_dedicated_memory( "255", 99 ), 99 );
-    CHECK_EQ( w32ios_dedicated_memory( "abc", 99 ), 99 );
-    CHECK_EQ( w32ios_dedicated_memory( "", 99 ), 99 );
-    CHECK_EQ( w32ios_dedicated_memory( NULL, 99 ), 99 );
-    CHECK_EQ( w32ios_dedicated_memory( " 3072 ", 99 ), 3072ll << 20 );
     CHECK_EQ( w32ios_luid_from_registry_id( 0x0102030405060708ull ), 0x0807060504030201ll );
 }
 
 /* ---------------------------------------------------------------- helpers */
 
-static void test_settings( void )
+static void test_parse_bool( void )
 {
-    const char text[] = "# comment\nvram-mb = 2048\n  other=1\nvram-mb=3072  \nnoequals\nlist = a=b\r\n";
-    const char bom[] = "\xef\xbb\xbfkey = v\n";
-    char value[32];
-
-    CHECK( w32ios_cfg_find( text, strlen( text ), "vram-mb", value, sizeof(value) ) );
-    CHECK( !strcmp( value, "3072" ) );   /* the last occurrence wins */
-    CHECK( w32ios_cfg_find( text, strlen( text ), "other", value, sizeof(value) ) );
-    CHECK( !strcmp( value, "1" ) );
-    CHECK( w32ios_cfg_find( text, strlen( text ), "list", value, sizeof(value) ) );
-    CHECK( !strcmp( value, "a=b" ) );    /* the value runs to the end of the line */
-    CHECK( !w32ios_cfg_find( text, strlen( text ), "noequals", value, sizeof(value) ) );
-    CHECK( !w32ios_cfg_find( text, strlen( text ), "comment", value, sizeof(value) ) );
-    CHECK( !w32ios_cfg_find( text, strlen( text ), "vram", value, sizeof(value) ) );
-    CHECK( w32ios_cfg_find( bom, strlen( bom ), "key", value, sizeof(value) ) );
-    CHECK( !strcmp( value, "v" ) );
-
     CHECK( w32ios_parse_bool( "1", 0 ) && w32ios_parse_bool( "on", 0 ) && w32ios_parse_bool( "TRUE", 0 ) &&
            w32ios_parse_bool( "yes", 0 ) );
     CHECK( !w32ios_parse_bool( "0", 1 ) && !w32ios_parse_bool( "off", 1 ) && !w32ios_parse_bool( "False", 1 ) );
@@ -892,8 +869,8 @@ int main( void )
     test_winproc_handle();
     test_xinput();
     test_kmt();
-    test_memory_and_luid();
-    test_settings();
+    test_luid();
+    test_parse_bool();
 
     printf( "%d checks, %d failures\n", checks, failures );
     return failures ? 1 : 0;

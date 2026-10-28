@@ -92,17 +92,12 @@ void ios_s17_ascii_a( char *dst, size_t cap, const char *src );
 
 /* ---- Part D3: the CPU count ---- */
 
-/* the settings file (spec 02 Part G): the value of key in text, trimmed; 1 if found */
-int ios_s17_cfg_lookup( const char *text, size_t len, const char *key, char *out, size_t cap );
-/* the same on <docs_dir>/pocketgames.cfg; 0 when there is no file or no key */
-int ios_s17_cfg_file_get( const char *docs_dir, const char *key, char *out, size_t cap );
-
 /* a whole decimal integer (surrounding blanks allowed); 1 if value holds one */
 int ios_s17_parse_int( const char *value, long *out );
 
-/* the number Windows code sees: PG_CPU_COUNT if a positive integer, else the settings
- * file's cpu-count (absent or 0: none); applied only if 1 to 63. 0: no override. */
-int ios_s17_cpu_override( const char *env_value, const char *cfg_value );
+/* the number Windows code sees: PG_CPU_COUNT if it is 1 to 63 (spec 00 Part I: no settings
+ * file). 0: no override. */
+int ios_s17_cpu_override( const char *env_value );
 
 /* ---- Part D5: naming a system call ---- */
 

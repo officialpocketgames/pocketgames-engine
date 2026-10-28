@@ -1,150 +1,35 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 the MYIOSDECK author
 //
-// Spec 16 Part A: which engine runs. The settings file (spec 02 Part G's format, read from
-// $PG_DOCS_DIR/pocketgames.cfg) gives inproc-sync and the tuning keys of Parts E and G; the
-// environment gives the fastsync switches. Both are read once per app run: objects and cells
-// outlive a session (spec 08 clarification 1).
+// Spec 16 Part A: which engine runs. The tuning values of Parts E and G are fixed (spec 00 Part I:
+// the engine reads no settings file); the environment gives the fastsync switches and
+// PG_SYNC_SESSION. Both are taken once per app run: objects and cells outlive a session (spec 08
+// clarification 1).
 
 #include <ctype.h>
 #include <pthread.h>
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
 #include "ios_sync.h"
 
-/* ---- the settings file ---- */
+/* ---- the tuning values (spec 00 Part I: the defaults, always) ---- */
 
-static int is_space( char c )
+static const struct ios_sync_settings settings =
 {
-    return c == ' ' || c == '\t' || c == '\r' || c == '\f' || c == '\v';
-}
-
-int ios_sync_cfg_find( const char *text, size_t len, const char *key, char *out, size_t cap )
-{
-    size_t pos = 0, key_len = strlen( key );
-    int found = 0;
-
-    if (!text) return 0;
-    if (len >= 3 && !memcmp( text, "\xef\xbb\xbf", 3 )) pos = 3;   /* UTF-8 BOM */
-
-    while (pos < len)
-    {
-        size_t start = pos, end, eq, k0, k1, v0, v1;
-
-        while (pos < len && text[pos] != '\n') pos++;
-        end = pos++;   /* the line is [start, end) */
-
-        k0 = start;
-        while (k0 < end && is_space( text[k0] )) k0++;
-        if (k0 == end || text[k0] == '#') continue;
-        for (eq = k0; eq < end && text[eq] != '='; eq++) ;
-        if (eq == end) continue;   /* no '=' */
-
-        k1 = eq;
-        while (k1 > k0 && is_space( text[k1 - 1] )) k1--;
-        if (k1 - k0 != key_len || memcmp( text + k0, key, key_len )) continue;
-
-        v0 = eq + 1;
-        while (v0 < end && is_space( text[v0] )) v0++;
-        v1 = end;
-        while (v1 > v0 && is_space( text[v1 - 1] )) v1--;
-
-        if (cap)
-        {
-            size_t n = v1 - v0 < cap - 1 ? v1 - v0 : cap - 1;
-            memcpy( out, text + v0, n );
-            out[n] = 0;
-        }
-        found = 1;   /* keep going: the last occurrence wins */
-    }
-    return found;
-}
-
-int ios_sync_cfg_true( const char *value )
-{
-    static const char *const yes[] = { "1", "on", "true", "yes" };
-    unsigned int i;
-
-    for (i = 0; i < sizeof(yes) / sizeof(yes[0]); i++)
-        if (!strcasecmp( value, yes[i] )) return 1;
-    return 0;
-}
-
-/* a decimal value clamped to [min, max]; anything that isn't a number keeps the default */
-static unsigned int cfg_uint( const char *text, size_t len, const char *key, unsigned int def,
-                              unsigned int min, unsigned int max )
-{
-    char value[32], *end;
-    unsigned long long v;
-
-    if (!ios_sync_cfg_find( text, len, key, value, sizeof(value) )) return def;
-    if (!isdigit( (unsigned char)value[0] )) return def;
-    v = strtoull( value, &end, 10 );
-    if (*end) return def;
-    if (v < min) return min;
-    if (v > max) return max;
-    return (unsigned int)v;
-}
-
-void ios_sync_settings_parse( struct ios_sync_settings *s, const char *text, size_t len )
-{
-    char value[32];
-
-    memset( s, 0, sizeof(*s) );
-    s->file_found = text != NULL;
-    s->inproc_sync = -1;
-    if (ios_sync_cfg_find( text, len, "inproc-sync", s->inproc_raw, sizeof(s->inproc_raw) ))
-        s->inproc_sync = ios_sync_cfg_true( s->inproc_raw );
-
-    s->lock_spin      = cfg_uint( text, len, "madsync-lock-spin", 256, 0, 100000 );
-    s->spin_us        = cfg_uint( text, len, "madsync-spin-us", 0, 0, 200 );
-    s->yield_streak   = cfg_uint( text, len, "yield-streak", 256, 0, 1000000 );
-    s->yield_sleep_us = cfg_uint( text, len, "yield-sleep-us", 100, 0, 100000 );
-    s->alert_spin_us  = cfg_uint( text, len, "alert-spin-us", 0, 0, 200 );
-
-    s->eco = ios_sync_cfg_find( text, len, "eco", value, sizeof(value) ) && ios_sync_cfg_true( value );
-    s->eco_qos = IOS_ECO_QOS_UTILITY;
-    if (ios_sync_cfg_find( text, len, "eco-qos", value, sizeof(value) ))
-    {
-        if (!strcmp( value, "background" )) s->eco_qos = IOS_ECO_QOS_BACKGROUND;
-        else if (!strcmp( value, "initiated" )) s->eco_qos = IOS_ECO_QOS_INITIATED;
-    }
-}
-
-static struct ios_sync_settings settings;
-static pthread_once_t settings_once = PTHREAD_ONCE_INIT;
-
-static void read_settings(void)
-{
-    const char *docs = getenv( "PG_DOCS_DIR" );
-    char path[1024], *text = NULL;
-    long size = 0;
-    FILE *file = NULL;
-
-    if (docs && *docs && snprintf( path, sizeof(path), "%s/pocketgames.cfg", docs ) < (int)sizeof(path))
-        file = fopen( path, "rb" );
-    if (file)
-    {
-        if (!fseek( file, 0, SEEK_END ) && (size = ftell( file )) >= 0 && size <= (1 << 20) &&
-            !fseek( file, 0, SEEK_SET ) && (text = malloc( size + 1 )))
-        {
-            size = fread( text, 1, size, file );
-            text[size] = 0;
-        }
-        else size = 0;
-        fclose( file );
-        if (!text) text = calloc( 1, 1 );   /* found, but empty or unreadable */
-    }
-    ios_sync_settings_parse( &settings, text, text ? size : 0 );
-    free( text );
-}
+    .inproc_sync    = -1,   /* unset: in-process ntsync is not selected */
+    .lock_spin      = 256,
+    .spin_us        = 0,
+    .yield_streak   = 256,
+    .yield_sleep_us = 100,
+    .eco            = 0,    /* the app's pg_set_eco switches it */
+    .eco_qos        = IOS_ECO_QOS_UTILITY,
+    .alert_spin_us  = 0,
+};
 
 const struct ios_sync_settings *ios_sync_settings(void)
 {
-    pthread_once( &settings_once, read_settings );
     return &settings;
 }
 
@@ -219,10 +104,10 @@ void ios_fs_config_recheck(void)
 
 /* ---- A2: in-process ntsync ---- */
 
-int ios_usync_engine_decide( int inproc_sync, const char *madsync_session )
+int ios_usync_engine_decide( int inproc_sync, const char *session )
 {
     if (inproc_sync != 1) return 0;
-    if (madsync_session && !strcmp( madsync_session, "0" )) return 0;
+    if (session && !strcmp( session, "0" )) return 0;
     return 1;
 }
 
@@ -231,13 +116,11 @@ static pthread_once_t engine_once = PTHREAD_ONCE_INIT;
 
 static void decide_engine(void)
 {
-    const struct ios_sync_settings *s = ios_sync_settings();
-    const char *session = getenv( "PG_MADSYNC_SESSION" );
+    const char *session = getenv( "PG_SYNC_SESSION" );
 
-    engine = ios_usync_engine_decide( s->inproc_sync, session );
-    ios_sync_log( "in-process ntsync: inproc-sync = %s (settings file %s), PG_MADSYNC_SESSION %s%s -> %s",
-                  s->inproc_sync >= 0 ? s->inproc_raw : "unset", s->file_found ? "found" : "not found",
-                  session ? "= " : "unset", session ? session : "", engine ? "on" : "off" );
+    engine = ios_usync_engine_decide( ios_sync_settings()->inproc_sync, session );
+    ios_sync_log( "in-process ntsync: %s (PG_SYNC_SESSION %s%s)", engine ? "on" : "off",
+                  session ? "= " : "unset", session ? session : "" );
 }
 
 int ios_usync_engine_selected(void)
@@ -250,7 +133,7 @@ void ios_usync_engine_recheck(void)
 {
     static int logged;
     int selected = ios_usync_engine_selected();
-    int now = ios_usync_engine_decide( ios_sync_settings()->inproc_sync, getenv( "PG_MADSYNC_SESSION" ));
+    int now = ios_usync_engine_decide( ios_sync_settings()->inproc_sync, getenv( "PG_SYNC_SESSION" ));
 
     if (now != selected && !__atomic_exchange_n( &logged, 1, __ATOMIC_RELAXED ))
         ios_sync_log( "in-process ntsync: this session asks for %s; the app run keeps %s",

@@ -3,8 +3,8 @@
 //
 // Spec 12 Part D: a D3DKMT adapter (opt-in). With PG_KMT_ADAPTER=1 (or on/true/yes) the GPU
 // that DXGI reports (DXMT: Metal's default device) becomes a D3DKMT adapter: its LUID is
-// bswap64(MTLDevice.registryID), its dedicated memory spec 05's vram-mb (256 MB or more) or
-// 4096 MB; the registry GPU of Part C6 gets both. EnumAdapters2 lists it; OpenAdapterFromHdc,
+// bswap64(MTLDevice.registryID), its dedicated memory 4096 MB (spec 00 Part I: no settings
+// file); the registry GPU of Part C6 gets both. EnumAdapters2 lists it; OpenAdapterFromHdc,
 // OpenAdapterFromDeviceName and OpenAdapterFromGdiDisplayName (C7) open it; QueryAdapterInfo,
 // QueryStatistics and QueryVideoMemoryInfo answer for it. Off (the default), nothing here
 // changes an answer: the registry GPU keeps its own LUID and 4096 MB.
@@ -64,14 +64,7 @@ BOOL w32ios_kmt_luid( LUID *luid )
 
 ULONGLONG w32ios_kmt_memory( void )
 {
-    static ULONGLONG memory;
-    char value[32];
-
-    if (!w32ios_kmt_enabled()) return DEFAULT_MEMORY;
-    if (!memory)
-        memory = w32ios_dedicated_memory( w32ios_settings_get( "vram-mb", value, sizeof(value) ) ? value : NULL,
-                                          DEFAULT_MEMORY );
-    return memory;
+    return DEFAULT_MEMORY;
 }
 
 BOOL w32ios_kmt_is_adapter_luid( const LUID *luid )

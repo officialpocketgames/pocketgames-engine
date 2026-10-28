@@ -161,8 +161,6 @@ uint64_t w32ios_pack_version( const char *version );
 
 /* D1: the adapter LUID as a 64-bit value (LowPart = low 32 bits): bswap64(registryID) */
 uint64_t w32ios_luid_from_registry_id( uint64_t id );
-/* D2: spec 05's vram-mb (a decimal number of MB, used when 256 or more), in bytes; else fallback */
-uint64_t w32ios_dedicated_memory( const char *vram_mb, uint64_t fallback );
 
 /* ===================== Part E: the iOS user driver ===================== */
 
@@ -271,9 +269,5 @@ int w32ios_client_object_ok( uint32_t owner_pid, uint32_t caller_pid, int is_win
 
 /* "1", "on", "true", "yes" (any case) are true; "0", "off", "false", "no" false; others def. */
 int w32ios_parse_bool( const char *value, int def );
-
-/* One key of the settings file (spec 02 Part G format) from a buffer: returns 1 and copies the
- * value (trimmed) when found; the last occurrence wins. */
-int w32ios_cfg_find( const char *text, size_t len, const char *key, char *out, size_t cap );
 
 #endif /* W32IOS_PURE_H */

@@ -492,23 +492,7 @@ static void test_failed_lookups(void)
 
 static void test_cpu_count(void)
 {
-    static const char cfg[] =
-        "\xef\xbb\xbf# settings\n"
-        "cpu-count = 2\n"
-        "  env.PG_X = a=b  \n"
-        "no equals here\n"
-        "  # cpu-count = 9\n"
-        "cpu-count\t=  4 \r\n";
-    char value[32];
     long n;
-
-    /* the settings file reader */
-    CHECK( ios_s17_cfg_lookup( cfg, sizeof(cfg) - 1, "cpu-count", value, sizeof(value) ) );
-    CHECK_STR( value, "4" );   /* the last occurrence wins; # lines don't count */
-    CHECK( ios_s17_cfg_lookup( cfg, sizeof(cfg) - 1, "env.PG_X", value, sizeof(value) ) );
-    CHECK_STR( value, "a=b" );
-    CHECK( !ios_s17_cfg_lookup( cfg, sizeof(cfg) - 1, "cpu", value, sizeof(value) ) );
-    CHECK( !ios_s17_cfg_lookup( cfg, sizeof(cfg) - 1, "no equals here", value, sizeof(value) ) );
 
     CHECK( ios_s17_parse_int( " 12 ", &n ) && n == 12 );
     CHECK( ios_s17_parse_int( "-3", &n ) && n == -3 );
@@ -516,41 +500,31 @@ static void test_cpu_count(void)
     CHECK( !ios_s17_parse_int( "", &n ) );
     CHECK( !ios_s17_parse_int( NULL, &n ) );
 
-    /* the variable wins over the key */
-    CHECK_EQ( ios_s17_cpu_override( "2", "4" ), 2 );
-    CHECK_EQ( ios_s17_cpu_override( NULL, "4" ), 4 );
-    CHECK_EQ( ios_s17_cpu_override( "", "4" ), 4 );
-    /* 0, negative or garbage in the variable: not a positive integer, the key decides */
-    CHECK_EQ( ios_s17_cpu_override( "0", "4" ), 4 );
-    CHECK_EQ( ios_s17_cpu_override( "-3", "4" ), 4 );
-    CHECK_EQ( ios_s17_cpu_override( "lots", "4" ), 4 );
-    CHECK_EQ( ios_s17_cpu_override( "lots", NULL ), 0 );
-    /* key 0 or absent: none */
-    CHECK_EQ( ios_s17_cpu_override( NULL, "0" ), 0 );
-    CHECK_EQ( ios_s17_cpu_override( NULL, NULL ), 0 );
-    CHECK_EQ( ios_s17_cpu_override( NULL, "-2" ), 0 );
-    CHECK_EQ( ios_s17_cpu_override( NULL, "x" ), 0 );
+    /* the variable only (spec 00 Part I: no settings file) */
+    CHECK_EQ( ios_s17_cpu_override( "2" ), 2 );
+    CHECK_EQ( ios_s17_cpu_override( " 4 " ), 4 );
+    /* 0, negative, garbage or absent: none */
+    CHECK_EQ( ios_s17_cpu_override( "0" ), 0 );
+    CHECK_EQ( ios_s17_cpu_override( "-3" ), 0 );
+    CHECK_EQ( ios_s17_cpu_override( "lots" ), 0 );
+    CHECK_EQ( ios_s17_cpu_override( "" ), 0 );
+    CHECK_EQ( ios_s17_cpu_override( NULL ), 0 );
     /* only 1 to 63 is applied */
-    CHECK_EQ( ios_s17_cpu_override( "64", "4" ), 0 );
-    CHECK_EQ( ios_s17_cpu_override( "63", NULL ), 63 );
-    CHECK_EQ( ios_s17_cpu_override( "1", NULL ), 1 );
-    CHECK_EQ( ios_s17_cpu_override( NULL, "64" ), 0 );
+    CHECK_EQ( ios_s17_cpu_override( "64" ), 0 );
+    CHECK_EQ( ios_s17_cpu_override( "63" ), 63 );
+    CHECK_EQ( ios_s17_cpu_override( "1" ), 1 );
 
-    /* the file through PG_DOCS_DIR, decided once and logged once */
+    /* a settings file where earlier builds looked for one changes nothing; decided once */
     write_file( "pocketgames.cfg", "cpu-count = 4\n", 14 );
-    CHECK( ios_s17_cfg_file_get( dir, "cpu-count", value, sizeof(value) ) );
-    CHECK_STR( value, "4" );
-    CHECK( !ios_s17_cfg_file_get( "/nonexistent-dir", "cpu-count", value, sizeof(value) ) );
-    CHECK( !ios_s17_cfg_file_get( NULL, "cpu-count", value, sizeof(value) ) );
     setenv( "PG_DOCS_DIR", dir, 1 );
-    setenv( "PG_CPU_COUNT", "2", 1 );
+    unsetenv( "PG_CPU_COUNT" );
     log_lines = 0;
-    CHECK_EQ( ios_s17_cpu_count( 6 ), 2 );
-    CHECK_EQ( log_lines, 1 );
-    CHECK( strstr( last_log, "reporting 2 (host has 6)" ) != NULL );
-    unsetenv( "PG_CPU_COUNT" );          /* later pseudo-processes keep the decision */
-    CHECK_EQ( ios_s17_cpu_count( 6 ), 2 );
-    CHECK_EQ( log_lines, 1 );
+    CHECK_EQ( ios_s17_cpu_count( 6 ), 6 );
+    CHECK_EQ( log_lines, 0 );
+    setenv( "PG_CPU_COUNT", "2", 1 );    /* later pseudo-processes keep the decision */
+    CHECK_EQ( ios_s17_cpu_count( 6 ), 6 );
+    CHECK_EQ( log_lines, 0 );
+    unsetenv( "PG_CPU_COUNT" );
 }
 
 /* ---------------------------------------------------------------- Part D4 */
@@ -749,11 +723,11 @@ static void test_unix_calls(void)
     CHECK_EQ( unix_ios_get_fex_arena, 12 );
 
     /* 8 */
-    CHECK_EQ( ios_unixcall_push_jit_aliases( NULL ), STATUS_INVALID_PARAMETER );
+    CHECK_EQ( ios_unixcall_push_aliases( NULL ), STATUS_INVALID_PARAMETER );
     push.callback = NULL;
-    CHECK_EQ( ios_unixcall_push_jit_aliases( &push ), STATUS_INVALID_PARAMETER );
+    CHECK_EQ( ios_unixcall_push_aliases( &push ), STATUS_INVALID_PARAMETER );
     push.callback = alias_callback;
-    CHECK_EQ( ios_unixcall_push_jit_aliases( &push ), STATUS_SUCCESS );
+    CHECK_EQ( ios_unixcall_push_aliases( &push ), STATUS_SUCCESS );
     CHECK_EQ( callback_calls, 0 );
 
     /* 9 */
@@ -772,7 +746,7 @@ static void test_unix_calls(void)
     /* 10 */
     memset( &probe, 0xab, sizeof(probe) );
     probe.size = sizeof(probe); probe.version = 1; probe.addr = 0x140001000;
-    CHECK_EQ( ios_unixcall_jit_alias_probe( &probe ), STATUS_SUCCESS );
+    CHECK_EQ( ios_unixcall_alias_probe( &probe ), STATUS_SUCCESS );
     CHECK_EQ( probe.size, 88 );
     CHECK_EQ( probe.version, 1 );
     CHECK_EQ( probe.addr, 0x140001000 );
@@ -781,11 +755,11 @@ static void test_unix_calls(void)
            !probe.dup_end );
     memset( &probe, 0xab, sizeof(probe) );
     probe.size = 80; probe.version = 1;
-    CHECK_EQ( ios_unixcall_jit_alias_probe( &probe ), STATUS_INVALID_PARAMETER );
+    CHECK_EQ( ios_unixcall_alias_probe( &probe ), STATUS_INVALID_PARAMETER );
     CHECK_EQ( probe.rw, 0xababababababababull );   /* untouched */
     probe.size = sizeof(probe); probe.version = 0;
-    CHECK_EQ( ios_unixcall_jit_alias_probe( &probe ), STATUS_INVALID_PARAMETER );
-    CHECK_EQ( ios_unixcall_jit_alias_probe( NULL ), STATUS_INVALID_PARAMETER );
+    CHECK_EQ( ios_unixcall_alias_probe( &probe ), STATUS_INVALID_PARAMETER );
+    CHECK_EQ( ios_unixcall_alias_probe( NULL ), STATUS_INVALID_PARAMETER );
 
     /* 11 */
     CHECK_EQ( ios_unixcall_mono_bridge_ptr( &bridge ), STATUS_NOT_SUPPORTED );
@@ -793,10 +767,10 @@ static void test_unix_calls(void)
     CHECK_EQ( ios_unixcall_mono_bridge_ptr( NULL ), STATUS_NOT_SUPPORTED );
 
     /* 12 */
-    CHECK_EQ( ios_unixcall_get_fex_arena( &arena ), STATUS_SUCCESS );
+    CHECK_EQ( ios_unixcall_get_arena( &arena ), STATUS_SUCCESS );
     CHECK_EQ( arena.base, 0 );
     CHECK_EQ( arena.end, 0 );
-    CHECK_EQ( ios_unixcall_get_fex_arena( NULL ), STATUS_INVALID_PARAMETER );
+    CHECK_EQ( ios_unixcall_get_arena( NULL ), STATUS_INVALID_PARAMETER );
 
     /* the WoW64 table answers all five STATUS_NOT_SUPPORTED, whatever the block */
     CHECK_EQ( ios_unixcall_wow64_not_supported( NULL ), STATUS_NOT_SUPPORTED );

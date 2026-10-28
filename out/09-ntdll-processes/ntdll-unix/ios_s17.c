@@ -129,12 +129,9 @@ long ios_s17_cpu_count( long host )
 
     if (count < 0)
     {
-        char value[64] = "";
         int expected = -1;
-        const char *env = getenv( "PG_CPU_COUNT" );
 
-        ios_s17_cfg_file_get( getenv( "PG_DOCS_DIR" ), "cpu-count", value, sizeof(value) );
-        count = ios_s17_cpu_override( env, value );
+        count = ios_s17_cpu_override( getenv( "PG_CPU_COUNT" ) );
         if (__atomic_compare_exchange_n( &cpu_override, &expected, count, FALSE,
                                          __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE ))
         {
@@ -208,7 +205,7 @@ BOOL ios_s17_query_futex_queues( void *info, ULONG size, ULONG *ret_size, NTSTAT
 /* This build runs no JIT (spec 10's scope): there are no aliases, nothing to release, no
  * Mono bridge and no emulator arena. The calls check their blocks and answer accordingly. */
 
-NTSTATUS ios_unixcall_push_jit_aliases( void *args )
+NTSTATUS ios_unixcall_push_aliases( void *args )
 {
     struct ios_push_jit_aliases_params *params = args;
 
@@ -226,7 +223,7 @@ NTSTATUS ios_unixcall_register_hold_release( void *args )
     return STATUS_SUCCESS;
 }
 
-NTSTATUS ios_unixcall_jit_alias_probe( void *args )
+NTSTATUS ios_unixcall_alias_probe( void *args )
 {
     struct ios_jit_alias_probe_params *params = args;
     size_t after_addr = offsetof( struct ios_jit_alias_probe_params, addr ) + sizeof(params->addr);
@@ -244,7 +241,7 @@ NTSTATUS ios_unixcall_mono_bridge_ptr( void *args )
     return STATUS_NOT_SUPPORTED;
 }
 
-NTSTATUS ios_unixcall_get_fex_arena( void *args )
+NTSTATUS ios_unixcall_get_arena( void *args )
 {
     struct ios_get_fex_arena_params *params = args;
 

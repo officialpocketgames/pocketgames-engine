@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 the MYIOSDECK author
 //
-// Spec 16 Part J4: Part A's engine choice (settings file x environment) and the fastsync
+// Spec 16 Part J4: Part A's engine choice (the fixed values x environment) and the fastsync
 // switches; Part G's yield streak and eco generation.
 
 #include <stdlib.h>
@@ -11,85 +11,19 @@
 #include "ios_sync.h"
 #include "check.h"
 
-static void test_cfg_find(void)
-{
-    static const char text[] =
-        "\xef\xbb\xbf# comment = no\n"
-        "  inproc-sync =  yes  \r\n"
-        "no equals here\n"
-        "eco=1\n"
-        "env.X = a=b\n"
-        "eco = 0\n"
-        "   # inproc-sync = 0\n"
-        "empty =\n";
-    char v[32];
-
-    CHECK( ios_sync_cfg_find( text, strlen( text ), "inproc-sync", v, sizeof(v) ));
-    CHECK( !strcmp( v, "yes" ));
-    CHECK( ios_sync_cfg_find( text, strlen( text ), "eco", v, sizeof(v) ));
-    CHECK( !strcmp( v, "0" ));   /* the last occurrence wins */
-    CHECK( ios_sync_cfg_find( text, strlen( text ), "env.X", v, sizeof(v) ));
-    CHECK( !strcmp( v, "a=b" ));
-    CHECK( ios_sync_cfg_find( text, strlen( text ), "empty", v, sizeof(v) ));
-    CHECK( !strcmp( v, "" ));
-    CHECK( !ios_sync_cfg_find( text, strlen( text ), "# comment", v, sizeof(v) ));
-    CHECK( !ios_sync_cfg_find( text, strlen( text ), "no equals here", v, sizeof(v) ));
-    CHECK( !ios_sync_cfg_find( NULL, 0, "eco", v, sizeof(v) ));
-    /* truncation */
-    CHECK( ios_sync_cfg_find( text, strlen( text ), "inproc-sync", v, 3 ));
-    CHECK( !strcmp( v, "ye" ));
-
-    CHECK( ios_sync_cfg_true( "1" ) && ios_sync_cfg_true( "on" ) && ios_sync_cfg_true( "TRUE" ) &&
-           ios_sync_cfg_true( "Yes" ));
-    CHECK( !ios_sync_cfg_true( "0" ) && !ios_sync_cfg_true( "off" ) && !ios_sync_cfg_true( "" ) &&
-           !ios_sync_cfg_true( "2" ));
-}
-
-static void parse_str( struct ios_sync_settings *s, const char *text )
-{
-    ios_sync_settings_parse( s, text, strlen( text ));
-}
-
+/* spec 00 Part I: the defaults, always */
 static void test_settings(void)
 {
-    static const char text[] =
-        "madsync-lock-spin = 999999\n"
-        "madsync-spin-us = 50\n"
-        "yield-streak = 10\n"
-        "yield-sleep-us = 0\n"
-        "alert-spin-us = 300\n"
-        "eco = on\n"
-        "eco-qos = background\n";
-    struct ios_sync_settings s;
+    const struct ios_sync_settings *s = ios_sync_settings();
 
-    ios_sync_settings_parse( &s, NULL, 0 );
-    CHECK( !s.file_found );
-    CHECK_EQ( s.inproc_sync, -1 );
-    CHECK_EQ( s.lock_spin, 256 );
-    CHECK_EQ( s.spin_us, 0 );
-    CHECK_EQ( s.yield_streak, 256 );
-    CHECK_EQ( s.yield_sleep_us, 100 );
-    CHECK_EQ( s.eco, 0 );
-    CHECK_EQ( s.eco_qos, IOS_ECO_QOS_UTILITY );
-    CHECK_EQ( s.alert_spin_us, 0 );
-
-    ios_sync_settings_parse( &s, text, strlen( text ));
-    CHECK( s.file_found );
-    CHECK_EQ( s.inproc_sync, -1 );
-    CHECK_EQ( s.lock_spin, 100000 );   /* clamped */
-    CHECK_EQ( s.spin_us, 50 );
-    CHECK_EQ( s.yield_streak, 10 );
-    CHECK_EQ( s.yield_sleep_us, 0 );
-    CHECK_EQ( s.alert_spin_us, 200 );
-    CHECK_EQ( s.eco, 1 );
-    CHECK_EQ( s.eco_qos, IOS_ECO_QOS_BACKGROUND );
-
-    parse_str( &s, "eco-qos = initiated\ninproc-sync = 0\nmadsync-lock-spin = x\n" );
-    CHECK_EQ( s.eco_qos, IOS_ECO_QOS_INITIATED );
-    CHECK_EQ( s.inproc_sync, 0 );
-    CHECK_EQ( s.lock_spin, 256 );   /* not a number: the default */
-    parse_str( &s, "eco-qos = whatever\n" );
-    CHECK_EQ( s.eco_qos, IOS_ECO_QOS_UTILITY );
+    CHECK_EQ( s->inproc_sync, -1 );
+    CHECK_EQ( s->lock_spin, 256 );
+    CHECK_EQ( s->spin_us, 0 );
+    CHECK_EQ( s->yield_streak, 256 );
+    CHECK_EQ( s->yield_sleep_us, 100 );
+    CHECK_EQ( s->eco, 0 );
+    CHECK_EQ( s->eco_qos, IOS_ECO_QOS_UTILITY );
+    CHECK_EQ( s->alert_spin_us, 0 );
 }
 
 static void test_engine_decide(void)
@@ -173,8 +107,9 @@ static void test_fs_config(void)
     CHECK_EQ( c.pollpeek, 1 );
 }
 
-/* the real file through $PG_DOCS_DIR, read once */
-static void test_settings_file(void)
+/* spec 00 Part I: a settings file where earlier builds looked for one changes nothing, and the
+ * engine choice is made once per app run */
+static void test_no_settings_file(void)
 {
     char dir[] = "/tmp/ios_sync_cfgXXXXXX", path[64];
     FILE *f;
@@ -186,17 +121,16 @@ static void test_settings_file(void)
     fputs( "inproc-sync = yes\neco-qos = background\nyield-streak = 3\nyield-sleep-us = 50\n", f );
     fclose( f );
     setenv( "PG_DOCS_DIR", dir, 1 );
-    unsetenv( "PG_MADSYNC_SESSION" );
+    unsetenv( "PG_SYNC_SESSION" );
 
-    CHECK( ios_sync_settings()->file_found );
-    CHECK_EQ( ios_sync_settings()->inproc_sync, 1 );
-    CHECK( ios_usync_engine_selected() );
+    CHECK_EQ( ios_sync_settings()->inproc_sync, -1 );
+    CHECK_EQ( ios_sync_settings()->yield_streak, 256 );
+    CHECK( !ios_usync_engine_selected() );
     /* once per app run: a later change is not seen */
-    setenv( "PG_MADSYNC_SESSION", "0", 1 );
-    CHECK( ios_usync_engine_selected() );
-    ios_usync_engine_recheck();   /* logged once ... */
-    ios_usync_engine_recheck();   /* ... not twice */
-    CHECK( ios_usync_engine_selected() );
+    setenv( "PG_SYNC_SESSION", "1", 1 );
+    CHECK( !ios_usync_engine_selected() );
+    ios_usync_engine_recheck();   /* nothing to log: the choice is the same */
+    CHECK( !ios_usync_engine_selected() );
     remove( path );
     rmdir( dir );
 }
@@ -219,9 +153,9 @@ static void test_yield(void)
     /* sleep 0 = never */
     for (i = 0; i < 10; i++) CHECK_EQ( ios_yield_step( &st, t += 10, 3, 0 ), 0 );
 
-    /* the thread's own state through the settings of the file above (streak 3, 50 us) */
-    for (i = 0; i < 4; i++) ios_yield_decide();
-    CHECK_EQ( ios_yield_decide(), 50 );
+    /* the thread's own state with the defaults (streak 256, 100 us), whatever the file above says */
+    for (i = 0; i < 257; i++) ios_yield_decide();
+    CHECK_EQ( ios_yield_decide(), 100 );
 }
 
 static void test_eco(void)
@@ -253,7 +187,7 @@ static void test_eco(void)
     CHECK( pg_get_eco() );
     CHECK_EQ( ios_eco_generation(), gen + 1 );
     ios_eco_apply();
-    CHECK_EQ( ios_eco_last_class, IOS_QOS_BACKGROUND );   /* eco-qos of the file */
+    CHECK_EQ( ios_eco_last_class, IOS_QOS_UTILITY );   /* the default eco-qos */
     ios_eco_last_class = -1;
     ios_eco_apply();
     CHECK_EQ( ios_eco_last_class, -1 );   /* same generation: nothing */
@@ -265,11 +199,10 @@ static void test_eco(void)
 
 int main(void)
 {
-    test_cfg_find();
     test_settings();
     test_engine_decide();
     test_fs_config();
-    test_settings_file();
+    test_no_settings_file();
     test_yield();
     test_eco();
     return check_done( "test_config_pace" );

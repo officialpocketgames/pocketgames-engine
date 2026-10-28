@@ -19,32 +19,24 @@ extern "C" {
 
 /* ======== Part A: choosing the engine (src/ios_sync_config.c) ======== */
 
-/* the settings file (spec 02 Part G's format), $PG_DOCS_DIR/pocketgames.cfg */
+/* the tuning values: their defaults, always (spec 00 Part I: no settings file) */
 struct ios_sync_settings
 {
-    int      file_found;
-    int      inproc_sync;          /* inproc-sync: -1 unset, 0, 1 */
-    char     inproc_raw[32];       /* its value as read, for the A2 log line */
-    unsigned lock_spin;            /* madsync-lock-spin (E6): 0..100000, default 256 */
-    unsigned spin_us;              /* madsync-spin-us (E6): 0..200, default 0 */
-    unsigned yield_streak;         /* yield-streak (G1): default 256 */
-    unsigned yield_sleep_us;       /* yield-sleep-us (G1): default 100, 0 = never */
-    int      eco;                  /* eco (G2): default off */
+    int      inproc_sync;          /* inproc-sync: -1 unset */
+    unsigned lock_spin;            /* sync-lock-spin (E6): 256 */
+    unsigned spin_us;              /* sync-spin-us (E6): 0 */
+    unsigned yield_streak;         /* yield-streak (G1): 256 */
+    unsigned yield_sleep_us;       /* yield-sleep-us (G1): 100, 0 = never */
+    int      eco;                  /* eco (G2): off at start */
     int      eco_qos;              /* eco-qos (G2): IOS_ECO_QOS_* */
-    unsigned alert_spin_us;        /* alert-spin-us (G3): 0..200, default 0 */
+    unsigned alert_spin_us;        /* alert-spin-us (G3): 0 */
 };
 
 #define IOS_ECO_QOS_UTILITY     0
 #define IOS_ECO_QOS_BACKGROUND  1
 #define IOS_ECO_QOS_INITIATED   2
 
-/* one key of a settings text: 1 and the trimmed value when found (the last occurrence wins) */
-extern int ios_sync_cfg_find( const char *text, size_t len, const char *key, char *out, size_t cap );
-/* true is 1, on, true or yes (any case) */
-extern int ios_sync_cfg_true( const char *value );
-/* fill *s from a settings text (NULL: no file) */
-extern void ios_sync_settings_parse( struct ios_sync_settings *s, const char *text, size_t len );
-/* the settings of this app run, read once */
+/* the tuning values of this app run */
 extern const struct ios_sync_settings *ios_sync_settings(void);
 
 /* fastsync switches (A3-A6), from the environment */
@@ -73,8 +65,8 @@ extern void ios_fs_config_parse( struct ios_fs_config *c, ios_getenv_fn get );
 extern const struct ios_fs_config *ios_fs_config(void);
 /* A5: a later session asks for something else: logged once, ignored */
 extern void ios_fs_config_recheck(void);
-/* A2: in-process ntsync for this inproc-sync value and PG_MADSYNC_SESSION */
-extern int ios_usync_engine_decide( int inproc_sync, const char *madsync_session );
+/* A2: in-process ntsync for this inproc-sync value and PG_SYNC_SESSION */
+extern int ios_usync_engine_decide( int inproc_sync, const char *session );
 /* A2: the server's decision, made once (the first get_inproc_device_fd) and logged */
 extern int ios_usync_engine_selected(void);
 /* A5: a later session's environment asks for the other engine: logged once, ignored */

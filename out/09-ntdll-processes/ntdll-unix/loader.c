@@ -1057,11 +1057,11 @@ static const unixlib_entry_t unix_call_funcs[] =
     system_time_precise,
 #ifdef WINE_IOS
     /* MYIOSDECK (spec 17 D6): calls 8-12, appended after system_time_precise */
-    ios_unixcall_push_jit_aliases,
+    ios_unixcall_push_aliases,
     ios_unixcall_register_hold_release,
-    ios_unixcall_jit_alias_probe,
+    ios_unixcall_alias_probe,
     ios_unixcall_mono_bridge_ptr,
-    ios_unixcall_get_fex_arena,
+    ios_unixcall_get_arena,
 #endif
 };
 

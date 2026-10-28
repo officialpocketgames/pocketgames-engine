@@ -268,76 +268,6 @@ static int is_blank( char c )
     return c == ' ' || c == '\t' || c == '\r' || c == '\v' || c == '\f';
 }
 
-int ios_s17_cfg_lookup( const char *text, size_t len, const char *key, char *out, size_t cap )
-{
-    size_t pos = 0, key_len = strlen( key );
-    int found = 0;
-
-    if (len >= 3 && (unsigned char)text[0] == 0xef && (unsigned char)text[1] == 0xbb &&
-        (unsigned char)text[2] == 0xbf)
-        pos = 3;   /* UTF-8 BOM */
-
-    while (pos < len)
-    {
-        size_t start = pos, end, k0, k1, v0, v1, eq;
-
-        while (pos < len && text[pos] != '\n') pos++;
-        end = pos++;   /* [start, end) is the line */
-
-        k0 = start;
-        while (k0 < end && is_blank( text[k0] )) k0++;
-        if (k0 == end || text[k0] == '#') continue;
-        for (eq = k0; eq < end && text[eq] != '='; eq++) ;
-        if (eq == end) continue;   /* no '=' */
-        k1 = eq;
-        while (k1 > k0 && is_blank( text[k1 - 1] )) k1--;
-        if (k1 - k0 != key_len || memcmp( text + k0, key, key_len )) continue;
-        v0 = eq + 1;
-        while (v0 < end && is_blank( text[v0] )) v0++;
-        v1 = end;
-        while (v1 > v0 && is_blank( text[v1 - 1] )) v1--;
-        if (cap)
-        {
-            size_t n = v1 - v0 < cap - 1 ? v1 - v0 : cap - 1;
-            memcpy( out, text + v0, n );
-            out[n] = 0;
-        }
-        found = 1;   /* keep going: the last occurrence wins */
-    }
-    return found;
-}
-
-int ios_s17_cfg_file_get( const char *docs_dir, const char *key, char *out, size_t cap )
-{
-    char path[4096], *text = NULL;
-    size_t size = 0, used = 0;
-    ssize_t n;
-    int fd, found;
-
-    if (!docs_dir || !docs_dir[0]) return 0;
-    if (snprintf( path, sizeof(path), "%s/pocketgames.cfg", docs_dir ) >= (int)sizeof(path)) return 0;
-    if ((fd = open( path, O_RDONLY | O_CLOEXEC )) == -1) return 0;
-    for (;;)
-    {
-        if (used == size)
-        {
-            char *grown;
-            if (size >= (1u << 20)) break;   /* a settings file is small; read at most 1 MB */
-            size = size ? size * 2 : 4096;
-            if (!(grown = realloc( text, size ))) break;
-            text = grown;
-        }
-        n = read( fd, text + used, size - used );
-        if (n == -1 && errno == EINTR) continue;
-        if (n <= 0) break;
-        used += (size_t)n;
-    }
-    close( fd );
-    found = text ? ios_s17_cfg_lookup( text, used, key, out, cap ) : 0;
-    free( text );
-    return found;
-}
-
 int ios_s17_parse_int( const char *value, long *out )
 {
     char *end;
@@ -355,15 +285,11 @@ int ios_s17_parse_int( const char *value, long *out )
     return 1;
 }
 
-int ios_s17_cpu_override( const char *env_value, const char *cfg_value )
+int ios_s17_cpu_override( const char *env_value )
 {
     long count = 0;
 
-    if (!(ios_s17_parse_int( env_value, &count ) && count > 0))
-    {
-        count = 0;
-        if (!ios_s17_parse_int( cfg_value, &count ) || count < 0) count = 0;
-    }
+    if (!ios_s17_parse_int( env_value, &count )) count = 0;
     return (count >= 1 && count <= 63) ? (int)count : 0;
 }
 

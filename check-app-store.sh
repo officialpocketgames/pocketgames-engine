@@ -37,5 +37,22 @@ for dir in "$@" "$names"; do
     fi
 done
 
+# Part I.4: the old sync prefix (any case) appears nowhere in the engine, outside refs/ (assembled
+# here, as above); the settings file earlier builds read is named in no part's code (tests/ and
+# *.md excepted).
+old_sync='mad''sync'
+for dir in "$@" "$names"; do
+    [ -e "$dir" ] || continue
+    hits=$(grep -rnIi "$old_sync" "$dir" 2>/dev/null | grep -v '/refs/')
+    cfg=$(grep -rnI 'pocketgames\.cfg' "$dir" --exclude='*.md' 2>/dev/null |
+        grep -v '/refs/' | grep -v '/tests/')
+    if [ -n "$hits$cfg" ]; then
+        [ -z "$hits" ] || echo "$hits"
+        [ -z "$cfg" ] || echo "$cfg"
+        echo "check-app-store: a settings file or old sync name is left (the App Store rules Part I)"
+        status=1
+    fi
+done
+
 [ $status -eq 0 ] && echo "check-app-store: clean" || echo "check-app-store: forbidden API or name found (the App Store rules)"
 exit $status

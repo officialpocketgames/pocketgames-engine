@@ -11,7 +11,5 @@
 
 /* MTLDevice.registryID of the system default device; 0 when there is none */
 int w32ios_metal_registry_id( uint64_t *id );
-/* one key of <Documents>/pocketgames.cfg (PG_DOCS_DIR, else $HOME/Documents) */
-int w32ios_settings_get( const char *key, char *value, size_t size );
 
 #endif /* W32IOS_METAL_H */
