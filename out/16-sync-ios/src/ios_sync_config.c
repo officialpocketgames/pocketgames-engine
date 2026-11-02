@@ -2,12 +2,13 @@
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 16 Part A: which engine runs. The tuning values of Parts E and G are fixed (spec 00 Part I:
-// the engine reads no settings file); the environment gives the fastsync switches and
-// PG_SYNC_SESSION. Both are taken once per app run: objects and cells outlive a session (spec 08
-// clarification 1).
+// the engine reads no settings file); the environment gives the fastsync switches, and
+// PG_SYNC_INPROC with PG_SYNC_SESSION for in-process ntsync (clarification 1). Both are taken once
+// per app run: objects and cells outlive a session (spec 08 clarification 1).
 
 #include <ctype.h>
 #include <pthread.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -18,7 +19,6 @@
 
 static const struct ios_sync_settings settings =
 {
-    .inproc_sync    = -1,   /* unset: in-process ntsync is not selected */
     .lock_spin      = 256,
     .spin_us        = 0,
     .yield_streak   = 256,
@@ -102,25 +102,44 @@ void ios_fs_config_recheck(void)
                       "mode %d, semaphores %d", now.mode, now.sem, first->mode, first->sem );
 }
 
-/* ---- A2: in-process ntsync ---- */
+/* ---- A2: in-process ntsync (clarification 1: PG_SYNC_INPROC) ---- */
 
-int ios_usync_engine_decide( int inproc_sync, const char *session )
+int ios_usync_engine_decide( const char *inproc, const char *session )
 {
-    if (inproc_sync != 1) return 0;
-    if (session && !strcmp( session, "0" )) return 0;
+    if (!inproc || strcmp( inproc, "1" )) return 0;     /* exactly "1"; unset or anything else: off */
+    if (session && !strcmp( session, "0" )) return 0;  /* an installer session (A2) wins */
     return 1;
+}
+
+/* one variable as the log names it: "NAME = value", "NAME = \"\"" (empty) or "NAME unset" */
+static void describe_var( char *buf, size_t size, const char *name, const char *value )
+{
+    if (!value) snprintf( buf, size, "%s unset", name );
+    else snprintf( buf, size, "%s = %s", name, *value ? value : "\"\"" );
+}
+
+int ios_usync_engine_describe( char *buf, size_t size, const char *inproc, const char *session )
+{
+    char inproc_text[96], session_text[96];
+    int on = ios_usync_engine_decide( inproc, session );
+
+    describe_var( inproc_text, sizeof(inproc_text), "PG_SYNC_INPROC", inproc );
+    describe_var( session_text, sizeof(session_text), "PG_SYNC_SESSION", session );
+    if (size) snprintf( buf, size, "%s (%s, %s)", on ? "on" : "off", inproc_text, session_text );
+    return on;
 }
 
 static int engine;
 static pthread_once_t engine_once = PTHREAD_ONCE_INIT;
 
+/* read once, at the server's first get_inproc_device_fd, and kept for the app run */
 static void decide_engine(void)
 {
-    const char *session = getenv( "PG_SYNC_SESSION" );
+    char line[256];
 
-    engine = ios_usync_engine_decide( ios_sync_settings()->inproc_sync, session );
-    ios_sync_log( "in-process ntsync: %s (PG_SYNC_SESSION %s%s)", engine ? "on" : "off",
-                  session ? "= " : "unset", session ? session : "" );
+    engine = ios_usync_engine_describe( line, sizeof(line), getenv( "PG_SYNC_INPROC" ),
+                                        getenv( "PG_SYNC_SESSION" ));
+    ios_sync_log( "in-process ntsync: %s", line );
 }
 
 int ios_usync_engine_selected(void)
@@ -133,9 +152,12 @@ void ios_usync_engine_recheck(void)
 {
     static int logged;
     int selected = ios_usync_engine_selected();
-    int now = ios_usync_engine_decide( ios_sync_settings()->inproc_sync, getenv( "PG_SYNC_SESSION" ));
+    const char *inproc = getenv( "PG_SYNC_INPROC" ), *session = getenv( "PG_SYNC_SESSION" );
+    char line[256];
 
-    if (now != selected && !__atomic_exchange_n( &logged, 1, __ATOMIC_RELAXED ))
-        ios_sync_log( "in-process ntsync: this session asks for %s; the app run keeps %s",
-                      now ? "on" : "off", selected ? "on" : "off" );
+    if (ios_usync_engine_decide( inproc, session ) == selected) return;
+    if (__atomic_exchange_n( &logged, 1, __ATOMIC_RELAXED )) return;
+    ios_usync_engine_describe( line, sizeof(line), inproc, session );
+    ios_sync_log( "in-process ntsync: this session asks for %s; the app run keeps %s",
+                  line, selected ? "on" : "off" );
 }

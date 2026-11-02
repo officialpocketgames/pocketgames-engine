@@ -19,10 +19,10 @@ extern "C" {
 
 /* ======== Part A: choosing the engine (src/ios_sync_config.c) ======== */
 
-/* the tuning values: their defaults, always (spec 00 Part I: no settings file) */
+/* the tuning values: their defaults, always (spec 00 Part I: no settings file; in-process ntsync
+ * is chosen by PG_SYNC_INPROC, clarification 1) */
 struct ios_sync_settings
 {
-    int      inproc_sync;          /* inproc-sync: -1 unset */
     unsigned lock_spin;            /* sync-lock-spin (E6): 256 */
     unsigned spin_us;              /* sync-spin-us (E6): 0 */
     unsigned yield_streak;         /* yield-streak (G1): 256 */
@@ -65,8 +65,12 @@ extern void ios_fs_config_parse( struct ios_fs_config *c, ios_getenv_fn get );
 extern const struct ios_fs_config *ios_fs_config(void);
 /* A5: a later session asks for something else: logged once, ignored */
 extern void ios_fs_config_recheck(void);
-/* A2: in-process ntsync for this inproc-sync value and PG_SYNC_SESSION */
-extern int ios_usync_engine_decide( int inproc_sync, const char *session );
+/* A2 (clarification 1): in-process ntsync for these values of PG_SYNC_INPROC and PG_SYNC_SESSION
+ * (NULL: unset): on only when PG_SYNC_INPROC is exactly "1" and PG_SYNC_SESSION isn't exactly "0" */
+extern int ios_usync_engine_decide( const char *inproc, const char *session );
+/* A2: the same decision, returned, and written to buf as the log line names it:
+ * "on (PG_SYNC_INPROC = 1, PG_SYNC_SESSION unset)"; an empty value reads "\"\"" */
+extern int ios_usync_engine_describe( char *buf, size_t size, const char *inproc, const char *session );
 /* A2: the server's decision, made once (the first get_inproc_device_fd) and logged */
 extern int ios_usync_engine_selected(void);
 /* A5: a later session's environment asks for the other engine: logged once, ignored */
