@@ -34,7 +34,8 @@ const D9IosConfig &D9Ios();
    module. */
 d9ios::MirrorCacheBudget &D9MirrorCacheBudget();
 
-/* C16: the one line a device logs at creation. */
-void LogD9IosDevice(bool bc_emulated);
+/* C16: the one line a device logs at creation. `call_stats`: clarification 3's
+   DXMT_D9_CALL_STATS, which d3d9_call_stats.cpp reads when the DLL loads. */
+void LogD9IosDevice(bool bc_emulated, bool call_stats);
 
 } // namespace dxmt

@@ -65,7 +65,7 @@ MTLD3D9Surface::MTLD3D9Surface(
     MTLD3D9Device *device, const D3DSURFACE_DESC &desc, IUnknown *container, WMT::Reference<WMT::Texture> texture,
     uint32_t mipLevel, bool selfPin, WMTTextureType parentTextureType, WMT::Reference<WMT::Buffer> buffer, void *cpuPtr,
     uint32_t pitch, uint32_t arraySlice, void *ownedBacking, Rc<dxmt::Texture> dxmtTexture, bool textureMipSurface,
-    IDirect3DBaseTexture9 *baseTexture
+    MTLD3D9CommonTexture *baseTexture
 ) :
     m_device(device),
     m_container(container),
@@ -158,12 +158,15 @@ MTLD3D9Surface::resetLockableMirror(void *cpuPtr, uint32_t pitch, void *ownedBac
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9Surface::AddRef() {
+  D9_CALL(IDirect3DSurface9, AddRef);
   // Texture / cube mip-level surface: share the parent texture's public
   // counter so get_refcount(level) == get_refcount(parent), per the D3D9
   // sub-resource contract (DXVK D3D9Subresource). The parent owns this level,
   // so the whole body delegates and never touches `this` afterwards.
+  // MYIOSDECK spec 07 clarification 3: through the parent's uncounted AddRef,
+  // so the app's one call counts once (as IDirect3DSurface9::AddRef).
   if (m_baseTexture)
-    return m_baseTexture->AddRef();
+    return m_baseTexture->AddRefUncounted();
   // Standalone surface (CreateRenderTarget / DepthStencil / Offscreen, the
   // auto-DS) and the implicit backbuffer pin the DEVICE on their public 0->1
   // edge, like every DXVK D3D9DeviceChild. m_container is GetContainer
@@ -183,12 +186,13 @@ MTLD3D9Surface::AddRef() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9Surface::Release() {
+  D9_CALL(IDirect3DSurface9, Release);
   // Sub-resource: delegate the whole public Release to the parent texture.
   // The parent can destruct synchronously inside this call (its m_levels
   // clears and deletes `this`), so the result must come from the delegated
   // call and `this` must not be read afterwards.
   if (m_baseTexture)
-    return m_baseTexture->Release();
+    return m_baseTexture->ReleaseUncounted(); // MYIOSDECK spec 07 clarification 3
   // Standalone / implicit surface: D3D9 clamps Release-at-0. These are handed
   // out at public refcount 0 and kept alive by a private ref, and an app may
   // Release a surface that lives with the device; guard the underflow before
@@ -228,6 +232,7 @@ MTLD3D9Surface::Release() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::QueryInterface(REFIID riid, void **ppvObject) {
+  D9_CALL(IDirect3DSurface9, QueryInterface);
   if (!ppvObject)
     return E_POINTER;
   *ppvObject = nullptr;
@@ -242,6 +247,7 @@ MTLD3D9Surface::QueryInterface(REFIID riid, void **ppvObject) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::GetDevice(IDirect3DDevice9 **ppDevice) {
+  D9_CALL(IDirect3DSurface9, GetDevice);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppDevice)
     return D3DERR_INVALIDCALL;
@@ -251,24 +257,28 @@ MTLD3D9Surface::GetDevice(IDirect3DDevice9 **ppDevice) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::SetPrivateData(REFGUID refguid, const void *pData, DWORD SizeOfData, DWORD Flags) {
+  D9_CALL(IDirect3DSurface9, SetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9SetPrivateData(m_privateData, refguid, pData, SizeOfData, Flags);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::GetPrivateData(REFGUID refguid, void *pData, DWORD *pSizeOfData) {
+  D9_CALL(IDirect3DSurface9, GetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9GetPrivateData(m_privateData, refguid, pData, pSizeOfData);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::FreePrivateData(REFGUID refguid) {
+  D9_CALL(IDirect3DSurface9, FreePrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9FreePrivateData(m_privateData, refguid);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9Surface::SetPriority(DWORD) {
+  D9_CALL(IDirect3DSurface9, SetPriority);
   D9DeviceLock lock = m_device->LockDevice();
   // d3d9_surface_SetPriority ignores priority unconditionally: a surface is
   // either a texture sub-resource (priority lives on the container) or a
@@ -278,12 +288,14 @@ MTLD3D9Surface::SetPriority(DWORD) {
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9Surface::GetPriority() {
+  D9_CALL(IDirect3DSurface9, GetPriority);
   D9DeviceLock lock = m_device->LockDevice();
   return 0;
 }
 
 void STDMETHODCALLTYPE
 MTLD3D9Surface::PreLoad() {
+  D9_CALL(IDirect3DSurface9, PreLoad);
   D9DeviceLock lock = m_device->LockDevice();
   // Hint to upload MANAGED contents to VRAM ahead of the next draw.
   // Apple Silicon's unified memory makes this a no-op; the texture
@@ -292,12 +304,14 @@ MTLD3D9Surface::PreLoad() {
 
 D3DRESOURCETYPE STDMETHODCALLTYPE
 MTLD3D9Surface::GetType() {
+  D9_CALL(IDirect3DSurface9, GetType);
   D9DeviceLock lock = m_device->LockDevice();
   return D3DRTYPE_SURFACE;
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::GetContainer(REFIID riid, void **ppContainer) {
+  D9_CALL(IDirect3DSurface9, GetContainer);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppContainer)
     return D3DERR_INVALIDCALL;
@@ -312,25 +326,29 @@ MTLD3D9Surface::detachContainer() {
   m_container = static_cast<IUnknown *>(static_cast<IDirect3DDevice9Ex *>(m_device));
 }
 
+// MYIOSDECK spec 07 clarification 3: both helpers below reach the parent
+// texture through m_baseTexture, which is the container exactly when the
+// container is a texture or cube texture (both are created with the same
+// pointer as container and base texture; detachContainer only ever applies to
+// swapchain backbuffers), instead of QueryInterface / GetType / Release on the
+// container's public vtable: those are app-visible methods, and the call
+// statistics would count them on every UnlockRect, Clear or StretchRect into a
+// texture level. The QueryInterface/Release pair was refcount-neutral.
 void
 MTLD3D9Surface::flagContainerAutoGenDirty() {
-  if (!m_container)
-    return;
-  IDirect3DBaseTexture9 *base = nullptr;
-  if (FAILED(m_container->QueryInterface(__uuidof(IDirect3DBaseTexture9), reinterpret_cast<void **>(&base))))
+  if (!m_baseTexture)
     return;
   bool marked = false;
-  switch (base->GetType()) {
+  switch (m_baseTexture->commonTextureType()) {
   case D3DRTYPE_TEXTURE:
-    marked = static_cast<MTLD3D9Texture *>(static_cast<IDirect3DTexture9 *>(base))->flagAutoGenDirty();
+    marked = static_cast<MTLD3D9Texture *>(m_baseTexture)->flagAutoGenDirty();
     break;
   case D3DRTYPE_CUBETEXTURE:
-    marked = static_cast<MTLD3D9CubeTexture *>(static_cast<IDirect3DCubeTexture9 *>(base))->flagAutoGenDirty();
+    marked = static_cast<MTLD3D9CubeTexture *>(m_baseTexture)->flagAutoGenDirty();
     break;
   default:
     break;
   }
-  base->Release();
   // Move the device's pre-draw sweep epoch so the next draw regenerates this
   // texture's mips before sampling them (the mip-gen op lands ahead of the
   // draws in the op stream).
@@ -340,28 +358,30 @@ MTLD3D9Surface::flagContainerAutoGenDirty() {
 
 void
 MTLD3D9Surface::flagContainerDirtyRegion(const RECT *rect) {
-  if (!m_container)
+  if (!m_baseTexture)
     return;
-  IDirect3DBaseTexture9 *base = nullptr;
-  if (FAILED(m_container->QueryInterface(__uuidof(IDirect3DBaseTexture9), reinterpret_cast<void **>(&base))))
-    return;
-  switch (base->GetType()) {
+  switch (m_baseTexture->commonTextureType()) {
   case D3DRTYPE_TEXTURE:
-    static_cast<MTLD3D9Texture *>(static_cast<IDirect3DTexture9 *>(base))->unionDirtyRect(rect);
+    static_cast<MTLD3D9Texture *>(m_baseTexture)->unionDirtyRect(rect);
     break;
   case D3DRTYPE_CUBETEXTURE:
     // m_array_slice is the cube face for a face-level surface; the cube tracks
     // one dirty region per face.
-    static_cast<MTLD3D9CubeTexture *>(static_cast<IDirect3DCubeTexture9 *>(base))->unionDirtyRect(m_array_slice, rect);
+    static_cast<MTLD3D9CubeTexture *>(m_baseTexture)->unionDirtyRect(m_array_slice, rect);
     break;
   default:
     break;
   }
-  base->Release();
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::GetDesc(D3DSURFACE_DESC *pDesc) {
+  D9_CALL(IDirect3DSurface9, GetDesc);
+  return getDescImpl(pDesc);
+}
+
+HRESULT
+MTLD3D9Surface::getDescImpl(D3DSURFACE_DESC *pDesc) {
   D9DeviceLock lock = m_device->LockDevice();
   if (!pDesc)
     return D3DERR_INVALIDCALL;
@@ -378,6 +398,12 @@ MTLD3D9Surface::GetDesc(D3DSURFACE_DESC *pDesc) {
 // cpu_ptr and correctly falls out at the null check below.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) {
+  D9_CALL(IDirect3DSurface9, LockRect);
+  return lockRectImpl(pLockedRect, pRect, Flags);
+}
+
+HRESULT
+MTLD3D9Surface::lockRectImpl(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) {
   D9DeviceLock lock = m_device->LockDevice();
   if (!pLockedRect)
     return D3DERR_INVALIDCALL;
@@ -570,6 +596,12 @@ MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD F
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::UnlockRect() {
+  D9_CALL(IDirect3DSurface9, UnlockRect);
+  return unlockRectImpl();
+}
+
+HRESULT
+MTLD3D9Surface::unlockRectImpl() {
   D9DeviceLock lock = m_device->LockDevice();
   // Unlock of a surface that is not currently mapped. DXVK and wined3d forgive
   // it for a D3DRTYPE_TEXTURE container (m_is_texture_mip) and reject it with
@@ -682,6 +714,7 @@ MTLD3D9Surface::UnlockRect() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::GetDC(HDC *phdc) {
+  D9_CALL(IDirect3DSurface9, GetDC);
   D9DeviceLock lock = m_device->LockDevice();
   // Which surfaces a title paints through GDI decides which lock sub-path runs,
   // and the sub-paths differ in kind: a DEFAULT-pool surface is GPU-authoritative
@@ -738,7 +771,7 @@ MTLD3D9Surface::GetDC(HDC *phdc) {
     return D3DERR_INVALIDCALL;
 
   D3DLOCKED_RECT locked{};
-  HRESULT hr = LockRect(&locked, nullptr, 0);
+  HRESULT hr = lockRectImpl(&locked, nullptr, 0); // uncounted: MYIOSDECK spec 07 clarification 3
   if (FAILED(hr))
     return hr;
 
@@ -756,7 +789,7 @@ MTLD3D9Surface::GetDC(HDC *phdc) {
   if (create.hDeviceDc)
     ::DeleteDC(create.hDeviceDc);
   if (status != 0 || create.hDc == nullptr) {
-    UnlockRect();
+    unlockRectImpl();
     return D3DERR_INVALIDCALL;
   }
   m_gdi_dc = create.hDc;
@@ -772,6 +805,7 @@ MTLD3D9Surface::GetDC(HDC *phdc) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::ReleaseDC(HDC hdc) {
+  D9_CALL(IDirect3DSurface9, ReleaseDC);
   D9DeviceLock lock = m_device->LockDevice();
 #ifdef _WIN32
   if (m_gdi_dc == nullptr || hdc != m_gdi_dc)
@@ -787,7 +821,7 @@ MTLD3D9Surface::ReleaseDC(HDC hdc) {
   // this surface's hold on the shared map_count. Clear dc_open only after it
   // returns: if the app already unlocked the surface itself, the internal Unlock
   // takes the not-mapped path, whose D3D_OK arm is the still-open DC.
-  HRESULT hr = UnlockRect();
+  HRESULT hr = unlockRectImpl(); // uncounted: MYIOSDECK spec 07 clarification 3
   m_lock_state->dc_open = false;
   return hr;
 #else

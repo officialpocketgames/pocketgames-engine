@@ -2,6 +2,7 @@
 // From David Acevedo's DXMT fork (github.com/dacevedo12/dxmt), tag v0.4-d3d9,
 // commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
+// Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
 #pragma once
 
 #include "Metal.hpp"
@@ -38,6 +39,14 @@ public:
   HRESULT STDMETHODCALLTYPE GetDesc(D3DVOLUME_DESC *pDesc) override;
   HRESULT STDMETHODCALLTYPE LockBox(D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox, DWORD Flags) override;
   HRESULT STDMETHODCALLTYPE UnlockBox() override;
+
+  // MYIOSDECK spec 07 clarification 3: the bodies of GetDesc, LockBox and
+  // UnlockBox without the call-statistics count, for the volume texture's
+  // forwarding (GetLevelDesc / LockBox / UnlockBox), so one app call counts
+  // once.
+  HRESULT getDescImpl(D3DVOLUME_DESC *pDesc);
+  HRESULT lockBoxImpl(D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox, DWORD Flags);
+  HRESULT unlockBoxImpl();
 
   uint32_t
   mipLevel() const {

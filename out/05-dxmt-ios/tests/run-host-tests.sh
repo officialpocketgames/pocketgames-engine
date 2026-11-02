@@ -4,9 +4,10 @@
 #
 # Spec 05 Part I, spec 06 Part F and spec 07 Part D: builds and runs the host unit tests (BC
 # decoder, mip-clamp policy, 32-bit pointer/chain/record helpers, atomic wait,
-# the DXSO 32-bit argument chain, the Direct3D 9 iOS rules)
-# with any C++20 compiler. Usage: run-host-tests.sh [build-dir]
-# CXX selects the compiler (default c++).
+# the DXSO 32-bit argument chain, the Direct3D 9 iOS rules, the Direct3D 9 call
+# statistics and their call-site coverage) with any C++20 compiler.
+# Usage: run-host-tests.sh [build-dir]
+# CXX selects the C++ compiler (default c++), CC the C compiler (default cc).
 
 set -eu
 
@@ -14,7 +15,9 @@ here=$(cd "$(dirname "$0")" && pwd)
 src="$here/../dxmt/src"
 build=${1:-"$here/build"}
 cxx=${CXX:-c++}
+cc=${CC:-cc}
 flags="-std=c++20 -O1 -Wall -Wextra -Werror"
+native="$src/../include/native"
 
 mkdir -p "$build"
 
@@ -24,6 +27,11 @@ $cxx $flags -I"$src/winemetal" -I"$src/winemetal/unix" -o "$build/test_wow64" "$
 $cxx $flags -pthread -I"$src/util" -o "$build/test_atomic_wait" "$here/test_atomic_wait.cpp"
 $cxx $flags -I"$src/airconv" -I"$src/winemetal/unix" -o "$build/test_dxso_args32" "$here/test_dxso_args32.cpp"
 $cxx $flags -I"$src/d3d9" -o "$build/test_d3d9_policy" "$here/test_d3d9_policy.cpp"
+# Spec 07 clarification 3: the call-statistics table and report, and the lists checked
+# against d3d9.h's vtables (C, so d3d9.h declares each vtable as a struct).
+$cxx $flags -I"$src/d3d9" -o "$build/test_d3d9_call_stats" "$here/test_d3d9_call_stats.cpp"
+$cc -std=c11 -O1 -Wall -Wextra -Werror -I"$native/windows" -I"$native/directx" -I"$src/d3d9" \
+  -o "$build/test_d3d9_call_list" "$here/test_d3d9_call_list.c"
 $cxx $flags -I"$src/d3d11" -o "$build/test_swap_effect" "$here/test_swap_effect.cpp"
 # Dynamic-buffer discard: DXMT's own buffer code against fake Metal (bench_dynamic_discard.cpp).
 # Optimised like the shipping build; run it by hand without --check for the 33k-cycle benchmark.
@@ -40,6 +48,9 @@ status=0
 "$build/test_atomic_wait" || status=1
 "$build/test_dxso_args32" || status=1
 "$build/test_d3d9_policy" || status=1
+"$build/test_d3d9_call_stats" || status=1
+"$build/test_d3d9_call_list" || status=1
+sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_swap_effect" || status=1
 "$build/bench_dynamic_discard" --check || status=1
 exit $status

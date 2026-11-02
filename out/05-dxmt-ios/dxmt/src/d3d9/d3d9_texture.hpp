@@ -45,6 +45,9 @@ public:
   ULONG STDMETHODCALLTYPE AddRef() override;
   ULONG STDMETHODCALLTYPE Release() override;
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override;
+  // MYIOSDECK spec 07 clarification 3: AddRef / Release without the count.
+  ULONG AddRefUncounted() override;
+  ULONG ReleaseUncounted() override;
 
   // IDirect3DResource9
   HRESULT STDMETHODCALLTYPE GetDevice(IDirect3DDevice9 **ppDevice) override;

@@ -2,6 +2,7 @@
 // From David Acevedo's DXMT fork (github.com/dacevedo12/dxmt), tag v0.4-d3d9,
 // commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
+// Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
 #include "d3d9_vertex_declaration.hpp"
 
 #include "d3d9_device.hpp"
@@ -69,6 +70,7 @@ MTLD3D9VertexDeclaration::~MTLD3D9VertexDeclaration() = default;
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9VertexDeclaration::AddRef() {
+  D9_CALL(IDirect3DVertexDeclaration9, AddRef);
   ULONG ref = ComObject::AddRef();
   if (ref == 1)
     m_device->AddRef();
@@ -77,6 +79,7 @@ MTLD3D9VertexDeclaration::AddRef() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9VertexDeclaration::Release() {
+  D9_CALL(IDirect3DVertexDeclaration9, Release);
   // D3D9 Release-at-0 clamp: handed out at public 0 while self-pinned / bound
   // (DXVK clamps every device child); guard the underflow before the decrement.
   if (m_refCount.load() == 0)
@@ -94,6 +97,7 @@ MTLD3D9VertexDeclaration::Release() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexDeclaration::QueryInterface(REFIID riid, void **ppvObject) {
+  D9_CALL(IDirect3DVertexDeclaration9, QueryInterface);
   if (!ppvObject)
     return E_POINTER;
   *ppvObject = nullptr;
@@ -108,6 +112,7 @@ MTLD3D9VertexDeclaration::QueryInterface(REFIID riid, void **ppvObject) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexDeclaration::GetDevice(IDirect3DDevice9 **ppDevice) {
+  D9_CALL(IDirect3DVertexDeclaration9, GetDevice);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppDevice)
     return D3DERR_INVALIDCALL;
@@ -117,6 +122,7 @@ MTLD3D9VertexDeclaration::GetDevice(IDirect3DDevice9 **ppDevice) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexDeclaration::GetDeclaration(D3DVERTEXELEMENT9 *pElement, UINT *pNumElements) {
+  D9_CALL(IDirect3DVertexDeclaration9, GetDeclaration);
   D9DeviceLock lock = m_device->LockDevice();
   // wined3d dlls/d3d9/vertexdeclaration.c; pElement is allowed
   // to be NULL; callers do that to query the count first. pNumElements

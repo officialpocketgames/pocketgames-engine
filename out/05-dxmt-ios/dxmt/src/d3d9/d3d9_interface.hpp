@@ -2,6 +2,7 @@
 // From David Acevedo's DXMT fork (github.com/dacevedo12/dxmt), tag v0.4-d3d9,
 // commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
+// Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
 #pragma once
 
 #include "Metal.hpp"
@@ -31,6 +32,10 @@ public:
   ~MTLD3D9Interface();
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override;
+  // ComObject's, overridden only so the call statistics count them (MYIOSDECK
+  // spec 07 clarification 3).
+  ULONG STDMETHODCALLTYPE AddRef() override;
+  ULONG STDMETHODCALLTYPE Release() override;
 
   HRESULT STDMETHODCALLTYPE RegisterSoftwareDevice(void *pInitializeFunction) override;
   UINT STDMETHODCALLTYPE GetAdapterCount() override;

@@ -3,11 +3,14 @@
 # commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 # and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
 # Changed for MYIOSDECK (spec 07 C): builds d3d9_ios.cpp (MIT).
+# Changed for MYIOSDECK (spec 07 clarification 3): builds d3d9_call_stats.cpp.
 d3d9_res = wrc_generator.process('version.rc')
 
 d3d9_src = [
   'd3d9.cpp',
   'd3d9_buffer.cpp',
+  'd3d9_call_stats.cpp', # MYIOSDECK spec 07 clarification 3
+
   'd3d9_clear_quad.cpp',
   'd3d9_cube_texture.cpp',
   'd3d9_device.cpp',

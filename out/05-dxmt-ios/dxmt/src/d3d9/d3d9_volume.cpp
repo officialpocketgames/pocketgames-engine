@@ -33,21 +33,26 @@ MTLD3D9Volume::~MTLD3D9Volume() = default;
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9Volume::AddRef() {
+  D9_CALL(IDirect3DVolume9, AddRef);
   // A volume is always a sub-resource of its volume texture (never
   // standalone), so it shares the parent's public counter:
   // get_refcount(volume) == get_refcount(volume texture), per the D3D9
   // sub-resource contract (DXVK D3D9Subresource). The parent owns this
   // volume, so the whole body delegates and never touches `this` afterwards.
-  return static_cast<IDirect3DVolumeTexture9 *>(m_container)->AddRef();
+  // MYIOSDECK spec 07 clarification 3: through the parent's uncounted AddRef /
+  // Release, so the app's one call counts once (as IDirect3DVolume9's).
+  return m_container->AddRefUncounted();
 }
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9Volume::Release() {
-  return static_cast<IDirect3DVolumeTexture9 *>(m_container)->Release();
+  D9_CALL(IDirect3DVolume9, Release);
+  return m_container->ReleaseUncounted();
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Volume::QueryInterface(REFIID riid, void **ppvObject) {
+  D9_CALL(IDirect3DVolume9, QueryInterface);
   if (!ppvObject)
     return E_POINTER;
   *ppvObject = nullptr;
@@ -61,6 +66,7 @@ MTLD3D9Volume::QueryInterface(REFIID riid, void **ppvObject) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Volume::GetDevice(IDirect3DDevice9 **ppDevice) {
+  D9_CALL(IDirect3DVolume9, GetDevice);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppDevice)
     return D3DERR_INVALIDCALL;
@@ -70,24 +76,28 @@ MTLD3D9Volume::GetDevice(IDirect3DDevice9 **ppDevice) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Volume::SetPrivateData(REFGUID refguid, const void *pData, DWORD SizeOfData, DWORD Flags) {
+  D9_CALL(IDirect3DVolume9, SetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9SetPrivateData(m_privateData, refguid, pData, SizeOfData, Flags);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Volume::GetPrivateData(REFGUID refguid, void *pData, DWORD *pSizeOfData) {
+  D9_CALL(IDirect3DVolume9, GetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9GetPrivateData(m_privateData, refguid, pData, pSizeOfData);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Volume::FreePrivateData(REFGUID refguid) {
+  D9_CALL(IDirect3DVolume9, FreePrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9FreePrivateData(m_privateData, refguid);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Volume::GetContainer(REFIID riid, void **ppContainer) {
+  D9_CALL(IDirect3DVolume9, GetContainer);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppContainer)
     return D3DERR_INVALIDCALL;
@@ -97,6 +107,12 @@ MTLD3D9Volume::GetContainer(REFIID riid, void **ppContainer) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Volume::GetDesc(D3DVOLUME_DESC *pDesc) {
+  D9_CALL(IDirect3DVolume9, GetDesc);
+  return getDescImpl(pDesc);
+}
+
+HRESULT
+MTLD3D9Volume::getDescImpl(D3DVOLUME_DESC *pDesc) {
   D9DeviceLock lock = m_device->LockDevice();
   if (!pDesc)
     return D3DERR_INVALIDCALL;
@@ -106,6 +122,12 @@ MTLD3D9Volume::GetDesc(D3DVOLUME_DESC *pDesc) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Volume::LockBox(D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox, DWORD Flags) {
+  D9_CALL(IDirect3DVolume9, LockBox);
+  return lockBoxImpl(pLockedVolume, pBox, Flags);
+}
+
+HRESULT
+MTLD3D9Volume::lockBoxImpl(D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox, DWORD Flags) {
   D9DeviceLock lock = m_device->LockDevice();
   if (!pLockedVolume)
     return D3DERR_INVALIDCALL;
@@ -191,6 +213,12 @@ MTLD3D9Volume::LockBox(D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox, DWORD F
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Volume::UnlockBox() {
+  D9_CALL(IDirect3DVolume9, UnlockBox);
+  return unlockBoxImpl();
+}
+
+HRESULT
+MTLD3D9Volume::unlockBoxImpl() {
   D9DeviceLock lock = m_device->LockDevice();
   if (!m_locked)
     return D3DERR_INVALIDCALL;

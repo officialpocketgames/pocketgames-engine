@@ -17,6 +17,8 @@
 
 namespace dxmt {
 
+class MTLD3D9CommonTexture;
+
 // Shared Lock/GetDC bookkeeping for all surfaces of one texture (wined3d's
 // resource.map_count + per-texture DC exclusion). See MTLD3D9Surface.
 struct D3D9SurfaceLockState {
@@ -77,7 +79,7 @@ public:
       uint32_t mipLevel, bool selfPin, WMTTextureType parentTextureType, WMT::Reference<WMT::Buffer> buffer = {},
       void *cpuPtr = nullptr, uint32_t pitch = 0, uint32_t arraySlice = 0, void *ownedBacking = nullptr,
       Rc<dxmt::Texture> dxmtTexture = nullptr, bool textureMipSurface = false,
-      IDirect3DBaseTexture9 *baseTexture = nullptr
+      MTLD3D9CommonTexture *baseTexture = nullptr
   );
   ~MTLD3D9Surface();
 
@@ -208,6 +210,14 @@ public:
   HRESULT STDMETHODCALLTYPE GetDC(HDC *phdc) override;
   HRESULT STDMETHODCALLTYPE ReleaseDC(HDC hdc) override;
 
+  // MYIOSDECK spec 07 clarification 3: the bodies of GetDesc, LockRect and
+  // UnlockRect without the call-statistics count, for the frontend's own
+  // forwarding (a texture's GetLevelDesc / LockRect / UnlockRect, GetDC,
+  // ReleaseDC), so one app call counts once.
+  HRESULT getDescImpl(D3DSURFACE_DESC *pDesc);
+  HRESULT lockRectImpl(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags);
+  HRESULT unlockRectImpl();
+
   // dxmt-internal accessor used by UnlockRect to auto-mark the parent
   // texture's dirty region with the lock rect, matching wined3d texture.c
   // (only top-level maps record dirt, only non-READONLY locks). Returns the
@@ -307,7 +317,10 @@ private:
   // the implicit backbuffer and pins the device on its own 0<->1 edge.
   // Separate from m_container (GetContainer identity) so the backbuffer can
   // report the swapchain while pinning the device.
-  IDirect3DBaseTexture9 *m_baseTexture;
+  // MYIOSDECK spec 07 clarification 3: held as the texture's common base, so
+  // the delegation and the container-type checks below call the texture
+  // directly instead of through its public (counted) vtable.
+  MTLD3D9CommonTexture *m_baseTexture;
   D3DSURFACE_DESC m_desc;
   // Lockable-only backing buffer; the texture below is a view into it.
   // Declared before m_texture so the buffer outlives the view at

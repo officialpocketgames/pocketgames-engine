@@ -114,7 +114,7 @@ MTLD3D9CubeTexture::MTLD3D9CubeTexture(
           /*dxmtTexture=*/m_texture,
           /*textureMipSurface=*/false,
           // Sub-resource: the cube face shares this cube texture's public refcount.
-          /*baseTexture=*/static_cast<IDirect3DBaseTexture9 *>(this)
+          /*baseTexture=*/static_cast<MTLD3D9CommonTexture *>(this)
       );
       // Mirror pointers arrive lazily: ensureMirror patches cpu_ptr and
       // pitch on first Lock, the MTLD3D9Texture shape.
@@ -297,6 +297,12 @@ MTLD3D9CubeTexture::markLosable() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9CubeTexture::AddRef() {
+  D9_CALL(IDirect3DCubeTexture9, AddRef);
+  return AddRefUncounted();
+}
+
+ULONG
+MTLD3D9CubeTexture::AddRefUncounted() {
   ULONG ref = ComObject::AddRef();
   if (ref == 1)
     m_device->AddRef();
@@ -305,6 +311,12 @@ MTLD3D9CubeTexture::AddRef() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9CubeTexture::Release() {
+  D9_CALL(IDirect3DCubeTexture9, Release);
+  return ReleaseUncounted();
+}
+
+ULONG
+MTLD3D9CubeTexture::ReleaseUncounted() {
   // D3D9 Release-at-0 clamp (hand-folded: multiply-inherits, so
   // ComObjectClamp cannot wrap it). Also bounds a cube face's delegated
   // Release against the shared counter.
@@ -332,6 +344,7 @@ MTLD3D9CubeTexture::Release() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::QueryInterface(REFIID riid, void **ppvObject) {
+  D9_CALL(IDirect3DCubeTexture9, QueryInterface);
   if (!ppvObject)
     return E_POINTER;
   *ppvObject = nullptr;
@@ -347,6 +360,7 @@ MTLD3D9CubeTexture::QueryInterface(REFIID riid, void **ppvObject) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::GetDevice(IDirect3DDevice9 **ppDevice) {
+  D9_CALL(IDirect3DCubeTexture9, GetDevice);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppDevice)
     return D3DERR_INVALIDCALL;
@@ -356,47 +370,55 @@ MTLD3D9CubeTexture::GetDevice(IDirect3DDevice9 **ppDevice) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::SetPrivateData(REFGUID refguid, const void *pData, DWORD SizeOfData, DWORD Flags) {
+  D9_CALL(IDirect3DCubeTexture9, SetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9SetPrivateData(m_privateData, refguid, pData, SizeOfData, Flags);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::GetPrivateData(REFGUID refguid, void *pData, DWORD *pSizeOfData) {
+  D9_CALL(IDirect3DCubeTexture9, GetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9GetPrivateData(m_privateData, refguid, pData, pSizeOfData);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::FreePrivateData(REFGUID refguid) {
+  D9_CALL(IDirect3DCubeTexture9, FreePrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9FreePrivateData(m_privateData, refguid);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9CubeTexture::SetPriority(DWORD PriorityNew) {
+  D9_CALL(IDirect3DCubeTexture9, SetPriority);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9SetResourcePriority(m_pool, m_priority, PriorityNew);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9CubeTexture::GetPriority() {
+  D9_CALL(IDirect3DCubeTexture9, GetPriority);
   D9DeviceLock lock = m_device->LockDevice();
   return m_priority;
 }
 
 void STDMETHODCALLTYPE
 MTLD3D9CubeTexture::PreLoad() {
+  D9_CALL(IDirect3DCubeTexture9, PreLoad);
   D9DeviceLock lock = m_device->LockDevice();
 }
 
 D3DRESOURCETYPE STDMETHODCALLTYPE
 MTLD3D9CubeTexture::GetType() {
+  D9_CALL(IDirect3DCubeTexture9, GetType);
   D9DeviceLock lock = m_device->LockDevice();
   return D3DRTYPE_CUBETEXTURE;
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9CubeTexture::SetLOD(DWORD LODNew) {
+  D9_CALL(IDirect3DCubeTexture9, SetLOD);
   D9DeviceLock lock = m_device->LockDevice();
   if (m_pool != D3DPOOL_MANAGED)
     return 0;
@@ -408,18 +430,21 @@ MTLD3D9CubeTexture::SetLOD(DWORD LODNew) {
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9CubeTexture::GetLOD() {
+  D9_CALL(IDirect3DCubeTexture9, GetLOD);
   D9DeviceLock lock = m_device->LockDevice();
   return m_lod.load(std::memory_order_relaxed);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9CubeTexture::GetLevelCount() {
+  D9_CALL(IDirect3DCubeTexture9, GetLevelCount);
   D9DeviceLock lock = m_device->LockDevice();
   return m_level_count;
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::SetAutoGenFilterType(D3DTEXTUREFILTERTYPE FilterType) {
+  D9_CALL(IDirect3DCubeTexture9, SetAutoGenFilterType);
   D9DeviceLock lock = m_device->LockDevice();
   // wined3d texture.c d3d9_texture_cube_SetAutoGenFilterType: reject
   // D3DTEXF_NONE.
@@ -431,12 +456,14 @@ MTLD3D9CubeTexture::SetAutoGenFilterType(D3DTEXTUREFILTERTYPE FilterType) {
 
 D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE
 MTLD3D9CubeTexture::GetAutoGenFilterType() {
+  D9_CALL(IDirect3DCubeTexture9, GetAutoGenFilterType);
   D9DeviceLock lock = m_device->LockDevice();
   return m_autoGenFilter;
 }
 
 void STDMETHODCALLTYPE
 MTLD3D9CubeTexture::GenerateMipSubLevels() {
+  D9_CALL(IDirect3DCubeTexture9, GenerateMipSubLevels);
   D9DeviceLock lock = m_device->LockDevice();
   // generateMipmapsForTexture on a cube texture handle covers all 6 faces in a
   // single call. Same gating rationale as MTLD3D9Texture: only AUTOGENMIPMAP
@@ -463,16 +490,18 @@ MTLD3D9CubeTexture::GenerateMipSubLevels() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::GetLevelDesc(UINT Level, D3DSURFACE_DESC *pDesc) {
+  D9_CALL(IDirect3DCubeTexture9, GetLevelDesc);
   D9DeviceLock lock = m_device->LockDevice();
   if (!pDesc)
     return D3DERR_INVALIDCALL;
   if (Level >= m_level_count)
     return D3DERR_INVALIDCALL;
-  return m_levels[Level]->GetDesc(pDesc);
+  return m_levels[Level]->getDescImpl(pDesc); // uncounted: MYIOSDECK spec 07 clarification 3
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::GetCubeMapSurface(D3DCUBEMAP_FACES FaceType, UINT Level, IDirect3DSurface9 **ppCubeMapSurface) {
+  D9_CALL(IDirect3DCubeTexture9, GetCubeMapSurface);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppCubeMapSurface)
     return D3DERR_INVALIDCALL;
@@ -493,17 +522,19 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::LockRect(
     D3DCUBEMAP_FACES FaceType, UINT Level, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags
 ) {
+  D9_CALL(IDirect3DCubeTexture9, LockRect);
   D9DeviceLock lock = m_device->LockDevice();
   if (static_cast<uint32_t>(FaceType) >= 6 || Level >= m_level_count)
     return D3DERR_INVALIDCALL;
   if ((m_usage & D3DUSAGE_AUTOGENMIPMAP) && Level != 0)
     return D3DERR_INVALIDCALL;
   uint32_t idx = static_cast<uint32_t>(FaceType) * m_level_count + Level;
-  return m_levels[idx]->LockRect(pLockedRect, pRect, Flags);
+  return m_levels[idx]->lockRectImpl(pLockedRect, pRect, Flags); // uncounted: MYIOSDECK spec 07 clarification 3
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level) {
+  D9_CALL(IDirect3DCubeTexture9, UnlockRect);
   D9DeviceLock lock = m_device->LockDevice();
   if (static_cast<uint32_t>(FaceType) >= 6 || Level >= m_level_count)
     return D3DERR_INVALIDCALL;
@@ -521,11 +552,12 @@ MTLD3D9CubeTexture::UnlockRect(D3DCUBEMAP_FACES FaceType, UINT Level) {
   // The device's draw-time flush still coalesces a six-face upload into a single
   // generateMipmaps on the cube handle. wined3d records both via the shared
   // texture regardless of entry point.
-  return m_levels[idx]->UnlockRect();
+  return m_levels[idx]->unlockRectImpl(); // uncounted: MYIOSDECK spec 07 clarification 3
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::AddDirtyRect(D3DCUBEMAP_FACES FaceType, const RECT *pDirtyRect) {
+  D9_CALL(IDirect3DCubeTexture9, AddDirtyRect);
   D9DeviceLock lock = m_device->LockDevice();
   // wined3d wined3d_texture_add_dirty_region rejects a layer past the face count
   // first, then validates the rect against the level-0 extent per face

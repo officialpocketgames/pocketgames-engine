@@ -1097,6 +1097,7 @@ MTLD3D9VertexShader::~MTLD3D9VertexShader() = default;
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9VertexShader::AddRef() {
+  D9_CALL(IDirect3DVertexShader9, AddRef);
   ULONG ref = ComObject::AddRef();
   if (ref == 1)
     m_device->AddRef();
@@ -1105,6 +1106,7 @@ MTLD3D9VertexShader::AddRef() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9VertexShader::Release() {
+  D9_CALL(IDirect3DVertexShader9, Release);
   // D3D9 Release-at-0 clamp: handed out at public 0 while self-pinned / bound
   // (DXVK clamps every device child); guard the underflow before the decrement.
   if (m_refCount.load() == 0)
@@ -1122,6 +1124,7 @@ MTLD3D9VertexShader::Release() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexShader::QueryInterface(REFIID riid, void **ppv) {
+  D9_CALL(IDirect3DVertexShader9, QueryInterface);
   if (!ppv)
     return E_POINTER;
   *ppv = nullptr;
@@ -1136,6 +1139,7 @@ MTLD3D9VertexShader::QueryInterface(REFIID riid, void **ppv) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexShader::GetDevice(IDirect3DDevice9 **ppDevice) {
+  D9_CALL(IDirect3DVertexShader9, GetDevice);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppDevice)
     return D3DERR_INVALIDCALL;
@@ -1145,6 +1149,7 @@ MTLD3D9VertexShader::GetDevice(IDirect3DDevice9 **ppDevice) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexShader::GetFunction(void *pData, UINT *pSizeOfData) {
+  D9_CALL(IDirect3DVertexShader9, GetFunction);
   D9DeviceLock lock = m_device->LockDevice();
   // wined3d/dxvk shape: pSizeOfData is required (in/out). pData is
   // optional: when null, the call returns the required size only,
@@ -1263,6 +1268,7 @@ MTLD3D9PixelShader::~MTLD3D9PixelShader() = default;
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9PixelShader::AddRef() {
+  D9_CALL(IDirect3DPixelShader9, AddRef);
   ULONG ref = ComObject::AddRef();
   if (ref == 1)
     m_device->AddRef();
@@ -1271,6 +1277,7 @@ MTLD3D9PixelShader::AddRef() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9PixelShader::Release() {
+  D9_CALL(IDirect3DPixelShader9, Release);
   // D3D9 Release-at-0 clamp (see MTLD3D9VertexShader::Release).
   if (m_refCount.load() == 0)
     return 0;
@@ -1287,6 +1294,7 @@ MTLD3D9PixelShader::Release() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9PixelShader::QueryInterface(REFIID riid, void **ppv) {
+  D9_CALL(IDirect3DPixelShader9, QueryInterface);
   if (!ppv)
     return E_POINTER;
   *ppv = nullptr;
@@ -1301,6 +1309,7 @@ MTLD3D9PixelShader::QueryInterface(REFIID riid, void **ppv) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9PixelShader::GetDevice(IDirect3DDevice9 **ppDevice) {
+  D9_CALL(IDirect3DPixelShader9, GetDevice);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppDevice)
     return D3DERR_INVALIDCALL;
@@ -1310,6 +1319,7 @@ MTLD3D9PixelShader::GetDevice(IDirect3DDevice9 **ppDevice) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9PixelShader::GetFunction(void *pData, UINT *pSizeOfData) {
+  D9_CALL(IDirect3DPixelShader9, GetFunction);
   D9DeviceLock lock = m_device->LockDevice();
   if (!pSizeOfData)
     return D3DERR_INVALIDCALL;

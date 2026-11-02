@@ -2,6 +2,7 @@
 // From David Acevedo's DXMT fork (github.com/dacevedo12/dxmt), tag v0.4-d3d9,
 // commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
+// Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
 #include "d3d9_volume_texture.hpp"
 
 #include "d3d9_device.hpp"
@@ -112,6 +113,12 @@ MTLD3D9VolumeTexture::markLosable() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::AddRef() {
+  D9_CALL(IDirect3DVolumeTexture9, AddRef);
+  return AddRefUncounted();
+}
+
+ULONG
+MTLD3D9VolumeTexture::AddRefUncounted() {
   ULONG ref = ComObject::AddRef();
   if (ref == 1)
     m_device->AddRef();
@@ -120,6 +127,12 @@ MTLD3D9VolumeTexture::AddRef() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::Release() {
+  D9_CALL(IDirect3DVolumeTexture9, Release);
+  return ReleaseUncounted();
+}
+
+ULONG
+MTLD3D9VolumeTexture::ReleaseUncounted() {
   // D3D9 Release-at-0 clamp (hand-folded: multiply-inherits, so
   // ComObjectClamp cannot wrap it). Also bounds a volume's delegated Release
   // against the shared counter.
@@ -147,6 +160,7 @@ MTLD3D9VolumeTexture::Release() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::QueryInterface(REFIID riid, void **ppvObject) {
+  D9_CALL(IDirect3DVolumeTexture9, QueryInterface);
   if (!ppvObject)
     return E_POINTER;
   *ppvObject = nullptr;
@@ -161,6 +175,7 @@ MTLD3D9VolumeTexture::QueryInterface(REFIID riid, void **ppvObject) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::GetDevice(IDirect3DDevice9 **ppDevice) {
+  D9_CALL(IDirect3DVolumeTexture9, GetDevice);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppDevice)
     return D3DERR_INVALIDCALL;
@@ -170,47 +185,55 @@ MTLD3D9VolumeTexture::GetDevice(IDirect3DDevice9 **ppDevice) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::SetPrivateData(REFGUID refguid, const void *pData, DWORD SizeOfData, DWORD Flags) {
+  D9_CALL(IDirect3DVolumeTexture9, SetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9SetPrivateData(m_privateData, refguid, pData, SizeOfData, Flags);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::GetPrivateData(REFGUID refguid, void *pData, DWORD *pSizeOfData) {
+  D9_CALL(IDirect3DVolumeTexture9, GetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9GetPrivateData(m_privateData, refguid, pData, pSizeOfData);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::FreePrivateData(REFGUID refguid) {
+  D9_CALL(IDirect3DVolumeTexture9, FreePrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9FreePrivateData(m_privateData, refguid);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::SetPriority(DWORD PriorityNew) {
+  D9_CALL(IDirect3DVolumeTexture9, SetPriority);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9SetResourcePriority(m_pool, m_priority, PriorityNew);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::GetPriority() {
+  D9_CALL(IDirect3DVolumeTexture9, GetPriority);
   D9DeviceLock lock = m_device->LockDevice();
   return m_priority;
 }
 
 void STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::PreLoad() {
+  D9_CALL(IDirect3DVolumeTexture9, PreLoad);
   D9DeviceLock lock = m_device->LockDevice();
 }
 
 D3DRESOURCETYPE STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::GetType() {
+  D9_CALL(IDirect3DVolumeTexture9, GetType);
   D9DeviceLock lock = m_device->LockDevice();
   return D3DRTYPE_VOLUMETEXTURE;
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::SetLOD(DWORD LODNew) {
+  D9_CALL(IDirect3DVolumeTexture9, SetLOD);
   D9DeviceLock lock = m_device->LockDevice();
   // Volume textures: LOD applies just like 2D; clamped by spec to
   // [0, level_count-1]. The bind path reads m_lod; FX stage / sampler
@@ -224,18 +247,21 @@ MTLD3D9VolumeTexture::SetLOD(DWORD LODNew) {
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::GetLOD() {
+  D9_CALL(IDirect3DVolumeTexture9, GetLOD);
   D9DeviceLock lock = m_device->LockDevice();
   return m_lod.load(std::memory_order_relaxed);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::GetLevelCount() {
+  D9_CALL(IDirect3DVolumeTexture9, GetLevelCount);
   D9DeviceLock lock = m_device->LockDevice();
   return m_level_count;
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::SetAutoGenFilterType(D3DTEXTUREFILTERTYPE FilterType) {
+  D9_CALL(IDirect3DVolumeTexture9, SetAutoGenFilterType);
   D9DeviceLock lock = m_device->LockDevice();
   // wined3d texture.c d3d9_texture_3d_SetAutoGenFilterType: reject
   // D3DTEXF_NONE.
@@ -247,12 +273,14 @@ MTLD3D9VolumeTexture::SetAutoGenFilterType(D3DTEXTUREFILTERTYPE FilterType) {
 
 D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::GetAutoGenFilterType() {
+  D9_CALL(IDirect3DVolumeTexture9, GetAutoGenFilterType);
   D9DeviceLock lock = m_device->LockDevice();
   return m_autoGenFilter;
 }
 
 void STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::GenerateMipSubLevels() {
+  D9_CALL(IDirect3DVolumeTexture9, GenerateMipSubLevels);
   D9DeviceLock lock = m_device->LockDevice();
   // A volume texture can never carry AUTOGENMIPMAP: CreateVolumeTexture rejects
   // the usage (validate_texture_create), matching both refs, so no auto-generated
@@ -263,16 +291,18 @@ MTLD3D9VolumeTexture::GenerateMipSubLevels() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::GetLevelDesc(UINT Level, D3DVOLUME_DESC *pDesc) {
+  D9_CALL(IDirect3DVolumeTexture9, GetLevelDesc);
   D9DeviceLock lock = m_device->LockDevice();
   if (!pDesc)
     return D3DERR_INVALIDCALL;
   if (Level >= m_levels.size())
     return D3DERR_INVALIDCALL;
-  return m_levels[Level]->GetDesc(pDesc);
+  return m_levels[Level]->getDescImpl(pDesc); // uncounted: MYIOSDECK spec 07 clarification 3
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::GetVolumeLevel(UINT Level, IDirect3DVolume9 **ppVolumeLevel) {
+  D9_CALL(IDirect3DVolumeTexture9, GetVolumeLevel);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppVolumeLevel)
     return D3DERR_INVALIDCALL;
@@ -285,14 +315,16 @@ MTLD3D9VolumeTexture::GetVolumeLevel(UINT Level, IDirect3DVolume9 **ppVolumeLeve
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::LockBox(UINT Level, D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox, DWORD Flags) {
+  D9_CALL(IDirect3DVolumeTexture9, LockBox);
   D9DeviceLock lock = m_device->LockDevice();
   if (Level >= m_levels.size())
     return D3DERR_INVALIDCALL;
-  return m_levels[Level]->LockBox(pLockedVolume, pBox, Flags);
+  return m_levels[Level]->lockBoxImpl(pLockedVolume, pBox, Flags); // uncounted: MYIOSDECK spec 07 clarification 3
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::UnlockBox(UINT Level) {
+  D9_CALL(IDirect3DVolumeTexture9, UnlockBox);
   D9DeviceLock lock = m_device->LockDevice();
   if (Level >= m_levels.size())
     return D3DERR_INVALIDCALL;
@@ -302,7 +334,7 @@ MTLD3D9VolumeTexture::UnlockBox(UINT Level) {
   // the same upload path as one unlocking through the texture here. Keeping
   // the push on this method alone would leave a volume-level unlock with an
   // empty Metal texture.
-  return m_levels[Level]->UnlockBox();
+  return m_levels[Level]->unlockBoxImpl(); // uncounted: MYIOSDECK spec 07 clarification 3
 }
 
 void
@@ -336,6 +368,7 @@ MTLD3D9VolumeTexture::flushLevelOnUnlock(uint32_t level, const MTLD3D9Volume *vo
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::AddDirtyBox(const D3DBOX *pDirtyBox) {
+  D9_CALL(IDirect3DVolumeTexture9, AddDirtyBox);
   D9DeviceLock lock = m_device->LockDevice();
   // wined3d validates the dirty box against the level-0 extent
   // (check_box_dimensions: OOB / inverted / block-misaligned -> INVALIDCALL); a
@@ -392,7 +425,7 @@ MTLD3D9VolumeTexture::pushLevelToGpu(uint32_t level, const MTLD3D9Volume *vol) {
     return;
 
   D3DVOLUME_DESC d{};
-  m_levels[level]->GetDesc(&d);
+  m_levels[level]->getDescImpl(&d); // uncounted: MYIOSDECK spec 07 clarification 3
   // Aligned row stride to match the mirror layout; the row / slice offsets and
   // the staging src pitch below all derive from it. The per-column step stays
   // tight (bpp) at col_off. See buildLevelsAndMirror.

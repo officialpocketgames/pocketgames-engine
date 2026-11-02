@@ -2,6 +2,7 @@
 // From David Acevedo's DXMT fork (github.com/dacevedo12/dxmt), tag v0.4-d3d9,
 // commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
+// Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
 #include "d3d9_buffer.hpp"
 
 #include "d3d9_device.hpp"
@@ -156,6 +157,7 @@ MTLD3D9VertexBuffer::markLosable() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::AddRef() {
+  D9_CALL(IDirect3DVertexBuffer9, AddRef);
   ULONG ref = ComObject::AddRef();
   if (ref == 1)
     m_device->AddRef();
@@ -164,6 +166,7 @@ MTLD3D9VertexBuffer::AddRef() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::Release() {
+  D9_CALL(IDirect3DVertexBuffer9, Release);
   // D3D9 Release-at-0 clamp: handed out at public 0 while self-pinned / bound,
   // so guard the underflow before the decrement (DXVK clamps every device
   // child; same shape as the surface/swapchain/texture clamps).
@@ -201,6 +204,7 @@ MTLD3D9VertexBuffer::Release() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::QueryInterface(REFIID riid, void **ppvObject) {
+  D9_CALL(IDirect3DVertexBuffer9, QueryInterface);
   if (!ppvObject)
     return E_POINTER;
   *ppvObject = nullptr;
@@ -215,6 +219,7 @@ MTLD3D9VertexBuffer::QueryInterface(REFIID riid, void **ppvObject) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
+  D9_CALL(IDirect3DVertexBuffer9, GetDevice);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppDevice)
     return D3DERR_INVALIDCALL;
@@ -224,48 +229,56 @@ MTLD3D9VertexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::SetPrivateData(REFGUID refguid, const void *pData, DWORD SizeOfData, DWORD Flags) {
+  D9_CALL(IDirect3DVertexBuffer9, SetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9SetPrivateData(m_privateData, refguid, pData, SizeOfData, Flags);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::GetPrivateData(REFGUID refguid, void *pData, DWORD *pSizeOfData) {
+  D9_CALL(IDirect3DVertexBuffer9, GetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9GetPrivateData(m_privateData, refguid, pData, pSizeOfData);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::FreePrivateData(REFGUID refguid) {
+  D9_CALL(IDirect3DVertexBuffer9, FreePrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9FreePrivateData(m_privateData, refguid);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::SetPriority(DWORD PriorityNew) {
+  D9_CALL(IDirect3DVertexBuffer9, SetPriority);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9SetResourcePriority(m_pool, m_priority, PriorityNew);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::GetPriority() {
+  D9_CALL(IDirect3DVertexBuffer9, GetPriority);
   D9DeviceLock lock = m_device->LockDevice();
   return m_priority;
 }
 
 void STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::PreLoad() {
+  D9_CALL(IDirect3DVertexBuffer9, PreLoad);
   D9DeviceLock lock = m_device->LockDevice();
   // Apple Silicon's unified memory makes residency hints a no-op.
 }
 
 D3DRESOURCETYPE STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::GetType() {
+  D9_CALL(IDirect3DVertexBuffer9, GetType);
   D9DeviceLock lock = m_device->LockDevice();
   return D3DRTYPE_VERTEXBUFFER;
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWORD Flags) {
+  D9_CALL(IDirect3DVertexBuffer9, Lock);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppbData)
     return D3DERR_INVALIDCALL;
@@ -298,6 +311,7 @@ MTLD3D9VertexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **ppbData, DW
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::Unlock() {
+  D9_CALL(IDirect3DVertexBuffer9, Unlock);
   D9DeviceLock lock = m_device->LockDevice();
   // Nothing uploads here, for any pool. The draw that reads the buffer
   // refreshes it, because an application may still be writing through the
@@ -310,6 +324,7 @@ MTLD3D9VertexBuffer::Unlock() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::GetDesc(D3DVERTEXBUFFER_DESC *pDesc) {
+  D9_CALL(IDirect3DVertexBuffer9, GetDesc);
   D9DeviceLock lock = m_device->LockDevice();
   if (!pDesc)
     return D3DERR_INVALIDCALL;
@@ -398,6 +413,7 @@ MTLD3D9IndexBuffer::markLosable() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::AddRef() {
+  D9_CALL(IDirect3DIndexBuffer9, AddRef);
   ULONG ref = ComObject::AddRef();
   if (ref == 1)
     m_device->AddRef();
@@ -406,6 +422,7 @@ MTLD3D9IndexBuffer::AddRef() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::Release() {
+  D9_CALL(IDirect3DIndexBuffer9, Release);
   // D3D9 Release-at-0 clamp (see MTLD3D9VertexBuffer::Release).
   if (m_refCount.load() == 0)
     return 0;
@@ -430,6 +447,7 @@ MTLD3D9IndexBuffer::Release() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::QueryInterface(REFIID riid, void **ppvObject) {
+  D9_CALL(IDirect3DIndexBuffer9, QueryInterface);
   if (!ppvObject)
     return E_POINTER;
   *ppvObject = nullptr;
@@ -444,6 +462,7 @@ MTLD3D9IndexBuffer::QueryInterface(REFIID riid, void **ppvObject) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
+  D9_CALL(IDirect3DIndexBuffer9, GetDevice);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppDevice)
     return D3DERR_INVALIDCALL;
@@ -453,48 +472,56 @@ MTLD3D9IndexBuffer::GetDevice(IDirect3DDevice9 **ppDevice) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::SetPrivateData(REFGUID refguid, const void *pData, DWORD SizeOfData, DWORD Flags) {
+  D9_CALL(IDirect3DIndexBuffer9, SetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9SetPrivateData(m_privateData, refguid, pData, SizeOfData, Flags);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::GetPrivateData(REFGUID refguid, void *pData, DWORD *pSizeOfData) {
+  D9_CALL(IDirect3DIndexBuffer9, GetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9GetPrivateData(m_privateData, refguid, pData, pSizeOfData);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::FreePrivateData(REFGUID refguid) {
+  D9_CALL(IDirect3DIndexBuffer9, FreePrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9FreePrivateData(m_privateData, refguid);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::SetPriority(DWORD PriorityNew) {
+  D9_CALL(IDirect3DIndexBuffer9, SetPriority);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9SetResourcePriority(m_pool, m_priority, PriorityNew);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::GetPriority() {
+  D9_CALL(IDirect3DIndexBuffer9, GetPriority);
   D9DeviceLock lock = m_device->LockDevice();
   return m_priority;
 }
 
 void STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::PreLoad() {
+  D9_CALL(IDirect3DIndexBuffer9, PreLoad);
   D9DeviceLock lock = m_device->LockDevice();
   // Apple Silicon's unified memory makes residency hints a no-op.
 }
 
 D3DRESOURCETYPE STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::GetType() {
+  D9_CALL(IDirect3DIndexBuffer9, GetType);
   D9DeviceLock lock = m_device->LockDevice();
   return D3DRTYPE_INDEXBUFFER;
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWORD Flags) {
+  D9_CALL(IDirect3DIndexBuffer9, Lock);
   D9DeviceLock lock = m_device->LockDevice();
   // Same shape as MTLD3D9VertexBuffer::Lock: see the rationale there
   // for the flag sanitisation, DISCARD / NOOVERWRITE semantics, the
@@ -520,6 +547,7 @@ MTLD3D9IndexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWO
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::Unlock() {
+  D9_CALL(IDirect3DIndexBuffer9, Unlock);
   D9DeviceLock lock = m_device->LockDevice();
   // See MTLD3D9VertexBuffer::Unlock: the draw refreshes, not this.
   if (m_lockCount.decrement() == 0)
@@ -529,6 +557,7 @@ MTLD3D9IndexBuffer::Unlock() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::GetDesc(D3DINDEXBUFFER_DESC *pDesc) {
+  D9_CALL(IDirect3DIndexBuffer9, GetDesc);
   D9DeviceLock lock = m_device->LockDevice();
   if (!pDesc)
     return D3DERR_INVALIDCALL;

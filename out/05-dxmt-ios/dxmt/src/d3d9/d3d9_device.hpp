@@ -9,6 +9,7 @@
 #include "com/com_object.hpp"
 #include "com/com_pointer.hpp"
 #include "d3d9.h"
+#include "d3d9_call_stats.hpp" // MYIOSDECK spec 07 clarification 3
 #include "d3d9_clear_quad.hpp"
 #include "d3d9_common_texture.hpp"
 #include "d3d9_diag.hpp"
@@ -140,7 +141,9 @@ public:
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) override;
   // D3D9 clamps Release-at-0. The device multiply-inherits (ComObject +
   // IDxmtDiag9) so ComObjectClamp cannot wrap it; the override hand-folds the
-  // guard. AddRef inherits ComObject (no underflow to clamp).
+  // guard. AddRef is ComObject's (no underflow to clamp), overridden only so
+  // the call statistics count it (MYIOSDECK spec 07 clarification 3).
+  ULONG STDMETHODCALLTYPE AddRef() override;
   ULONG STDMETHODCALLTYPE Release() override;
 
   // Internal accessors: used by surfaces / textures / buffers when
@@ -573,11 +576,7 @@ public:
 
   // IDxmtDiag9: private diag QI surface (see d3d9_diag.hpp). Tests
   // probe this to assert teardown invariants; not user-facing.
-  UINT STDMETHODCALLTYPE
-  GetLosableResourceCount() override {
-    D9DeviceLock lock = LockDevice();
-    return losableResourceCount();
-  }
+  UINT STDMETHODCALLTYPE GetLosableResourceCount() override;
 
 private:
   void initDefaultRenderStates(bool enableAutoDepthStencil);

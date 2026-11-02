@@ -164,7 +164,7 @@ buildLevelsAndMirror(
         // INVALIDCALL elsewhere still catches genuine bookkeeping bugs.
         /*textureMipSurface=*/true,
         // Sub-resource: the level shares this texture's public refcount.
-        /*baseTexture=*/static_cast<IDirect3DBaseTexture9 *>(self)
+        /*baseTexture=*/static_cast<MTLD3D9CommonTexture *>(self)
     );
     if (needs_mirror && !user_mem_level)
       level->setLazyMirrorParent(self, i);
@@ -564,6 +564,12 @@ MTLD3D9Texture::markLosable() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9Texture::AddRef() {
+  D9_CALL(IDirect3DTexture9, AddRef);
+  return AddRefUncounted();
+}
+
+ULONG
+MTLD3D9Texture::AddRefUncounted() {
   ULONG ref = ComObject::AddRef();
   if (ref == 1)
     m_device->AddRef();
@@ -572,6 +578,12 @@ MTLD3D9Texture::AddRef() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9Texture::Release() {
+  D9_CALL(IDirect3DTexture9, Release);
+  return ReleaseUncounted();
+}
+
+ULONG
+MTLD3D9Texture::ReleaseUncounted() {
   // D3D9 clamps Release-at-0 (a quirk apps rely on; com/com_object.hpp
   // ComObjectClamp). This class multiply-inherits (ComObject +
   // MTLD3D9CommonTexture) so ComObjectClamp cannot wrap it; fold the guard by
@@ -606,6 +618,7 @@ MTLD3D9Texture::Release() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::QueryInterface(REFIID riid, void **ppvObject) {
+  D9_CALL(IDirect3DTexture9, QueryInterface);
   if (!ppvObject)
     return E_POINTER;
   *ppvObject = nullptr;
@@ -621,6 +634,7 @@ MTLD3D9Texture::QueryInterface(REFIID riid, void **ppvObject) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::GetDevice(IDirect3DDevice9 **ppDevice) {
+  D9_CALL(IDirect3DTexture9, GetDevice);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppDevice)
     return D3DERR_INVALIDCALL;
@@ -630,48 +644,56 @@ MTLD3D9Texture::GetDevice(IDirect3DDevice9 **ppDevice) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::SetPrivateData(REFGUID refguid, const void *pData, DWORD SizeOfData, DWORD Flags) {
+  D9_CALL(IDirect3DTexture9, SetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9SetPrivateData(m_privateData, refguid, pData, SizeOfData, Flags);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::GetPrivateData(REFGUID refguid, void *pData, DWORD *pSizeOfData) {
+  D9_CALL(IDirect3DTexture9, GetPrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9GetPrivateData(m_privateData, refguid, pData, pSizeOfData);
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::FreePrivateData(REFGUID refguid) {
+  D9_CALL(IDirect3DTexture9, FreePrivateData);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9FreePrivateData(m_privateData, refguid);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9Texture::SetPriority(DWORD PriorityNew) {
+  D9_CALL(IDirect3DTexture9, SetPriority);
   D9DeviceLock lock = m_device->LockDevice();
   return D3D9SetResourcePriority(m_pool, m_priority, PriorityNew);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9Texture::GetPriority() {
+  D9_CALL(IDirect3DTexture9, GetPriority);
   D9DeviceLock lock = m_device->LockDevice();
   return m_priority;
 }
 
 void STDMETHODCALLTYPE
 MTLD3D9Texture::PreLoad() {
+  D9_CALL(IDirect3DTexture9, PreLoad);
   D9DeviceLock lock = m_device->LockDevice();
   // Apple Silicon's unified memory makes residency hints a no-op.
 }
 
 D3DRESOURCETYPE STDMETHODCALLTYPE
 MTLD3D9Texture::GetType() {
+  D9_CALL(IDirect3DTexture9, GetType);
   D9DeviceLock lock = m_device->LockDevice();
   return D3DRTYPE_TEXTURE;
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9Texture::SetLOD(DWORD LODNew) {
+  D9_CALL(IDirect3DTexture9, SetLOD);
   D9DeviceLock lock = m_device->LockDevice();
   // Per D3D9: SetLOD only meaningful for D3DPOOL_MANAGED. For other
   // pools the runtime returns 0 and ignores the new value. wined3d
@@ -689,18 +711,21 @@ MTLD3D9Texture::SetLOD(DWORD LODNew) {
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9Texture::GetLOD() {
+  D9_CALL(IDirect3DTexture9, GetLOD);
   D9DeviceLock lock = m_device->LockDevice();
   return m_lod.load(std::memory_order_relaxed);
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9Texture::GetLevelCount() {
+  D9_CALL(IDirect3DTexture9, GetLevelCount);
   D9DeviceLock lock = m_device->LockDevice();
   return static_cast<DWORD>(m_levels.size());
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::SetAutoGenFilterType(D3DTEXTUREFILTERTYPE FilterType) {
+  D9_CALL(IDirect3DTexture9, SetAutoGenFilterType);
   D9DeviceLock lock = m_device->LockDevice();
   // wined3d texture.c d3d9_texture_2d_SetAutoGenFilterType: reject
   // D3DTEXF_NONE: the runtime requires a valid auto-gen filter, and
@@ -714,12 +739,14 @@ MTLD3D9Texture::SetAutoGenFilterType(D3DTEXTUREFILTERTYPE FilterType) {
 
 D3DTEXTUREFILTERTYPE STDMETHODCALLTYPE
 MTLD3D9Texture::GetAutoGenFilterType() {
+  D9_CALL(IDirect3DTexture9, GetAutoGenFilterType);
   D9DeviceLock lock = m_device->LockDevice();
   return m_autoGenFilter;
 }
 
 void STDMETHODCALLTYPE
 MTLD3D9Texture::GenerateMipSubLevels() {
+  D9_CALL(IDirect3DTexture9, GenerateMipSubLevels);
   D9DeviceLock lock = m_device->LockDevice();
   // Only AUTOGENMIPMAP textures auto-regenerate: an explicit-mip texture fills
   // its levels by Lock/Unlock and must not have them overwritten by a downsample
@@ -743,16 +770,18 @@ MTLD3D9Texture::GenerateMipSubLevels() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::GetLevelDesc(UINT Level, D3DSURFACE_DESC *pDesc) {
+  D9_CALL(IDirect3DTexture9, GetLevelDesc);
   D9DeviceLock lock = m_device->LockDevice();
   if (!pDesc)
     return D3DERR_INVALIDCALL;
   if (Level >= m_levels.size())
     return D3DERR_INVALIDCALL;
-  return m_levels[Level]->GetDesc(pDesc);
+  return m_levels[Level]->getDescImpl(pDesc); // uncounted: MYIOSDECK spec 07 clarification 3
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::GetSurfaceLevel(UINT Level, IDirect3DSurface9 **ppSurfaceLevel) {
+  D9_CALL(IDirect3DTexture9, GetSurfaceLevel);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppSurfaceLevel)
     return D3DERR_INVALIDCALL;
@@ -768,16 +797,18 @@ MTLD3D9Texture::GetSurfaceLevel(UINT Level, IDirect3DSurface9 **ppSurfaceLevel) 
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) {
+  D9_CALL(IDirect3DTexture9, LockRect);
   D9DeviceLock lock = m_device->LockDevice();
   if (Level >= m_levels.size())
     return D3DERR_INVALIDCALL;
   if ((m_usage & D3DUSAGE_AUTOGENMIPMAP) && Level != 0)
     return D3DERR_INVALIDCALL;
-  return m_levels[Level]->LockRect(pLockedRect, pRect, Flags);
+  return m_levels[Level]->lockRectImpl(pLockedRect, pRect, Flags); // uncounted: MYIOSDECK spec 07 clarification 3
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::UnlockRect(UINT Level) {
+  D9_CALL(IDirect3DTexture9, UnlockRect);
   D9DeviceLock lock = m_device->LockDevice();
   if (Level >= m_levels.size())
     return D3DERR_INVALIDCALL;
@@ -787,11 +818,12 @@ MTLD3D9Texture::UnlockRect(UINT Level) {
   // so the GetSurfaceLevel / GetDC entry point (a direct surface unlock, not
   // routed through this wrapper) records them too. wined3d records both via the
   // shared texture regardless of entry point.
-  return m_levels[Level]->UnlockRect();
+  return m_levels[Level]->unlockRectImpl(); // uncounted: MYIOSDECK spec 07 clarification 3
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::AddDirtyRect(const RECT *pDirtyRect) {
+  D9_CALL(IDirect3DTexture9, AddDirtyRect);
   D9DeviceLock lock = m_device->LockDevice();
   // wined3d wined3d_texture_add_dirty_region: rect==NULL marks the
   // whole sub-resource set dirty; otherwise it validates the region against the

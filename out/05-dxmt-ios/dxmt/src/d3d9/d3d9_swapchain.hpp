@@ -105,6 +105,17 @@ public:
   HRESULT STDMETHODCALLTYPE GetPresentStats(D3DPRESENTSTATS *pPresentationStatistics) override;
   HRESULT STDMETHODCALLTYPE GetDisplayModeEx(D3DDISPLAYMODEEX *pMode, D3DDISPLAYROTATION *pRotation) override;
 
+  // MYIOSDECK spec 07 clarification 3: the bodies of Present, GetBackBuffer and
+  // GetRasterStatus without the call-statistics count. The device's Present,
+  // PresentEx, GetBackBuffer and GetRasterStatus forward to the implicit chain
+  // through these, so one app call counts once, under the device's method.
+  HRESULT presentImpl(
+      const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion,
+      DWORD dwFlags
+  );
+  HRESULT getBackBufferImpl(UINT iBackBuffer, D3DBACKBUFFER_TYPE Type, IDirect3DSurface9 **ppBackBuffer);
+  HRESULT getRasterStatusImpl(D3DRASTER_STATUS *pRasterStatus);
+
   // Internal: drives the device's Reset path. Drops the current
   // backbuffer surface and rebuilds at the new dimensions/format,
   // updates the Presenter's layer properties. Caller must have drained

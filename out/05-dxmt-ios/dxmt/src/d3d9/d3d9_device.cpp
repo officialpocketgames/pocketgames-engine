@@ -568,7 +568,10 @@ MTLD3D9Device::MTLD3D9Device(
   // sample BC, arm the upload-pressure threshold, and log the switches once.
   m_bcEmulated = BCEmulationActive(m_metalDevice);
   m_uploadPressure.setThreshold(D9Ios().upload_commit_bytes);
-  LogD9IosDevice(m_bcEmulated);
+  LogD9IosDevice(m_bcEmulated, d9cs::g_enabled);
+  // MYIOSDECK spec 07 clarification 3: calls from any other thread than this
+  // one are counted apart.
+  d9cs::NoteDeviceThread();
   // Pre-allocate 2 blocks per ring: first-touch of a fresh
   // Metal-registered block page-faults expensively under Rosetta
   // x86_32, so pay it at device construction instead of mid-frame.
@@ -1803,8 +1806,17 @@ MTLD3D9Device::commitForUploadPressure() {
 
 /* ---- end of spec 07 Part C ---------------------------------------------- */
 
+// MYIOSDECK spec 07 clarification 3: AddRef is ComObject's; the override only
+// gives the call statistics an entry to count.
+ULONG STDMETHODCALLTYPE
+MTLD3D9Device::AddRef() {
+  D9_CALL(IDirect3DDevice9, AddRef);
+  return ComObject<IDirect3DDevice9Ex>::AddRef();
+}
+
 ULONG STDMETHODCALLTYPE
 MTLD3D9Device::Release() {
+  D9_CALL(IDirect3DDevice9, Release);
   // D3D9 clamps Release-at-0 (a quirk apps rely on; com/com_object.hpp
   // ComObjectClamp). The device multiply-inherits, so ComObjectClamp cannot
   // wrap it; fold the same guard by hand. The implicit resources that pin the
@@ -1817,6 +1829,7 @@ MTLD3D9Device::Release() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::QueryInterface(REFIID riid, void **ppvObject) {
+  D9_CALL(IDirect3DDevice9, QueryInterface);
   if (!ppvObject)
     return E_POINTER;
   *ppvObject = nullptr;
@@ -1842,8 +1855,18 @@ MTLD3D9Device::QueryInterface(REFIID riid, void **ppvObject) {
   return E_NOINTERFACE;
 }
 
+// IDxmtDiag9 (d3d9_diag.hpp). Out of line since spec 07 clarification 3, like
+// every other public method.
+UINT STDMETHODCALLTYPE
+MTLD3D9Device::GetLosableResourceCount() {
+  D9_CALL(IDxmtDiag9, GetLosableResourceCount);
+  D9DeviceLock lock = LockDevice();
+  return losableResourceCount();
+}
+
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::TestCooperativeLevel() {
+  D9_CALL(IDirect3DDevice9, TestCooperativeLevel);
   // MYIOSDECK spec 07 C7: no device lock. Everything this reads is written
   // once (m_isEx, the creation parameters) or atomic (the device state, the
   // focus latches), so a polling thread never waits for the render thread.
@@ -1865,6 +1888,7 @@ MTLD3D9Device::TestCooperativeLevel() {
 }
 UINT STDMETHODCALLTYPE
 MTLD3D9Device::GetAvailableTextureMem() {
+  D9_CALL(IDirect3DDevice9, GetAvailableTextureMem);
   D9DeviceLock lock = LockDevice();
   // Returning the strictly-truthful UMA answer (0) drives era-typical engines
   // into recreate-every-frame fallbacks. Mirror dxgi/d3d11: half of
@@ -1905,6 +1929,7 @@ MTLD3D9Device::GetAvailableTextureMem() {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::EvictManagedResources() {
+  D9_CALL(IDirect3DDevice9, EvictManagedResources);
   D9DeviceLock lock = LockDevice();
   // Native D3D9 drops MANAGED resources from VRAM and reloads each from its
   // sysmem master on next use; UMA has no separate VRAM to free, but games rely
@@ -1927,6 +1952,7 @@ MTLD3D9Device::EvictManagedResources() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetDirect3D(IDirect3D9 **ppD3D9) {
+  D9_CALL(IDirect3DDevice9, GetDirect3D);
   D9DeviceLock lock = LockDevice();
   if (!ppD3D9)
     return D3DERR_INVALIDCALL;
@@ -1936,6 +1962,7 @@ MTLD3D9Device::GetDirect3D(IDirect3D9 **ppD3D9) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetDeviceCaps(D3DCAPS9 *pCaps) {
+  D9_CALL(IDirect3DDevice9, GetDeviceCaps);
   D9DeviceLock lock = LockDevice();
   HRESULT hr = m_parent->GetDeviceCaps(m_creationParams.AdapterOrdinal, m_creationParams.DeviceType, pCaps);
   // A pure-SWVP device advertises the extended float register count; a MIXED
@@ -1950,6 +1977,7 @@ MTLD3D9Device::GetDeviceCaps(D3DCAPS9 *pCaps) {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetDisplayMode(UINT iSwapChain, D3DDISPLAYMODE *pMode) {
+  D9_CALL(IDirect3DDevice9, GetDisplayMode);
   D9DeviceLock lock = LockDevice();
   if (iSwapChain != 0)
     return D3DERR_INVALIDCALL;
@@ -1966,6 +1994,7 @@ MTLD3D9Device::GetDisplayMode(UINT iSwapChain, D3DDISPLAYMODE *pMode) {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetCreationParameters(D3DDEVICE_CREATION_PARAMETERS *pParameters) {
+  D9_CALL(IDirect3DDevice9, GetCreationParameters);
   D9DeviceLock lock = LockDevice();
   if (!pParameters)
     return D3DERR_INVALIDCALL;
@@ -1974,6 +2003,7 @@ MTLD3D9Device::GetCreationParameters(D3DDEVICE_CREATION_PARAMETERS *pParameters)
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetCursorProperties(UINT XHotSpot, UINT YHotSpot, IDirect3DSurface9 *pCursorBitmap) {
+  D9_CALL(IDirect3DDevice9, SetCursorProperties);
   D9DeviceLock lock = LockDevice();
   // Validation gates per DXVK d3d9_device.cpp, then the wined3d
   // realisation: a 32x32 bitmap becomes a Win32 hardware cursor via
@@ -2041,6 +2071,7 @@ MTLD3D9Device::SetCursorProperties(UINT XHotSpot, UINT YHotSpot, IDirect3DSurfac
 }
 void STDMETHODCALLTYPE
 MTLD3D9Device::SetCursorPosition(int X, int Y, DWORD Flags) {
+  D9_CALL(IDirect3DDevice9, SetCursorPosition);
   D9DeviceLock lock = LockDevice();
   // wined3d device.c warps the OS pointer only when a hardware cursor
   // is realised, and skips the call when the position is unchanged
@@ -2063,6 +2094,7 @@ MTLD3D9Device::SetCursorPosition(int X, int Y, DWORD Flags) {
 }
 BOOL STDMETHODCALLTYPE
 MTLD3D9Device::ShowCursor(BOOL bShow) {
+  D9_CALL(IDirect3DDevice9, ShowCursor);
   D9DeviceLock lock = LockDevice();
   // Returns the previous visibility per the wined3d_device_show_cursor
   // contract (wined3d device.c); UI toggle code reads the return to
@@ -2081,6 +2113,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateAdditionalSwapChain(
     D3DPRESENT_PARAMETERS *pPresentationParameters, IDirect3DSwapChain9 **ppSwapChain
 ) {
+  D9_CALL(IDirect3DDevice9, CreateAdditionalSwapChain);
   D9DeviceLock lock = LockDevice();
   if (ppSwapChain)
     *ppSwapChain = nullptr;
@@ -2131,6 +2164,7 @@ MTLD3D9Device::CreateAdditionalSwapChain(
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetSwapChain(UINT iSwapChain, IDirect3DSwapChain9 **pSwapChain) {
+  D9_CALL(IDirect3DDevice9, GetSwapChain);
   D9DeviceLock lock = LockDevice();
   // GetSwapChain NULLs the out-pointer on the failure path, matching the
   // wined3d d3d9 layer (InitReturnPtr): a caller that Releases whatever the
@@ -2145,6 +2179,7 @@ MTLD3D9Device::GetSwapChain(UINT iSwapChain, IDirect3DSwapChain9 **pSwapChain) {
 }
 UINT STDMETHODCALLTYPE
 MTLD3D9Device::GetNumberOfSwapChains() {
+  D9_CALL(IDirect3DDevice9, GetNumberOfSwapChains);
   D9DeviceLock lock = LockDevice();
   return 1;
 }
@@ -2522,6 +2557,7 @@ MTLD3D9Device::unhookFocusWindowProc() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *pPresentationParameters) {
+  D9_CALL(IDirect3DDevice9, Reset);
   D9DeviceLock lock = LockDevice();
   // Wine's main thread has no outer NSAutoreleasePool. Reset tears
   // down and recreates the backbuffer + auto-DS, each of which routes
@@ -2824,6 +2860,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::Present(
     const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion
 ) {
+  D9_CALL_PRESENT(IDirect3DDevice9, Present);
   D9DeviceLock lock = LockDevice();
   // An Ex device presenting an unfocused fullscreen chain reports
   // occlusion without presenting (wine d3d9 device.c); the non-Ex
@@ -2832,7 +2869,9 @@ MTLD3D9Device::Present(
   if (m_isEx && m_implicitSwapChain && !m_implicitSwapChain->windowed() && !fullscreenOwnsDisplay())
     return S_PRESENT_OCCLUDED;
   updateNonExLostState();
-  HRESULT hr = m_implicitSwapChain->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, 0);
+  // Uncounted forward: the app's one Present counts here (MYIOSDECK spec 07
+  // clarification 3).
+  HRESULT hr = m_implicitSwapChain->presentImpl(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, 0);
   return hr;
 }
 
@@ -2842,6 +2881,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetBackBuffer(
     UINT iSwapChain, UINT iBackBuffer, D3DBACKBUFFER_TYPE Type, IDirect3DSurface9 **ppBackBuffer
 ) {
+  D9_CALL(IDirect3DDevice9, GetBackBuffer);
   D9DeviceLock lock = LockDevice();
   // Unlike the swapchain method, the device wrapper clears the out-pointer
   // up front (wined3d device.c InitReturnPtr): an invalid iSwapChain or a
@@ -2851,10 +2891,11 @@ MTLD3D9Device::GetBackBuffer(
     *ppBackBuffer = nullptr;
   if (iSwapChain != 0)
     return D3DERR_INVALIDCALL;
-  return m_implicitSwapChain->GetBackBuffer(iBackBuffer, Type, ppBackBuffer);
+  return m_implicitSwapChain->getBackBufferImpl(iBackBuffer, Type, ppBackBuffer); // uncounted: spec 07 clar. 3
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetRasterStatus(UINT iSwapChain, D3DRASTER_STATUS *pRasterStatus) {
+  D9_CALL(IDirect3DDevice9, GetRasterStatus);
   D9DeviceLock lock = LockDevice();
   // Thin forwarder to the swapchain that owns the raster. wined3d
   // device.c::d3d9_device_GetRasterStatus and DXVK
@@ -2862,10 +2903,11 @@ MTLD3D9Device::GetRasterStatus(UINT iSwapChain, D3DRASTER_STATUS *pRasterStatus)
   // uses for GetBackBuffer / GetDisplayMode.
   if (iSwapChain != 0)
     return D3DERR_INVALIDCALL;
-  return m_implicitSwapChain->GetRasterStatus(pRasterStatus);
+  return m_implicitSwapChain->getRasterStatusImpl(pRasterStatus); // uncounted: spec 07 clar. 3
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetDialogBoxMode(BOOL bEnableDialogs) {
+  D9_CALL(IDirect3DDevice9, SetDialogBoxMode);
   D9DeviceLock lock = LockDevice();
   // MSDN documents many error conditions; DXVK's note
   // (d3d9_swapchain.cpp) is "doesn't appear to error at all in any of
@@ -2878,6 +2920,7 @@ MTLD3D9Device::SetDialogBoxMode(BOOL bEnableDialogs) {
 }
 void STDMETHODCALLTYPE
 MTLD3D9Device::SetGammaRamp(UINT iSwapChain, DWORD Flags, const D3DGAMMARAMP *pRamp) {
+  D9_CALL(IDirect3DDevice9, SetGammaRamp);
   D9DeviceLock lock = LockDevice();
   // Spec is void-return but the swapchain index is real: dxmt only owns
   // the implicit chain today (additional swapchains aren't implemented
@@ -2889,6 +2932,7 @@ MTLD3D9Device::SetGammaRamp(UINT iSwapChain, DWORD Flags, const D3DGAMMARAMP *pR
 }
 void STDMETHODCALLTYPE
 MTLD3D9Device::GetGammaRamp(UINT iSwapChain, D3DGAMMARAMP *pRamp) {
+  D9_CALL(IDirect3DDevice9, GetGammaRamp);
   D9DeviceLock lock = LockDevice();
   if (!pRamp)
     return;
@@ -2911,6 +2955,7 @@ MTLD3D9Device::CreateTexture(
     UINT Width, UINT Height, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DTexture9 **ppTexture,
     HANDLE *pSharedHandle
 ) {
+  D9_CALL(IDirect3DDevice9, CreateTexture);
   D9DeviceLock lock = LockDevice();
   if (!ppTexture)
     return D3DERR_INVALIDCALL;
@@ -3165,6 +3210,7 @@ MTLD3D9Device::CreateVolumeTexture(
     UINT Width, UINT Height, UINT Depth, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool,
     IDirect3DVolumeTexture9 **ppVolumeTexture, HANDLE *pSharedHandle
 ) {
+  D9_CALL(IDirect3DDevice9, CreateVolumeTexture);
   D9DeviceLock lock = LockDevice();
   if (!ppVolumeTexture)
     return D3DERR_INVALIDCALL;
@@ -3280,6 +3326,7 @@ MTLD3D9Device::CreateCubeTexture(
     UINT EdgeLength, UINT Levels, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DCubeTexture9 **ppCubeTexture,
     HANDLE *pSharedHandle
 ) {
+  D9_CALL(IDirect3DDevice9, CreateCubeTexture);
   D9DeviceLock lock = LockDevice();
   if (!ppCubeTexture)
     return D3DERR_INVALIDCALL;
@@ -3485,6 +3532,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateVertexBuffer(
     UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool, IDirect3DVertexBuffer9 **ppVertexBuffer, HANDLE *pSharedHandle
 ) {
+  D9_CALL(IDirect3DDevice9, CreateVertexBuffer);
   D9DeviceLock lock = LockDevice();
   if (!ppVertexBuffer)
     return D3DERR_INVALIDCALL;
@@ -3569,6 +3617,7 @@ MTLD3D9Device::CreateIndexBuffer(
     UINT Length, DWORD Usage, D3DFORMAT Format, D3DPOOL Pool, IDirect3DIndexBuffer9 **ppIndexBuffer,
     HANDLE *pSharedHandle
 ) {
+  D9_CALL(IDirect3DDevice9, CreateIndexBuffer);
   D9DeviceLock lock = LockDevice();
   if (!ppIndexBuffer)
     return D3DERR_INVALIDCALL;
@@ -3642,6 +3691,7 @@ MTLD3D9Device::CreateRenderTarget(
     UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Lockable,
     IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle
 ) {
+  D9_CALL(IDirect3DDevice9, CreateRenderTarget);
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
     return D3DERR_INVALIDCALL;
@@ -3795,6 +3845,7 @@ MTLD3D9Device::CreateDepthStencilSurface(
     UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Discard,
     IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle
 ) {
+  D9_CALL(IDirect3DDevice9, CreateDepthStencilSurface);
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
     return D3DERR_INVALIDCALL;
@@ -3924,6 +3975,7 @@ MTLD3D9Device::UpdateSurface(
     IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect, IDirect3DSurface9 *pDestinationSurface,
     const POINT *pDestPoint
 ) {
+  D9_CALL(IDirect3DDevice9, UpdateSurface);
   D9DeviceLock lock = LockDevice();
   if (!pSourceSurface || !pDestinationSurface)
     return D3DERR_INVALIDCALL;
@@ -4088,6 +4140,7 @@ MTLD3D9Device::UpdateSurface(
 // source or destination here (wined3d rejects them).
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::UpdateTexture(IDirect3DBaseTexture9 *pSourceTexture, IDirect3DBaseTexture9 *pDestinationTexture) {
+  D9_CALL(IDirect3DDevice9, UpdateTexture);
   D9DeviceLock lock = LockDevice();
   // Wine main thread has no outer NSAutoreleasePool; the upload path
   // touches Metal APIs (texture view, fence access) that return
@@ -4727,6 +4780,7 @@ MTLD3D9Device::UpdateTexture(IDirect3DBaseTexture9 *pSourceTexture, IDirect3DBas
 // d3d9_device.cpp, which forwards a DEFAULT-pool destination to StretchRect.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget, IDirect3DSurface9 *pDestSurface) {
+  D9_CALL(IDirect3DDevice9, GetRenderTargetData);
   D9DeviceLock lock = LockDevice();
   // Wine main thread has no outer NSAutoreleasePool. GetRenderTargetData
   // commits a sync chunk and waits; autoreleased Metal handles (blit
@@ -4919,6 +4973,7 @@ MTLD3D9Device::GetRenderTargetData(IDirect3DSurface9 *pRenderTarget, IDirect3DSu
 // CPU-side off an upload-ring readback: screenshot path, not hot.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetFrontBufferData(UINT iSwapChain, IDirect3DSurface9 *pDestSurface) {
+  D9_CALL(IDirect3DDevice9, GetFrontBufferData);
   D9DeviceLock lock = LockDevice();
   // The device entry point names the implicit chain; additional chains
   // route through their own IDirect3DSwapChain9::GetFrontBufferData.
@@ -5121,6 +5176,7 @@ MTLD3D9Device::StretchRect(
     IDirect3DSurface9 *pSourceSurface, const RECT *pSourceRect, IDirect3DSurface9 *pDestSurface, const RECT *pDestRect,
     D3DTEXTUREFILTERTYPE Filter
 ) {
+  D9_CALL(IDirect3DDevice9, StretchRect);
   return stretchRectImpl(pSourceSurface, pSourceRect, pDestSurface, pDestRect, Filter, /* from_readback */ false);
 }
 
@@ -5374,6 +5430,7 @@ encode_bc_solid_block(D3DFORMAT format, D3DCOLOR color, uint8_t out[16]) {
 // sub-rect takes the scissored render-pass quad.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::ColorFill(IDirect3DSurface9 *pSurface, const RECT *pRect, D3DCOLOR Color) {
+  D9_CALL(IDirect3DDevice9, ColorFill);
   D9DeviceLock lock = LockDevice();
   // Wine main thread has no outer NSAutoreleasePool. Clear-encoder
   // chunk emit touches Metal APIs (view, fence) that return
@@ -5557,6 +5614,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateOffscreenPlainSurface(
     UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle
 ) {
+  D9_CALL(IDirect3DDevice9, CreateOffscreenPlainSurface);
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
     return D3DERR_INVALIDCALL;
@@ -5859,6 +5917,7 @@ MTLD3D9Device::CreateOffscreenPlainSurface(
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRenderTarget) {
+  D9_CALL(IDirect3DDevice9, SetRenderTarget);
   D9DeviceLock lock = LockDevice();
   if (RenderTargetIndex >= D3D_MAX_SIMULTANEOUS_RENDERTARGETS)
     return D3DERR_INVALIDCALL;
@@ -5982,6 +6041,7 @@ MTLD3D9Device::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRend
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 **ppRenderTarget) {
+  D9_CALL(IDirect3DDevice9, GetRenderTarget);
   D9DeviceLock lock = LockDevice();
   // Mirror wined3d_device_GetRenderTarget shape (and the same shape
   // MTLD3D9Device::GetSwapChain / MTLD3D9SwapChain::GetBackBuffer use):
@@ -6006,6 +6066,7 @@ MTLD3D9Device::GetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 **ppRe
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetDepthStencilSurface(IDirect3DSurface9 *pNewZStencil) {
+  D9_CALL(IDirect3DDevice9, SetDepthStencilSurface);
   D9DeviceLock lock = LockDevice();
   // Unlike RT slot 0, depth-stencil is allowed to be NULL; depth-
   // disabled rendering is a valid pipeline configuration. wined3d
@@ -6038,6 +6099,7 @@ MTLD3D9Device::SetDepthStencilSurface(IDirect3DSurface9 *pNewZStencil) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetDepthStencilSurface(IDirect3DSurface9 **ppZStencilSurface) {
+  D9_CALL(IDirect3DDevice9, GetDepthStencilSurface);
   D9DeviceLock lock = LockDevice();
   if (!ppZStencilSurface)
     return D3DERR_INVALIDCALL;
@@ -6055,6 +6117,7 @@ MTLD3D9Device::GetDepthStencilSurface(IDirect3DSurface9 **ppZStencilSurface) {
 // EndScene drains the batch below, matching that hint.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::BeginScene() {
+  D9_CALL(IDirect3DDevice9, BeginScene);
   D9DeviceLock lock = LockDevice();
   if (m_inScene)
     return D3DERR_INVALIDCALL;
@@ -6064,6 +6127,7 @@ MTLD3D9Device::BeginScene() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::EndScene() {
+  D9_CALL(IDirect3DDevice9, EndScene);
   D9DeviceLock lock = LockDevice();
   if (!m_inScene)
     return D3DERR_INVALIDCALL;
@@ -6095,6 +6159,7 @@ MTLD3D9Device::EndScene() {
 // clears the whole attachment), so they go through emitClippedClear.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::Clear(DWORD Count, const D3DRECT *pRects, DWORD Flags, D3DCOLOR Color, float Z, DWORD Stencil) {
+  D9_CALL(IDirect3DDevice9, Clear);
   D9DeviceLock lock = LockDevice();
   // DXVK: Count==0 with a non-null rect array is a documented
   // no-op, not an error.
@@ -6224,6 +6289,7 @@ MTLD3D9Device::Clear(DWORD Count, const D3DRECT *pRects, DWORD Flags, D3DCOLOR C
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX *pMatrix) {
+  D9_CALL(IDirect3DDevice9, SetTransform);
   // The index compaction and its table size live in d3d9_matrix.hpp
   // (transform_index / kTransformStateCount); the static_assert below keeps the
   // class-local storage count in step with that table.
@@ -6264,6 +6330,7 @@ MTLD3D9Device::SetTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX *pMatri
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetTransform(D3DTRANSFORMSTATETYPE State, D3DMATRIX *pMatrix) {
+  D9_CALL(IDirect3DDevice9, GetTransform);
   D9DeviceLock lock = LockDevice();
   if (!pMatrix)
     return D3DERR_INVALIDCALL;
@@ -6276,6 +6343,7 @@ MTLD3D9Device::GetTransform(D3DTRANSFORMSTATETYPE State, D3DMATRIX *pMatrix) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::MultiplyTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX *pMatrix) {
+  D9_CALL(IDirect3DDevice9, MultiplyTransform);
   D9DeviceLock lock = LockDevice();
   if (!pMatrix)
     return D3DERR_INVALIDCALL;
@@ -6297,6 +6365,7 @@ MTLD3D9Device::MultiplyTransform(D3DTRANSFORMSTATETYPE State, const D3DMATRIX *p
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetViewport(const D3DVIEWPORT9 *pViewport) {
+  D9_CALL(IDirect3DDevice9, SetViewport);
   D9DeviceLock lock = LockDevice();
   if (!pViewport)
     return D3DERR_INVALIDCALL;
@@ -6326,6 +6395,7 @@ MTLD3D9Device::SetViewport(const D3DVIEWPORT9 *pViewport) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetViewport(D3DVIEWPORT9 *pViewport) {
+  D9_CALL(IDirect3DDevice9, GetViewport);
   D9DeviceLock lock = LockDevice();
   if (!pViewport)
     return D3DERR_INVALIDCALL;
@@ -6339,6 +6409,7 @@ MTLD3D9Device::GetViewport(D3DVIEWPORT9 *pViewport) {
 // STUB_HR here would trip the ones that do not check the result.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetMaterial(const D3DMATERIAL9 *pMaterial) {
+  D9_CALL(IDirect3DDevice9, SetMaterial);
   D9DeviceLock lock = LockDevice();
   if (!pMaterial)
     return D3DERR_INVALIDCALL;
@@ -6359,6 +6430,7 @@ MTLD3D9Device::SetMaterial(const D3DMATERIAL9 *pMaterial) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetMaterial(D3DMATERIAL9 *pMaterial) {
+  D9_CALL(IDirect3DDevice9, GetMaterial);
   D9DeviceLock lock = LockDevice();
   if (!pMaterial)
     return D3DERR_INVALIDCALL;
@@ -6371,6 +6443,7 @@ MTLD3D9Device::GetMaterial(D3DMATERIAL9 *pMaterial) {
 // disabled. Negative Type is INVALIDCALL.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetLight(DWORD Index, const D3DLIGHT9 *pLight) {
+  D9_CALL(IDirect3DDevice9, SetLight);
   D9DeviceLock lock = LockDevice();
   if (!pLight)
     return D3DERR_INVALIDCALL;
@@ -6411,6 +6484,7 @@ MTLD3D9Device::SetLight(DWORD Index, const D3DLIGHT9 *pLight) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetLight(DWORD Index, D3DLIGHT9 *pLight) {
+  D9_CALL(IDirect3DDevice9, GetLight);
   D9DeviceLock lock = LockDevice();
   if (!pLight)
     return D3DERR_INVALIDCALL;
@@ -6431,6 +6505,7 @@ MTLD3D9Device::GetLight(DWORD Index, D3DLIGHT9 *pLight) {
 // apps can LightEnable(0, TRUE) without first SetLight'ing.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::LightEnable(DWORD Index, BOOL Enable) {
+  D9_CALL(IDirect3DDevice9, LightEnable);
   D9DeviceLock lock = LockDevice();
   // Recording targets the block's seed-captured vectors instead of
   // live state; the implicit default-light creation applies the same
@@ -6471,6 +6546,7 @@ MTLD3D9Device::LightEnable(DWORD Index, BOOL Enable) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetLightEnable(DWORD Index, BOOL *pEnable) {
+  D9_CALL(IDirect3DDevice9, GetLightEnable);
   D9DeviceLock lock = LockDevice();
   if (!pEnable)
     return D3DERR_INVALIDCALL;
@@ -6487,6 +6563,7 @@ MTLD3D9Device::GetLightEnable(DWORD Index, BOOL *pEnable) {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetClipPlane(DWORD Index, const float *pPlane) {
+  D9_CALL(IDirect3DDevice9, SetClipPlane);
   D9DeviceLock lock = LockDevice();
   if (!pPlane)
     return D3DERR_INVALIDCALL;
@@ -6512,6 +6589,7 @@ MTLD3D9Device::SetClipPlane(DWORD Index, const float *pPlane) {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetClipPlane(DWORD Index, float *pPlane) {
+  D9_CALL(IDirect3DDevice9, GetClipPlane);
   D9DeviceLock lock = LockDevice();
   if (!pPlane)
     return D3DERR_INVALIDCALL;
@@ -6544,6 +6622,7 @@ MTLD3D9Device::GetClipPlane(DWORD Index, float *pPlane) {
 //    if a real MSAA title ever needs the smoothing.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
+  D9_CALL(IDirect3DDevice9, SetRenderState);
   D9DeviceLock lock = LockDevice();
   // One of the hottest entry points in D3D9 (D3DX effect frameworks
   // set every state per draw); keep the caller-thread cost minimal.
@@ -6578,6 +6657,7 @@ MTLD3D9Device::SetRenderState(D3DRENDERSTATETYPE State, DWORD Value) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetRenderState(D3DRENDERSTATETYPE State, DWORD *pValue) {
+  D9_CALL(IDirect3DDevice9, GetRenderState);
   D9DeviceLock lock = LockDevice();
   if (!pValue)
     return D3DERR_INVALIDCALL;
@@ -6602,6 +6682,7 @@ MTLD3D9Device::GetRenderState(D3DRENDERSTATETYPE State, DWORD *pValue) {
 // category on Apply.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9 **ppSB) {
+  D9_CALL(IDirect3DDevice9, CreateStateBlock);
   D9DeviceLock lock = LockDevice();
   if (!ppSB)
     return D3DERR_INVALIDCALL;
@@ -6648,6 +6729,7 @@ MTLD3D9Device::CreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9 **p
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::BeginStateBlock() {
+  D9_CALL(IDirect3DDevice9, BeginStateBlock);
   D9DeviceLock lock = LockDevice();
   if (m_inStateBlockRecord)
     return D3DERR_INVALIDCALL;
@@ -6696,6 +6778,7 @@ MTLD3D9Device::BeginStateBlock() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::EndStateBlock(IDirect3DStateBlock9 **ppSB) {
+  D9_CALL(IDirect3DDevice9, EndStateBlock);
   D9DeviceLock lock = LockDevice();
   // End-without-Begin must leave the out-pointer untouched (wine
   // dlls/d3d9/tests/device.c test_begin_end_state_block asserts the
@@ -6722,6 +6805,7 @@ MTLD3D9Device::EndStateBlock(IDirect3DStateBlock9 **ppSB) {
 // round-trip the struct so a read-back is consistent, return D3D_OK.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetClipStatus(const D3DCLIPSTATUS9 *pClipStatus) {
+  D9_CALL(IDirect3DDevice9, SetClipStatus);
   D9DeviceLock lock = LockDevice();
   if (!pClipStatus)
     return D3DERR_INVALIDCALL;
@@ -6730,6 +6814,7 @@ MTLD3D9Device::SetClipStatus(const D3DCLIPSTATUS9 *pClipStatus) {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetClipStatus(D3DCLIPSTATUS9 *pClipStatus) {
+  D9_CALL(IDirect3DDevice9, GetClipStatus);
   D9DeviceLock lock = LockDevice();
   if (!pClipStatus)
     return D3DERR_INVALIDCALL;
@@ -6754,6 +6839,7 @@ texture_stage_to_slot(DWORD stage) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetTexture(DWORD Stage, IDirect3DBaseTexture9 **ppTexture) {
+  D9_CALL(IDirect3DDevice9, GetTexture);
   D9DeviceLock lock = LockDevice();
   if (!ppTexture)
     return D3DERR_INVALIDCALL;
@@ -6793,6 +6879,7 @@ MTLD3D9Device::GetTexture(DWORD Stage, IDirect3DBaseTexture9 **ppTexture) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) {
+  D9_CALL(IDirect3DDevice9, SetTexture);
   D9DeviceLock lock = LockDevice();
   uint32_t slot = texture_stage_to_slot(Stage);
   if (slot == UINT32_MAX)
@@ -6854,6 +6941,7 @@ MTLD3D9Device::SetTexture(DWORD Stage, IDirect3DBaseTexture9 *pTexture) {
 // Programmable-PS apps call even with active shaders; return OK (not E_NOTIMPL) matching DXVK.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD Value) {
+  D9_CALL(IDirect3DDevice9, SetTextureStageState);
   D9DeviceLock lock = LockDevice();
   // wined3d d3d9/device.c returns D3D_OK silently for out-of-range
   // Type and does NOT bound Stage at all; DXVK d3d9_device.cpp
@@ -6880,6 +6968,7 @@ MTLD3D9Device::SetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, 
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, DWORD *pValue) {
+  D9_CALL(IDirect3DDevice9, GetTextureStageState);
   D9DeviceLock lock = LockDevice();
   if (!pValue)
     return D3DERR_INVALIDCALL;
@@ -6897,6 +6986,7 @@ MTLD3D9Device::GetTextureStageState(DWORD Stage, D3DTEXTURESTAGESTATETYPE Type, 
 // is out of enum and rejected.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD *pValue) {
+  D9_CALL(IDirect3DDevice9, GetSamplerState);
   D9DeviceLock lock = LockDevice();
   if (!pValue)
     return D3DERR_INVALIDCALL;
@@ -6912,6 +7002,7 @@ MTLD3D9Device::GetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD *p
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Value) {
+  D9_CALL(IDirect3DDevice9, SetSamplerState);
   D9DeviceLock lock = LockDevice();
   // wined3d and DXVK size their sampler-state arrays at exactly
   // D3DSAMP_DMAPOFFSET + 1 and do not range-check Type, so a Type past the end
@@ -6945,6 +7036,7 @@ MTLD3D9Device::SetSamplerState(DWORD Sampler, D3DSAMPLERSTATETYPE Type, DWORD Va
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::ValidateDevice(DWORD *pNumPasses) {
+  D9_CALL(IDirect3DDevice9, ValidateDevice);
   D9DeviceLock lock = LockDevice();
   // Texture filtering has to be valid for every active fixed-function stage,
   // the way wined3d validates it (DXVK skips this and always returns OK). The
@@ -6986,6 +7078,7 @@ MTLD3D9Device::ValidateDevice(DWORD *pNumPasses) {
 // apps' init paths hr-check these.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetPaletteEntries(UINT PaletteNumber, const PALETTEENTRY *pEntries) {
+  D9_CALL(IDirect3DDevice9, SetPaletteEntries);
   D9DeviceLock lock = LockDevice();
   if (pEntries == nullptr)
     return D3DERR_INVALIDCALL;
@@ -7011,6 +7104,7 @@ MTLD3D9Device::SetPaletteEntries(UINT PaletteNumber, const PALETTEENTRY *pEntrie
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetPaletteEntries(UINT PaletteNumber, PALETTEENTRY *pEntries) {
+  D9_CALL(IDirect3DDevice9, GetPaletteEntries);
   D9DeviceLock lock = LockDevice();
   if (pEntries == nullptr)
     return D3DERR_INVALIDCALL;
@@ -7022,6 +7116,7 @@ MTLD3D9Device::GetPaletteEntries(UINT PaletteNumber, PALETTEENTRY *pEntries) {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetCurrentTexturePalette(UINT PaletteNumber) {
+  D9_CALL(IDirect3DDevice9, SetCurrentTexturePalette);
   D9DeviceLock lock = LockDevice();
   // DXVK note: when FFP P8 sampler lands, this should kick a texture
   // re-translate pass for all active paletted stages. Storage-only
@@ -7031,6 +7126,7 @@ MTLD3D9Device::SetCurrentTexturePalette(UINT PaletteNumber) {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetCurrentTexturePalette(UINT *PaletteNumber) {
+  D9_CALL(IDirect3DDevice9, GetCurrentTexturePalette);
   D9DeviceLock lock = LockDevice();
   if (PaletteNumber == nullptr)
     return D3DERR_INVALIDCALL;
@@ -7039,6 +7135,7 @@ MTLD3D9Device::GetCurrentTexturePalette(UINT *PaletteNumber) {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetScissorRect(const RECT *pRect) {
+  D9_CALL(IDirect3DDevice9, SetScissorRect);
   D9DeviceLock lock = LockDevice();
   if (!pRect)
     return D3DERR_INVALIDCALL;
@@ -7057,6 +7154,7 @@ MTLD3D9Device::SetScissorRect(const RECT *pRect) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetScissorRect(RECT *pRect) {
+  D9_CALL(IDirect3DDevice9, GetScissorRect);
   D9DeviceLock lock = LockDevice();
   if (!pRect)
     return D3DERR_INVALIDCALL;
@@ -7065,6 +7163,7 @@ MTLD3D9Device::GetScissorRect(RECT *pRect) {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetSoftwareVertexProcessing(BOOL bSoftware) {
+  D9_CALL(IDirect3DDevice9, SetSoftwareVertexProcessing);
   D9DeviceLock lock = LockDevice();
   // Pure state echo (DXVK D3D9DeviceEx::SetSoftwareVertexProcessing): the mode
   // has no effect on Metal (always hardware-VP), but the value must round-trip
@@ -7089,6 +7188,7 @@ MTLD3D9Device::SetSoftwareVertexProcessing(BOOL bSoftware) {
 }
 BOOL STDMETHODCALLTYPE
 MTLD3D9Device::GetSoftwareVertexProcessing() {
+  D9_CALL(IDirect3DDevice9, GetSoftwareVertexProcessing);
   D9DeviceLock lock = LockDevice();
   // Seeded TRUE on a pure-SWVP device (MSDN + DXVK m_isSWVP); tracks
   // SetSoftwareVertexProcessing thereafter.
@@ -7096,6 +7196,7 @@ MTLD3D9Device::GetSoftwareVertexProcessing() {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetNPatchMode(float nSegments) {
+  D9_CALL(IDirect3DDevice9, SetNPatchMode);
   D9DeviceLock lock = LockDevice();
   // Pure device state (DXVK stores m_state.nPatchSegments, wined3d
   // set_npatch_mode): native records the segment count regardless of
@@ -7107,6 +7208,7 @@ MTLD3D9Device::SetNPatchMode(float nSegments) {
 }
 float STDMETHODCALLTYPE
 MTLD3D9Device::GetNPatchMode() {
+  D9_CALL(IDirect3DDevice9, GetNPatchMode);
   D9DeviceLock lock = LockDevice();
   return m_nPatchMode;
 }
@@ -7141,6 +7243,7 @@ MTLD3D9Device::swvpDrawGateRejects() {
 // Per-(RT,DS) encoder batching avoids tile-store/load; BatchedDraw POD-COW is DXVK m_dirty analogue.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::DrawPrimitive(D3DPRIMITIVETYPE PrimitiveType, UINT StartVertex, UINT PrimitiveCount) {
+  D9_CALL(IDirect3DDevice9, DrawPrimitive);
   D9DeviceLock lock = LockDevice();
   // Caller-thread cost is queue-into-chunk only; encode/dispatch happen on the encode thread.
   // wined3d gates on vertex_declaration only; no BeginScene gate; stream 0 not required (multi-stream use
@@ -7196,6 +7299,7 @@ MTLD3D9Device::DrawIndexedPrimitive(
     D3DPRIMITIVETYPE PrimitiveType, INT BaseVertexIndex, UINT MinVertexIndex, UINT NumVertices, UINT StartIndex,
     UINT PrimitiveCount
 ) {
+  D9_CALL(IDirect3DDevice9, DrawIndexedPrimitive);
   D9DeviceLock lock = LockDevice();
   // wined3d d3d9_device_DrawIndexedPrimitive (device.c) gates on
   // vertex_declaration AND index_buffer; no BeginScene gate, no
@@ -10904,6 +11008,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::DrawPrimitiveUP(
     D3DPRIMITIVETYPE PrimitiveType, UINT PrimitiveCount, const void *pVertexStreamZeroData, UINT VertexStreamZeroStride
 ) {
+  D9_CALL(IDirect3DDevice9, DrawPrimitiveUP);
   D9DeviceLock lock = LockDevice();
   // wined3d device.c gates on vertex_declaration only; no
   // BeginScene gate. UP-draws on loading screens / OSD overlays
@@ -11021,6 +11126,7 @@ MTLD3D9Device::DrawIndexedPrimitiveUP(
     D3DPRIMITIVETYPE PrimitiveType, UINT MinVertexIndex, UINT NumVertices, UINT PrimitiveCount, const void *pIndexData,
     D3DFORMAT IndexDataFormat, const void *pVertexStreamZeroData, UINT VertexStreamZeroStride
 ) {
+  D9_CALL(IDirect3DDevice9, DrawIndexedPrimitiveUP);
   D9DeviceLock lock = LockDevice();
   // wined3d device.c gates on vertex_declaration only; no
   // BeginScene gate. Same rationale as DrawPrimitiveUP above.
@@ -11167,6 +11273,7 @@ MTLD3D9Device::ProcessVertices(
     UINT SrcStartIndex, UINT DestIndex, UINT VertexCount, IDirect3DVertexBuffer9 *pDestBuffer,
     IDirect3DVertexDeclaration9 *pVertexDecl, DWORD Flags
 ) {
+  D9_CALL(IDirect3DDevice9, ProcessVertices);
   D9DeviceLock lock = LockDevice();
   // CPU vertex processing, ported from wined3d process_vertices_strided
   // (dlls/wined3d/device.c): the source vertices' object-space position is
@@ -11414,6 +11521,7 @@ MTLD3D9Device::ProcessVertices(
 // returned count matches wined3d.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateVertexDeclaration(const D3DVERTEXELEMENT9 *pVertexElements, IDirect3DVertexDeclaration9 **ppDecl) {
+  D9_CALL(IDirect3DDevice9, CreateVertexDeclaration);
   D9DeviceLock lock = LockDevice();
   if (!ppDecl)
     return D3DERR_INVALIDCALL;
@@ -11438,6 +11546,7 @@ MTLD3D9Device::CreateVertexDeclaration(const D3DVERTEXELEMENT9 *pVertexElements,
 // as SetTexture / SetRenderTarget; cross-device check via deviceRaw().
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) {
+  D9_CALL(IDirect3DDevice9, SetVertexDeclaration);
   D9DeviceLock lock = LockDevice();
   auto *decl = static_cast<MTLD3D9VertexDeclaration *>(pDecl);
   if (decl && decl->deviceRaw() != this)
@@ -11468,6 +11577,7 @@ MTLD3D9Device::SetVertexDeclaration(IDirect3DVertexDeclaration9 *pDecl) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetVertexDeclaration(IDirect3DVertexDeclaration9 **ppDecl) {
+  D9_CALL(IDirect3DDevice9, GetVertexDeclaration);
   D9DeviceLock lock = LockDevice();
   if (!ppDecl)
     return D3DERR_INVALIDCALL;
@@ -11507,6 +11617,7 @@ MTLD3D9Device::getOrCreateFvfDecl(DWORD FVF) {
 // SetFVF and SetVertexDeclaration alias same slot; last call wins.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetFVF(DWORD FVF) {
+  D9_CALL(IDirect3DDevice9, SetFVF);
   D9DeviceLock lock = LockDevice();
   // FVF=0 is not a valid FVF: wined3d (device.c) and DXVK (d3d9_device.cpp)
   // both return D3D_OK without touching any state. Leaving m_fvf and the bound
@@ -11540,6 +11651,7 @@ MTLD3D9Device::SetFVF(DWORD FVF) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetFVF(DWORD *pFVF) {
+  D9_CALL(IDirect3DDevice9, GetFVF);
   D9DeviceLock lock = LockDevice();
   if (!pFVF)
     return D3DERR_INVALIDCALL;
@@ -11550,6 +11662,7 @@ MTLD3D9Device::GetFVF(DWORD *pFVF) {
 // Length via shader_bytecode_dword_count helper (not full decoder; swappable later).
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateVertexShader(const DWORD *pFunction, IDirect3DVertexShader9 **ppShader) {
+  D9_CALL(IDirect3DDevice9, CreateVertexShader);
   D9DeviceLock lock = LockDevice();
   if (!ppShader)
     return D3DERR_INVALIDCALL;
@@ -11593,6 +11706,7 @@ MTLD3D9Device::CreateVertexShader(const DWORD *pFunction, IDirect3DVertexShader9
 // vertex processing).
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetVertexShader(IDirect3DVertexShader9 *pShader) {
+  D9_CALL(IDirect3DDevice9, SetVertexShader);
   D9DeviceLock lock = LockDevice();
   auto *shader = static_cast<MTLD3D9VertexShader *>(pShader);
   if (shader && shader->deviceRaw() != this)
@@ -11622,6 +11736,7 @@ MTLD3D9Device::SetVertexShader(IDirect3DVertexShader9 *pShader) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetVertexShader(IDirect3DVertexShader9 **ppShader) {
+  D9_CALL(IDirect3DDevice9, GetVertexShader);
   D9DeviceLock lock = LockDevice();
   if (!ppShader)
     return D3DERR_INVALIDCALL;
@@ -11641,6 +11756,7 @@ MTLD3D9Device::GetVertexShader(IDirect3DVertexShader9 **ppShader) {
 // normalises to TRUE/FALSE on store and Get is a pass-through.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetVertexShaderConstantF(UINT StartRegister, const float *pConstantData, UINT Vector4fCount) {
+  D9_CALL(IDirect3DDevice9, SetVertexShaderConstantF);
   D9DeviceLock lock = LockDevice();
   if (StartRegister > std::numeric_limits<UINT>::max() - Vector4fCount)
     return D3DERR_INVALIDCALL;
@@ -11720,6 +11836,7 @@ MTLD3D9Device::SetVertexShaderConstantF(UINT StartRegister, const float *pConsta
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetVertexShaderConstantF(UINT StartRegister, float *pConstantData, UINT Vector4fCount) {
+  D9_CALL(IDirect3DDevice9, GetVertexShaderConstantF);
   D9DeviceLock lock = LockDevice();
   if (StartRegister > std::numeric_limits<UINT>::max() - Vector4fCount)
     return D3DERR_INVALIDCALL;
@@ -11750,6 +11867,7 @@ MTLD3D9Device::GetVertexShaderConstantF(UINT StartRegister, float *pConstantData
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetVertexShaderConstantI(UINT StartRegister, const int *pConstantData, UINT Vector4iCount) {
+  D9_CALL(IDirect3DDevice9, SetVertexShaderConstantI);
   D9DeviceLock lock = LockDevice();
   if (StartRegister > std::numeric_limits<UINT>::max() - Vector4iCount)
     return D3DERR_INVALIDCALL;
@@ -11774,6 +11892,7 @@ MTLD3D9Device::SetVertexShaderConstantI(UINT StartRegister, const int *pConstant
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetVertexShaderConstantI(UINT StartRegister, int *pConstantData, UINT Vector4iCount) {
+  D9_CALL(IDirect3DDevice9, GetVertexShaderConstantI);
   D9DeviceLock lock = LockDevice();
   if (StartRegister > std::numeric_limits<UINT>::max() - Vector4iCount)
     return D3DERR_INVALIDCALL;
@@ -11789,6 +11908,7 @@ MTLD3D9Device::GetVertexShaderConstantI(UINT StartRegister, int *pConstantData, 
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetVertexShaderConstantB(UINT StartRegister, const BOOL *pConstantData, UINT BoolCount) {
+  D9_CALL(IDirect3DDevice9, SetVertexShaderConstantB);
   D9DeviceLock lock = LockDevice();
   if (StartRegister > std::numeric_limits<UINT>::max() - BoolCount)
     return D3DERR_INVALIDCALL;
@@ -11823,6 +11943,7 @@ MTLD3D9Device::SetVertexShaderConstantB(UINT StartRegister, const BOOL *pConstan
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetVertexShaderConstantB(UINT StartRegister, BOOL *pConstantData, UINT BoolCount) {
+  D9_CALL(IDirect3DDevice9, GetVertexShaderConstantB);
   D9DeviceLock lock = LockDevice();
   if (StartRegister > std::numeric_limits<UINT>::max() - BoolCount)
     return D3DERR_INVALIDCALL;
@@ -11843,6 +11964,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetStreamSource(
     UINT StreamNumber, IDirect3DVertexBuffer9 *pStreamData, UINT OffsetInBytes, UINT Stride
 ) {
+  D9_CALL(IDirect3DDevice9, SetStreamSource);
   D9DeviceLock lock = LockDevice();
   if (StreamNumber >= D3D9_MAX_VERTEX_STREAMS)
     return D3DERR_INVALIDCALL;
@@ -11897,6 +12019,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetStreamSource(
     UINT StreamNumber, IDirect3DVertexBuffer9 **ppStreamData, UINT *pOffsetInBytes, UINT *pStride
 ) {
+  D9_CALL(IDirect3DDevice9, GetStreamSource);
   D9DeviceLock lock = LockDevice();
   // wined3d device.c; buffer out-pointer must be non-null;
   // offset is optional, stride is required. Match that.
@@ -11925,6 +12048,7 @@ MTLD3D9Device::GetStreamSource(
 // (the spec default) reverts the stream to per-vertex stepping.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetStreamSourceFreq(UINT StreamNumber, UINT Setting) {
+  D9_CALL(IDirect3DDevice9, SetStreamSourceFreq);
   D9DeviceLock lock = LockDevice();
   if (StreamNumber >= D3D9_MAX_VERTEX_STREAMS)
     return D3DERR_INVALIDCALL;
@@ -11952,6 +12076,7 @@ MTLD3D9Device::SetStreamSourceFreq(UINT StreamNumber, UINT Setting) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetStreamSourceFreq(UINT StreamNumber, UINT *pSetting) {
+  D9_CALL(IDirect3DDevice9, GetStreamSourceFreq);
   D9DeviceLock lock = LockDevice();
   if (StreamNumber >= D3D9_MAX_VERTEX_STREAMS || !pSetting)
     return D3DERR_INVALIDCALL;
@@ -11964,6 +12089,7 @@ MTLD3D9Device::GetStreamSourceFreq(UINT StreamNumber, UINT *pSetting) {
 // switching to a different draw-call shape).
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetIndices(IDirect3DIndexBuffer9 *pIndexData) {
+  D9_CALL(IDirect3DDevice9, SetIndices);
   D9DeviceLock lock = LockDevice();
   auto *buffer = static_cast<MTLD3D9IndexBuffer *>(pIndexData);
   if (buffer && buffer->deviceRaw() != this)
@@ -11985,6 +12111,7 @@ MTLD3D9Device::SetIndices(IDirect3DIndexBuffer9 *pIndexData) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetIndices(IDirect3DIndexBuffer9 **ppIndexData) {
+  D9_CALL(IDirect3DDevice9, GetIndices);
   D9DeviceLock lock = LockDevice();
   if (!ppIndexData)
     return D3DERR_INVALIDCALL;
@@ -11999,6 +12126,7 @@ MTLD3D9Device::GetIndices(IDirect3DIndexBuffer9 **ppIndexData) {
 // mismatch reject (DXVK d3d9_device.cpp).
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreatePixelShader(const DWORD *pFunction, IDirect3DPixelShader9 **ppShader) {
+  D9_CALL(IDirect3DDevice9, CreatePixelShader);
   D9DeviceLock lock = LockDevice();
   if (!ppShader)
     return D3DERR_INVALIDCALL;
@@ -12026,6 +12154,7 @@ MTLD3D9Device::CreatePixelShader(const DWORD *pFunction, IDirect3DPixelShader9 *
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetPixelShader(IDirect3DPixelShader9 *pShader) {
+  D9_CALL(IDirect3DDevice9, SetPixelShader);
   D9DeviceLock lock = LockDevice();
   auto *shader = static_cast<MTLD3D9PixelShader *>(pShader);
   if (shader && shader->deviceRaw() != this)
@@ -12047,6 +12176,7 @@ MTLD3D9Device::SetPixelShader(IDirect3DPixelShader9 *pShader) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetPixelShader(IDirect3DPixelShader9 **ppShader) {
+  D9_CALL(IDirect3DDevice9, GetPixelShader);
   D9DeviceLock lock = LockDevice();
   if (!ppShader)
     return D3DERR_INVALIDCALL;
@@ -12061,6 +12191,7 @@ MTLD3D9Device::GetPixelShader(IDirect3DPixelShader9 **ppShader) {
 // [0..31] of F but the API surface uses the SM3 limit.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetPixelShaderConstantF(UINT StartRegister, const float *pConstantData, UINT Vector4fCount) {
+  D9_CALL(IDirect3DDevice9, SetPixelShaderConstantF);
   D9DeviceLock lock = LockDevice();
   if (StartRegister > std::numeric_limits<UINT>::max() - Vector4fCount)
     return D3DERR_INVALIDCALL;
@@ -12107,6 +12238,7 @@ MTLD3D9Device::SetPixelShaderConstantF(UINT StartRegister, const float *pConstan
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetPixelShaderConstantF(UINT StartRegister, float *pConstantData, UINT Vector4fCount) {
+  D9_CALL(IDirect3DDevice9, GetPixelShaderConstantF);
   D9DeviceLock lock = LockDevice();
   if (StartRegister > std::numeric_limits<UINT>::max() - Vector4fCount)
     return D3DERR_INVALIDCALL;
@@ -12122,6 +12254,7 @@ MTLD3D9Device::GetPixelShaderConstantF(UINT StartRegister, float *pConstantData,
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetPixelShaderConstantI(UINT StartRegister, const int *pConstantData, UINT Vector4iCount) {
+  D9_CALL(IDirect3DDevice9, SetPixelShaderConstantI);
   D9DeviceLock lock = LockDevice();
   if (StartRegister > std::numeric_limits<UINT>::max() - Vector4iCount)
     return D3DERR_INVALIDCALL;
@@ -12146,6 +12279,7 @@ MTLD3D9Device::SetPixelShaderConstantI(UINT StartRegister, const int *pConstantD
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetPixelShaderConstantI(UINT StartRegister, int *pConstantData, UINT Vector4iCount) {
+  D9_CALL(IDirect3DDevice9, GetPixelShaderConstantI);
   D9DeviceLock lock = LockDevice();
   if (StartRegister > std::numeric_limits<UINT>::max() - Vector4iCount)
     return D3DERR_INVALIDCALL;
@@ -12161,6 +12295,7 @@ MTLD3D9Device::GetPixelShaderConstantI(UINT StartRegister, int *pConstantData, U
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetPixelShaderConstantB(UINT StartRegister, const BOOL *pConstantData, UINT BoolCount) {
+  D9_CALL(IDirect3DDevice9, SetPixelShaderConstantB);
   D9DeviceLock lock = LockDevice();
   if (StartRegister > std::numeric_limits<UINT>::max() - BoolCount)
     return D3DERR_INVALIDCALL;
@@ -12192,6 +12327,7 @@ MTLD3D9Device::SetPixelShaderConstantB(UINT StartRegister, const BOOL *pConstant
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetPixelShaderConstantB(UINT StartRegister, BOOL *pConstantData, UINT BoolCount) {
+  D9_CALL(IDirect3DDevice9, GetPixelShaderConstantB);
   D9DeviceLock lock = LockDevice();
   if (StartRegister > std::numeric_limits<UINT>::max() - BoolCount)
     return D3DERR_INVALIDCALL;
@@ -12212,6 +12348,7 @@ MTLD3D9Device::GetPixelShaderConstantB(UINT StartRegister, BOOL *pConstantData, 
 // INVALIDCALL because deleting an unknown handle is per-spec illegal.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::DrawRectPatch(UINT Handle, const float *pNumSegs, const D3DRECTPATCH_INFO *pRectPatchInfo) {
+  D9_CALL(IDirect3DDevice9, DrawRectPatch);
   D9DeviceLock lock = LockDevice();
   (void)Handle;
   (void)pNumSegs;
@@ -12223,6 +12360,7 @@ MTLD3D9Device::DrawRectPatch(UINT Handle, const float *pNumSegs, const D3DRECTPA
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::DrawTriPatch(UINT Handle, const float *pNumSegs, const D3DTRIPATCH_INFO *pTriPatchInfo) {
+  D9_CALL(IDirect3DDevice9, DrawTriPatch);
   D9DeviceLock lock = LockDevice();
   (void)Handle;
   (void)pNumSegs;
@@ -12234,6 +12372,7 @@ MTLD3D9Device::DrawTriPatch(UINT Handle, const float *pNumSegs, const D3DTRIPATC
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::DeletePatch(UINT Handle) {
+  D9_CALL(IDirect3DDevice9, DeletePatch);
   D9DeviceLock lock = LockDevice();
   (void)Handle;
   // No patch storage today, so any Handle is "unknown"; D3DERR_INVALIDCALL
@@ -12250,6 +12389,7 @@ MTLD3D9Device::DeletePatch(UINT Handle) {
 // IDirect3DQuery9.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery) {
+  D9_CALL(IDirect3DDevice9, CreateQuery);
   D9DeviceLock lock = LockDevice();
   // ppQuery=NULL is a support probe. The out pointer is written only on
   // success: an unsupported type returns NOTAVAILABLE and leaves the caller's
@@ -12267,6 +12407,7 @@ MTLD3D9Device::CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetConvolutionMonoKernel(UINT, UINT, float *, float *) {
+  D9_CALL(IDirect3DDevice9Ex, SetConvolutionMonoKernel);
   D9DeviceLock lock = LockDevice();
   // Gated by D3DPTFILTERCAPS_CONVOLUTIONMONO, which neither DXVK nor dxmt
   // advertises, so the per-spec answer for a caller that asked anyway is
@@ -12279,6 +12420,7 @@ MTLD3D9Device::ComposeRects(
     IDirect3DSurface9 *pSrc, IDirect3DSurface9 *pDst, IDirect3DVertexBuffer9 *pSrcRectDescs, UINT NumRects,
     IDirect3DVertexBuffer9 *pDstRectDescs, D3DCOMPOSERECTSOP Operation, INT Xoffset, INT Yoffset
 ) {
+  D9_CALL(IDirect3DDevice9Ex, ComposeRects);
   D9DeviceLock lock = LockDevice();
   // MSDN: any of the four surface/buffer pointers null is INVALIDCALL.
   // DXVK enforces. Without this gate an app passing nulls; even a
@@ -12304,13 +12446,15 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::PresentEx(
     const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags
 ) {
+  D9_CALL_PRESENT(IDirect3DDevice9Ex, PresentEx);
   D9DeviceLock lock = LockDevice();
   // An Ex present on an unfocused fullscreen chain reports occlusion
   // without presenting (wine d3d9 device.c returns it off the device
   // state ahead of the swapchain present).
   if (m_implicitSwapChain && !m_implicitSwapChain->windowed() && !fullscreenOwnsDisplay())
     return S_PRESENT_OCCLUDED;
-  return m_implicitSwapChain->Present(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
+  // Uncounted forward (MYIOSDECK spec 07 clarification 3).
+  return m_implicitSwapChain->presentImpl(pSourceRect, pDestRect, hDestWindowOverride, pDirtyRegion, dwFlags);
 }
 // Device9Ex bookkeeping returns. Pre-Reset / pre-frame-pacing dxmt
 // has nothing meaningful to back any of these with; Metal doesn't
@@ -12322,6 +12466,7 @@ MTLD3D9Device::PresentEx(
 // others accept and discard, because nothing downstream can act on them.
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetGPUThreadPriority(INT *pPriority) {
+  D9_CALL(IDirect3DDevice9Ex, GetGPUThreadPriority);
   D9DeviceLock lock = LockDevice();
   if (!pPriority)
     return D3DERR_INVALIDCALL;
@@ -12330,6 +12475,7 @@ MTLD3D9Device::GetGPUThreadPriority(INT *pPriority) {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetGPUThreadPriority(INT Priority) {
+  D9_CALL(IDirect3DDevice9Ex, SetGPUThreadPriority);
   D9DeviceLock lock = LockDevice();
   // MSDN: Priority must be in [-7, 7]; out-of-range is INVALIDCALL. Metal has
   // no GPU-thread-priority control, so validate per MSDN and no-op. wined3d
@@ -12342,6 +12488,7 @@ MTLD3D9Device::SetGPUThreadPriority(INT Priority) {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::WaitForVBlank(UINT iSwapChain) {
+  D9_CALL(IDirect3DDevice9Ex, WaitForVBlank);
   D9DeviceLock lock = LockDevice();
   if (iSwapChain != 0)
     return D3DERR_INVALIDCALL;
@@ -12349,6 +12496,7 @@ MTLD3D9Device::WaitForVBlank(UINT iSwapChain) {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CheckResourceResidency(IDirect3DResource9 **pResourceArray, UINT32 NumResources) {
+  D9_CALL(IDirect3DDevice9Ex, CheckResourceResidency);
   D9DeviceLock lock = LockDevice();
   // Per MSDN: D3DERR_INVALIDCALL if pResourceArray is NULL while NumResources
   // is non-zero. DXVK returns D3D_OK regardless, so this is stricter than the
@@ -12363,6 +12511,7 @@ MTLD3D9Device::CheckResourceResidency(IDirect3DResource9 **pResourceArray, UINT3
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetMaximumFrameLatency(UINT MaxLatency) {
+  D9_CALL(IDirect3DDevice9Ex, SetMaximumFrameLatency);
   D9DeviceLock lock = LockDevice();
   if (MaxLatency > 30)
     return D3DERR_INVALIDCALL;
@@ -12377,6 +12526,7 @@ MTLD3D9Device::SetMaximumFrameLatency(UINT MaxLatency) {
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetMaximumFrameLatency(UINT *pMaxLatency) {
+  D9_CALL(IDirect3DDevice9Ex, GetMaximumFrameLatency);
   D9DeviceLock lock = LockDevice();
   if (!pMaxLatency)
     return D3DERR_INVALIDCALL;
@@ -12470,6 +12620,7 @@ MTLD3D9Device::occlusionStatus(HWND hWindow) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CheckDeviceState(HWND hDestinationWindow) {
+  D9_CALL(IDirect3DDevice9Ex, CheckDeviceState);
   D9DeviceLock lock = LockDevice();
   // The caller's null stays null: wine compares it raw against the device
   // window, so a null reads as some other window rather than as this one.
@@ -12482,6 +12633,7 @@ MTLD3D9Device::CreateRenderTargetEx(
     UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Lockable,
     IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle, DWORD Usage
 ) {
+  D9_CALL(IDirect3DDevice9Ex, CreateRenderTargetEx);
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
     return D3DERR_INVALIDCALL;
@@ -12505,6 +12657,7 @@ MTLD3D9Device::CreateOffscreenPlainSurfaceEx(
     UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle,
     DWORD Usage
 ) {
+  D9_CALL(IDirect3DDevice9Ex, CreateOffscreenPlainSurfaceEx);
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
     return D3DERR_INVALIDCALL;
@@ -12524,6 +12677,7 @@ MTLD3D9Device::CreateDepthStencilSurfaceEx(
     UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality, BOOL Discard,
     IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle, DWORD Usage
 ) {
+  D9_CALL(IDirect3DDevice9Ex, CreateDepthStencilSurfaceEx);
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
     return D3DERR_INVALIDCALL;
@@ -12546,6 +12700,7 @@ MTLD3D9Device::CreateDepthStencilSurfaceEx(
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::ResetEx(D3DPRESENT_PARAMETERS *pPresentationParameters, D3DDISPLAYMODEEX *pFullscreenDisplayMode) {
+  D9_CALL(IDirect3DDevice9Ex, ResetEx);
   D9DeviceLock lock = LockDevice();
   if (!m_isEx)
     return D3DERR_INVALIDCALL;
@@ -12566,6 +12721,7 @@ MTLD3D9Device::ResetEx(D3DPRESENT_PARAMETERS *pPresentationParameters, D3DDISPLA
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetDisplayModeEx(UINT iSwapChain, D3DDISPLAYMODEEX *pMode, D3DDISPLAYROTATION *pRotation) {
+  D9_CALL(IDirect3DDevice9Ex, GetDisplayModeEx);
   D9DeviceLock lock = LockDevice();
   if (iSwapChain != 0)
     return D3DERR_INVALIDCALL;

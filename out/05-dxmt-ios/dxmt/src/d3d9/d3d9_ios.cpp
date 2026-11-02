@@ -56,7 +56,7 @@ D9MirrorCacheBudget() {
 }
 
 void
-LogD9IosDevice(bool bc_emulated) {
+LogD9IosDevice(bool bc_emulated, bool call_stats) {
   const D9IosConfig &c = D9Ios();
   Logger::info(str::format(
       "d3d9 device: bc_decode=", bc_emulated ? 1 : 0, " upload_commit_mb=", c.upload_commit_bytes >> 20,
@@ -64,7 +64,8 @@ LogD9IosDevice(bool bc_emulated) {
       " batch_readback=", c.batch_readback ? 1 : 0, " query_adaptive=", c.query_adaptive ? 1 : 0,
       " virtual_mode=", c.virtual_mode ? 1 : 0, " canonical_blend=", c.canonical_blend ? 1 : 0,
       " binding_prune=", c.binding_prune ? 1 : 0, " shader_prune=", c.shader_prune ? 1 : 0,
-      " aniso_limit=", c.aniso_limit, " small_mirror_cache=", c.small_mirror_cache ? 1 : 0
+      " aniso_limit=", c.aniso_limit, " small_mirror_cache=", c.small_mirror_cache ? 1 : 0,
+      " call_stats=", call_stats ? 1 : 0
   ));
 }
 

@@ -37,6 +37,7 @@ MTLD3D9Query::endOcclusionIfActive() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9Query::AddRef() {
+  D9_CALL(IDirect3DQuery9, AddRef);
   ULONG ref = ComObject::AddRef();
   if (ref == 1)
     m_device->AddRef();
@@ -45,6 +46,7 @@ MTLD3D9Query::AddRef() {
 
 ULONG STDMETHODCALLTYPE
 MTLD3D9Query::Release() {
+  D9_CALL(IDirect3DQuery9, Release);
   // D3D9 Release-at-0 clamp: handed out at public 0 while self-pinned / bound
   // (DXVK clamps every device child); guard the underflow before the decrement.
   if (m_refCount.load() == 0)
@@ -76,6 +78,7 @@ MTLD3D9Query::Release() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Query::QueryInterface(REFIID riid, void **ppvObject) {
+  D9_CALL(IDirect3DQuery9, QueryInterface);
   if (!ppvObject)
     return E_POINTER;
   *ppvObject = nullptr;
@@ -90,6 +93,7 @@ MTLD3D9Query::QueryInterface(REFIID riid, void **ppvObject) {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Query::GetDevice(IDirect3DDevice9 **ppDevice) {
+  D9_CALL(IDirect3DQuery9, GetDevice);
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppDevice)
     return D3DERR_INVALIDCALL;
@@ -99,12 +103,14 @@ MTLD3D9Query::GetDevice(IDirect3DDevice9 **ppDevice) {
 
 D3DQUERYTYPE STDMETHODCALLTYPE
 MTLD3D9Query::GetType() {
+  D9_CALL(IDirect3DQuery9, GetType);
   D9DeviceLock lock = m_device->LockDevice();
   return m_type;
 }
 
 DWORD STDMETHODCALLTYPE
 MTLD3D9Query::GetDataSize() {
+  D9_CALL(IDirect3DQuery9, GetDataSize);
   // MYIOSDECK spec 07 C7: no device lock; m_type is fixed at creation.
   // Pure per-type table. Getting these wrong
   // corrupts memory when the app passes a buffer sized to the documented type.
@@ -113,6 +119,7 @@ MTLD3D9Query::GetDataSize() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Query::Issue(DWORD dwIssueFlags) {
+  D9_CALL(IDirect3DQuery9, Issue);
   D9DeviceLock lock = m_device->LockDevice();
   // D3DISSUE_BEGIN starts a query (only OCCLUSION uses BEGIN; EVENT
   // and TIMESTAMP are END-only). D3DISSUE_END signals the GPU to
@@ -207,6 +214,7 @@ MTLD3D9Query::parkSeqForPoll() {
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Query::GetData(void *pData, DWORD dwSize, DWORD dwGetDataFlags) {
+  D9_CALL(IDirect3DQuery9, GetData);
   // MYIOSDECK spec 07 C7: from the third not-ready poll of a run, park the
   // thread for up to 100 us on the query's sequence number with the device lock
   // released; if the wait succeeds, take the lock again and return the result.
@@ -228,7 +236,9 @@ MTLD3D9Query::GetData(void *pData, DWORD dwSize, DWORD dwGetDataFlags) {
 
 HRESULT
 MTLD3D9Query::getDataImpl(void *pData, DWORD dwSize, DWORD dwGetDataFlags) {
-  const DWORD data_size = GetDataSize();
+  // GetDataSize's table directly: the public method would count a call the
+  // app didn't make (MYIOSDECK spec 07 clarification 3).
+  const DWORD data_size = d3d9_query_data_size(m_type);
 
   // wined3d query.c state machine, surfaced through dlls/d3d9 query.c GetData.
   // QUERY_BUILDING (BEGIN issued, END pending): the result window is still

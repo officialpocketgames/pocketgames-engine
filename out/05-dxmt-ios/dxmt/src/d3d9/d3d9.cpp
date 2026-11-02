@@ -2,7 +2,9 @@
 // From David Acevedo's DXMT fork (github.com/dacevedo12/dxmt), tag v0.4-d3d9,
 // commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
+// Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
 #include "d3d9.h"
+#include "d3d9_call_stats.hpp" // MYIOSDECK spec 07 clarification 3
 #include "d3d9_interface.hpp"
 #include "log/log.hpp"
 
@@ -23,6 +25,7 @@ DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
 
 extern "C" IDirect3D9 *WINAPI
 Direct3DCreate9(UINT SDKVersion) {
+  D9_CALL_EXPORT(Direct3DCreate9);
   auto *iface = new dxmt::MTLD3D9Interface(SDKVersion, /*isEx=*/false);
   iface->AddRef();
   return static_cast<IDirect3D9 *>(iface);
@@ -30,6 +33,7 @@ Direct3DCreate9(UINT SDKVersion) {
 
 extern "C" HRESULT WINAPI
 Direct3DCreate9Ex(UINT SDKVersion, IDirect3D9Ex **ppD3D) {
+  D9_CALL_EXPORT(Direct3DCreate9Ex);
   if (!ppD3D)
     return D3DERR_INVALIDCALL;
   auto *iface = new dxmt::MTLD3D9Interface(SDKVersion, /*isEx=*/true);
@@ -49,31 +53,44 @@ static std::atomic<int> s_d3dperfEventLevel{0};
 
 extern "C" int WINAPI
 D3DPERF_BeginEvent(D3DCOLOR, const WCHAR *) {
+  D9_CALL_EXPORT(D3DPERF_BeginEvent);
   return s_d3dperfEventLevel.fetch_add(1, std::memory_order_relaxed);
 }
 extern "C" int WINAPI
 D3DPERF_EndEvent(void) {
+  D9_CALL_EXPORT(D3DPERF_EndEvent);
   return s_d3dperfEventLevel.fetch_sub(1, std::memory_order_relaxed) - 1;
 }
 extern "C" DWORD WINAPI
 D3DPERF_GetStatus(void) {
+  D9_CALL_EXPORT(D3DPERF_GetStatus);
   return 0;
 }
 extern "C" BOOL WINAPI
 D3DPERF_QueryRepeatFrame(void) {
+  D9_CALL_EXPORT(D3DPERF_QueryRepeatFrame);
   return FALSE;
 }
 extern "C" void WINAPI
-D3DPERF_SetMarker(D3DCOLOR, const WCHAR *) {}
+D3DPERF_SetMarker(D3DCOLOR, const WCHAR *) {
+  D9_CALL_EXPORT(D3DPERF_SetMarker);
+}
 extern "C" void WINAPI
-D3DPERF_SetOptions(DWORD) {}
+D3DPERF_SetOptions(DWORD) {
+  D9_CALL_EXPORT(D3DPERF_SetOptions);
+}
 extern "C" void WINAPI
-D3DPERF_SetRegion(D3DCOLOR, const WCHAR *) {}
+D3DPERF_SetRegion(D3DCOLOR, const WCHAR *) {
+  D9_CALL_EXPORT(D3DPERF_SetRegion);
+}
 
 extern "C" void WINAPI
-DebugSetLevel(DWORD) {}
+DebugSetLevel(DWORD) {
+  D9_CALL_EXPORT(DebugSetLevel);
+}
 extern "C" BOOL WINAPI
 DebugSetMute(void) {
+  D9_CALL_EXPORT(DebugSetMute);
   return TRUE;
 }
 
@@ -152,16 +169,19 @@ shader_validator_emit(
 
 HRESULT WINAPI
 shader_validator_QueryInterface(IDirect3DShaderValidator9 *, REFIID, void **out) {
+  D9_CALL(IDirect3DShaderValidator9, QueryInterface);
   if (out)
     *out = nullptr;
   return E_NOINTERFACE;
 }
 ULONG WINAPI
 shader_validator_AddRef(IDirect3DShaderValidator9 *v) {
+  D9_CALL(IDirect3DShaderValidator9, AddRef);
   return v->refcount.fetch_add(1, std::memory_order_relaxed) + 1;
 }
 ULONG WINAPI
 shader_validator_Release(IDirect3DShaderValidator9 *v) {
+  D9_CALL(IDirect3DShaderValidator9, Release);
   ULONG rc = v->refcount.fetch_sub(1, std::memory_order_acq_rel) - 1;
   if (rc == 0)
     delete v;
@@ -169,6 +189,7 @@ shader_validator_Release(IDirect3DShaderValidator9 *v) {
 }
 HRESULT WINAPI
 shader_validator_Begin(IDirect3DShaderValidator9 *v, shader_validator_cb callback, void *context, DWORD_PTR) {
+  D9_CALL(IDirect3DShaderValidator9, Begin);
   v->callback = callback;
   v->context = context;
   // Begin is legal only on a fresh validator or once ::End has reset the state
@@ -190,6 +211,7 @@ HRESULT WINAPI
 shader_validator_Instruction(
     IDirect3DShaderValidator9 *v, const char *file, int line, const DWORD *tokens, unsigned int token_count
 ) {
+  D9_CALL(IDirect3DShaderValidator9, Instruction);
   if (!tokens || !token_count) {
     shader_validator_emit(
         v, file, line, SVM_INSTRUCTION_NULL_ARGS,
@@ -277,6 +299,7 @@ shader_validator_Instruction(
 }
 HRESULT WINAPI
 shader_validator_End(IDirect3DShaderValidator9 *v) {
+  D9_CALL(IDirect3DShaderValidator9, End);
   if (v->state == SV_ERROR)
     return E_FAIL;
   if (v->state == SV_BEGIN) {
@@ -308,6 +331,7 @@ const IDirect3DShaderValidator9Vtbl shader_validator_vtbl = {
 
 extern "C" IDirect3DShaderValidator9 *WINAPI
 Direct3DShaderValidatorCreate9(void) {
+  D9_CALL_EXPORT(Direct3DShaderValidatorCreate9);
   auto *v = new IDirect3DShaderValidator9{};
   v->vtbl = &shader_validator_vtbl;
   v->refcount.store(1, std::memory_order_relaxed);
