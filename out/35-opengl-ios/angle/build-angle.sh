@@ -10,8 +10,9 @@
 #
 # <out dir> receives:
 #   libangle.a       the EGL and GLES entry points and what they need: of the objects of
-#                    libEGL_static's and libGLESv2_static's dependency closure, the ones a link
-#                    asking for every egl*/gl* function loads (C1.2; the rest is left out)
+#                    libEGL_static's and libGLESv2_static's link closure (GN's project.json), the
+#                    ones a link asking for every egl*/gl* function loads (C1.2; the rest is left
+#                    out)
 #   include/         EGL, GLES2, GLES3, KHR
 #   args.gn          the final GN arguments (also printed)
 #   NOTICES.txt      ANGLE's licence and that of every third-party folder whose code is in the
@@ -128,7 +129,8 @@ mkdir -p "$build"
     fi
     echo 'target_cpu = "arm64"'
 } > "$build/args.gn"
-gn gen "$build"
+# --ide=json: GN also writes <build>/project.json, every target's description (C1.2 reads it)
+gn gen "$build" --ide=json
 gn args "$build" --list --short --overrides-only > "$out/args.gn"
 echo "build-angle: args.gn"
 cat "$out/args.gn"
@@ -149,27 +151,35 @@ sdk_name=iphoneos
 if [ "$target" = ios ]; then cflags="-arch arm64 -miphoneos-version-min=17.0"; else cflags="-arch arm64 -mmacosx-version-min=13.0"; fi
 printf 'int main(void) { return 0; }\n' > "$work/size_empty.c"
 
-# the dependency closure of both targets: every object file ninja needs for them, in the default
-# toolchain (obj/...; a tool built for the build machine in a toolchain of its own is under
-# <toolchain>/obj/ and stays out)
-ninja -C "$build" -t inputs libEGL_static libGLESv2_static > "$work/inputs-$target.txt"
-{ grep -E '^obj/.*\.o$' "$work/inputs-$target.txt" || true; } | sort -u > "$work/closure-$target.txt"
-ncl=$(wc -l < "$work/closure-$target.txt" | tr -d ' ')
-[ "$ncl" -gt 0 ] || { echo "build-angle: no objects found for the two targets" >&2; exit 1; }
-echo "build-angle: $ncl objects in the closure"
+# the link closure of both targets as GN describes it (project.json): every static library,
+# source set and group a program linking them links too, and their compiled sources' objects
+# (closure-*.tsv: object, source). Not ninja's graph: siso builds the out dir, and depot_tools'
+# ninja refuses one siso has used; ninja -t inputs also missed whole sources (GLES1State.cpp).
+if ! python3 -I "$here/angle_closure.py" gn-objects "$build/project.json" "$build" //:libEGL_static //:libGLESv2_static \
+        > "$work/closure-$target.tsv" 2> "$logs/gn-objects.log"; then
+    note "FAIL: GN's link closure of libEGL_static and libGLESv2_static (logs/gn-objects.log):"
+    sed -n '1,20p' "$logs/gn-objects.log" | sed 's/^/  /' | tee -a "$checks"
+    echo "build-angle: checks failed (see $checks; logs in $logs)" >&2
+    exit 1
+fi
+ncl=$(wc -l < "$work/closure-$target.tsv" | tr -d ' ')
+note "closure: $(tail -n 1 "$logs/gn-objects.log" | sed 's/^angle_closure: //')"
+nmiss=$({ grep -c '^no object: ' "$logs/gn-objects.log" || true; })
+[ "$nmiss" = 0 ] || note "REVIEW: compiled sources of the closure without an object (logs/gn-objects.log): $nmiss"
 
-# the closure in one archive, members renamed so no two share a name (members-*.txt: member, object)
+# the closure in one archive, members renamed so no two share a name (members-*.txt: member,
+# object, source)
 objs="$work/objs-$target"
 rm -rf "$objs"
 mkdir -p "$objs"
 : > "$work/members-$target.txt"
 i=0
-while read -r o; do
+while IFS="$tab" read -r o s; do
     i=$((i + 1))
     m="$(printf '%05d' "$i")_$(basename "$o")"
     cp "$build/$o" "$objs/$m"
-    printf '%s\t%s\n' "$m" "$o" >> "$work/members-$target.txt"
-done < "$work/closure-$target.txt"
+    printf '%s\t%s\t%s\n' "$m" "$o" "$s" >> "$work/members-$target.txt"
+done < "$work/closure-$target.tsv"
 closure="$work/libangle-closure-$target.a"
 rm -f "$closure"
 cut -f1 "$work/members-$target.txt" | sed "s|^|$objs/|" > "$work/filelist-closure-$target.txt"
@@ -194,13 +204,12 @@ for h in EGL GLES2 GLES3 KHR; do cp -R "include/$h" "$out/include/"; done
     [ "$target" = macos ] && echo "-framework Cocoa"
     echo "-lc++"
 } > "$work/link-base-$target.txt"
-if gn desc "$build" "//*" --format=json > "$work/gn-desc-$target.json" 2> "$logs/gn-desc.log" &&
-   python3 -I "$here/angle_closure.py" gn-link "$work/gn-desc-$target.json" //:libEGL_static //:libGLESv2_static \
-       > "$work/link-gn-$target.txt" 2>> "$logs/gn-desc.log"; then
-    note "LINK.txt: the base list and GN's link closure of libEGL_static and libGLESv2_static ($(tail -n 1 "$logs/gn-desc.log"))"
+if python3 -I "$here/angle_closure.py" gn-link "$build/project.json" //:libEGL_static //:libGLESv2_static \
+       > "$work/link-gn-$target.txt" 2> "$logs/gn-link.log"; then
+    note "LINK.txt: the base list and what GN gives the link closure of libEGL_static and libGLESv2_static"
 else
     : > "$work/link-gn-$target.txt"
-    note "REVIEW: gn desc or angle_closure.py gn-link failed (logs/gn-desc.log); LINK.txt is the base list"
+    note "REVIEW: angle_closure.py gn-link failed (logs/gn-link.log); LINK.txt is the base list"
 fi
 cat "$work/link-base-$target.txt" "$work/link-gn-$target.txt" | awk 'NF && !seen[$0]++' > "$out/LINK.txt"
 note "LINK.txt: $(tr '\n' ' ' < "$out/LINK.txt")"
@@ -237,31 +246,24 @@ nkept=$(wc -l < "$work/kept-$target.txt" | tr -d ' ')
 note "libangle.a: $nkept of the closure's $ncl objects (left out: logs/left-out.txt, by folder:"
 sed -E 's|^obj/||; s|/[^/]*$||' "$logs/left-out.txt" | sort | uniq -c | sort -rn | sed -n '1,25p' | sed 's/^/  /' | tee -a "$checks"
 note "  )"
-cut -f2 "$work/kept-$target.txt" > "$work/kept-objects-$target.txt"
 cut -f1 "$work/kept-$target.txt" | sed "s|^|$objs/|" > "$work/filelist-$target.txt"
 rm -f "$out/libangle.a"
 xcrun -sdk "$sdk_name" libtool -static -o "$out/libangle.a" -filelist "$work/filelist-$target.txt" 2> "$logs/libtool.log" || {
     cat "$logs/libtool.log"; exit 1; }
 
-# each member's source (ninja's compile commands): logs/archive-members.tsv is member, object, source
-ninja -C "$build" -t compdb > "$work/compdb-$target.json" 2> "$logs/compdb.log" || true
-python3 -I "$here/angle_closure.py" sources "$work/compdb-$target.json" "$work/kept-objects-$target.txt" \
-    > "$work/kept-sources-$target.tsv" 2>> "$logs/compdb.log" || : > "$work/kept-sources-$target.tsv"
-awk -F "$tab" -v OFS="$tab" 'NR == FNR { src[$1] = $2; next } { print $1, $2, (($2 in src) ? src[$2] : "?") }' \
-    "$work/kept-sources-$target.tsv" "$work/kept-$target.txt" > "$logs/archive-members.tsv"
+# each member's source (GN's): logs/archive-members.tsv is member, object, source
+cp "$work/kept-$target.txt" "$logs/archive-members.tsv"
 { cut -f3 "$logs/archive-members.tsv" | grep -v '^?$' || true; } | sort -u > "$work/sources-$target.txt"
 nsrc=$(wc -l < "$work/sources-$target.txt" | tr -d ' ')
-if [ "$nsrc" -eq 0 ]; then
-    { grep -E '\.(c|cc|cpp|m|mm)$' "$work/inputs-$target.txt" || true; } | sort -u > "$work/sources-$target.txt"
-    note "REVIEW: no member's source found in ninja's compile commands (logs/compdb.log); the source checks read all $(wc -l < "$work/sources-$target.txt" | tr -d ' ') sources of the closure"
-else
-    note "sources of the archive's members: $nsrc"
-fi
+nunk=$({ cut -f3 "$logs/archive-members.tsv" | grep -c '^?$' || true; })
+note "sources of the archive's members: $nsrc (members with no source of that name: $nunk)"
 
 # ---------------------------------------------------------------- spec 35 A1: licences
-# the third-party folders whose objects are in the archive: obj/<source dir>/... mirrors the
-# source tree; the folder is the nearest one with a README.chromium
-sed -n 's|^obj/||p' "$work/kept-objects-$target.txt" | while read -r o; do
+# the third-party folders whose code is in the archive: a member's source, or for one without,
+# its object's path (obj/<source dir>/... mirrors the source tree); the folder is the nearest one
+# with a README.chromium
+awk -F "$tab" '{ if ($3 != "?") print $3; else { sub(/^obj\//, "", $2); print $2 } }' "$logs/archive-members.tsv" \
+        | while read -r o; do
     d=$(dirname "$o")
     while [ "$d" != . ] && [ "$d" != / ]; do
         case "$d" in third_party/*) ;; *) break ;; esac
@@ -334,8 +336,9 @@ fi
 
 # ---------------------------------------------------------------- C1.3: compiled sources
 while read -r s; do
-    [ -f "$build/$s" ] || continue
-    f="$build/$s"
+    # GN's sources are relative to the source root, the current directory
+    [ -f "$s" ] || continue
+    f="$s"
     if grep -nE 'MAP_JIT|pthread_jit_write_protect' "$f" > "$work/hit.txt"; then
         note "FAIL: $s: $(head -n 1 "$work/hit.txt")"; failed=1
     fi

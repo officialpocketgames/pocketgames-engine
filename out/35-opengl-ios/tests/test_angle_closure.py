@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 the MYIOSDECK author
 #
-# Spec 35 Part C1.2 and C1.3: host test of angle/angle_closure.py, on samples written like
-# `gn desc --format=json`, ld's -map output and `ninja -t compdb`.
+# Spec 35 Part C1.2 and C1.3: host test of angle/angle_closure.py, on samples written like GN's
+# project.json (`gn gen --ide=json`), `gn desc --format=json` and ld's -map output.
 #   python3 -I tests/test_angle_closure.py
 
 import json
@@ -27,51 +27,144 @@ def check(cond, what):
         print("FAIL: " + what)
 
 
-DESC = {
-    "//:libGLESv2_static": {"type": "static_library", "deps": ["//:libANGLE", "//:translator_gen"],
-                            "frameworks": ["Metal.framework"]},
-    "//:libEGL_static": {"type": "static_library", "deps": ["//:libGLESv2_static"], "libs": ["c++"]},
-    "//:libANGLE": {"type": "source_set", "deps": ["//src/common:angle_common", "//:gpu_info"],
-                    "public_deps": ["//:angle_headers"], "frameworks": ["IOSurface.framework", "QuartzCore.framework"]},
-    "//src/common:angle_common": {"type": "source_set", "deps": [], "weak_frameworks": ["MetalFX.framework"]},
-    "//:angle_headers": {"type": "group", "public_deps": ["//:headers_impl"]},
-    "//:headers_impl": {"type": "source_set", "libs": ["/sdk/usr/lib/libz.tbd"]},
-    "//:gpu_info": {"type": "static_library", "frameworks": ["Metal.framework", "CoreGraphics.framework"]},
-    # a code generator: an action's tool, built for the build machine; never linked
-    "//:translator_gen": {"type": "action", "deps": ["//:gen_tool"]},
-    "//:gen_tool": {"type": "executable", "deps": ["//:tool_lib"], "frameworks": ["AppKit.framework"]},
-    "//:tool_lib": {"type": "source_set", "frameworks": ["Cocoa.framework"]},
-    # a test library nothing links
-    "//:angle_test_utils": {"type": "source_set", "frameworks": ["XCTest.framework"]},
-    "//:libGLESv2": {"type": "shared_library", "deps": ["//:libANGLE"]},
+TC = "//build/toolchain/mac:clang_arm64"
+HOST = "//build/toolchain/mac:clang_x64"
+
+
+def q(label):
+    return "%s(%s)" % (label, TC)
+
+
+# GN's project.json: labels with their toolchain, as GN writes them
+PROJECT = {
+    "build_settings": {"build_dir": "//out/ios/", "default_toolchain": TC, "root_path": "/w/angle"},
+    "targets": {
+        q("//:libGLESv2_static"): {"type": "static_library", "deps": [q("//src/libANGLE:libANGLE"), q("//:translator_gen")],
+                                   "frameworks": ["Metal.framework"],
+                                   "sources": ["//src/libGLESv2/entry_points_gles_1_0_autogen.cpp",
+                                               "//src/libGLESv2/entry_points_gles_1_0_autogen.h"]},
+        q("//:libEGL_static"): {"type": "static_library", "deps": [q("//:libGLESv2_static")], "libs": ["c++"],
+                                "sources": ["//src/libEGL/egl_stubs.cpp"]},
+        q("//src/libANGLE:libANGLE"): {"type": "source_set",
+                                       "deps": [q("//src/common:angle_common"), q("//src/gpu_info_util:gpu_info"),
+                                                q("//src/compiler:translator")],
+                                       "public_deps": [q("//:angle_headers")],
+                                       "frameworks": ["IOSurface.framework", "QuartzCore.framework"],
+                                       "sources": ["//src/libANGLE/GLES1State.cpp", "//src/libANGLE/Platform.cpp",
+                                                   "//src/libANGLE/renderer/metal/DisplayMtl.mm",
+                                                   "//out/ios/gen/angle/version_info.cpp"]},
+        q("//src/common:angle_common"): {"type": "source_set", "weak_frameworks": ["MetalFX.framework"],
+                                         "sources": ["//src/common/system_utils_posix.cpp", "//src/common/debug.h"]},
+        q("//:angle_headers"): {"type": "group", "public_deps": [q("//:headers_impl")]},
+        q("//:headers_impl"): {"type": "source_set", "libs": ["/sdk/usr/lib/libz.tbd"]},
+        q("//src/gpu_info_util:gpu_info"): {"type": "static_library",
+                                            "frameworks": ["Metal.framework", "CoreGraphics.framework"],
+                                            "sources": ["//src/gpu_info_util/SystemInfo.cpp",
+                                                        "//src/gpu_info_util/SystemInfo_vulkan.cpp"]},
+        # objects named <target>.<name>.o, the other layout
+        q("//src/compiler:translator"): {"type": "static_library", "sources": ["//src/compiler/Compiler.cpp"]},
+        # a code generator: an action's tool, built for the build machine; never linked
+        q("//:translator_gen"): {"type": "action", "deps": ["//tools:gen(%s)" % HOST, q("//tools:gen")]},
+        q("//tools:gen"): {"type": "executable", "deps": [q("//tools:tool_lib")], "frameworks": ["AppKit.framework"],
+                           "sources": ["//tools/gen/main.cpp"]},
+        "//tools:gen(%s)" % HOST: {"type": "executable", "sources": ["//tools/gen/main.cpp"]},
+        q("//tools:tool_lib"): {"type": "source_set", "frameworks": ["Cocoa.framework"]},
+        # a test library nothing links
+        q("//:angle_test_utils"): {"type": "source_set", "frameworks": ["XCTest.framework"]},
+        q("//:libGLESv2"): {"type": "shared_library", "deps": [q("//src/libANGLE:libANGLE")]},
+    },
 }
+
+OBJECTS = [
+    "obj/libGLESv2_static/entry_points_gles_1_0_autogen.o",
+    "obj/libEGL_static/egl_stubs.o",
+    "obj/src/libANGLE/libANGLE/GLES1State.o",
+    "obj/src/libANGLE/libANGLE/Platform.o",
+    "obj/src/libANGLE/libANGLE/DisplayMtl.o",
+    "obj/src/libANGLE/libANGLE/version_info.o",
+    "obj/src/common/angle_common/system_utils_posix.o",
+    "obj/src/gpu_info_util/gpu_info/SystemInfo.o",
+    # SystemInfo_vulkan.cpp has no object (not built)
+    "obj/src/compiler/translator.Compiler.o",
+    "obj/src/libANGLE/libANGLE/stray.o",          # an object no source of the target names
+    "obj/tools/gen/main.o",                       # the tool's, not linked
+    "obj/angle_test_utils/test.o",                # nothing links it
+    "clang_x64/obj/tools/gen/main.o",             # another toolchain's
+]
+
+
+def test_load():
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "project.json")
+        with open(p, "w") as f:
+            f.write("gn: some line first\n")
+            json.dump(PROJECT, f)
+        desc = ac.load(p)
+        check("//:libEGL_static" in desc and "//tools:gen(%s)" % HOST in desc,
+              "project.json: default toolchain dropped from labels, another kept")
+        check(desc["//src/libANGLE:libANGLE"]["public_deps"] == ["//:angle_headers"], "deps relabelled")
+        p2 = os.path.join(d, "desc.json")
+        with open(p2, "w") as f:
+            json.dump({"//:a": {"type": "group"}}, f)
+        check(ac.load(p2) == {"//:a": {"type": "group", "deps": [], "public_deps": []}}, "gn desc's plain form")
+        p3 = os.path.join(d, "bad.json")
+        with open(p3, "w") as f:
+            f.write("ERROR at //BUILD.gn\n")
+        try:
+            ac.load(p3)
+            check(False, "no JSON refused")
+        except ValueError:
+            check(True, "")
+
+
+def desc():
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "project.json")
+        with open(p, "w") as f:
+            json.dump(PROJECT, f)
+        return ac.load(p)
 
 
 def test_gn_link():
-    flags, n = ac.gn_link(DESC, ["//:libEGL_static", "//:libGLESv2_static"])
+    flags, n = ac.gn_link(desc(), ["//:libEGL_static", "//:libGLESv2_static"])
     check(flags == ["-framework CoreGraphics", "-framework IOSurface", "-framework Metal",
                     "-framework QuartzCore", "-weak_framework MetalFX", "/sdk/usr/lib/libz.tbd", "-lc++"],
           "gn-link flags: %r" % flags)
-    check(n == 7, "gn-link closure size %d (EGL, GLESv2, libANGLE, common, headers group and impl, gpu_info)" % n)
+    check(n == 8, "closure size %d (EGL, GLESv2, libANGLE, common, gpu_info, translator, headers group and impl)" % n)
     check("-framework AppKit" not in flags and "-framework Cocoa" not in flags,
           "an action's tool and its libraries are not linked")
     check("-framework XCTest" not in flags, "a target nothing links stays out")
-    try:
-        ac.gn_link(DESC, ["//:missing"])
-        check(False, "a missing label raises")
-    except KeyError:
-        check(True, "")
-    try:
-        ac.gn_link(DESC, ["//:libGLESv2"])
-        check(False, "a shared library is not a starting point")
-    except KeyError:
-        check(True, "")
-    # a dependency in another toolchain (absent from the default toolchain's description) is skipped
-    desc = dict(DESC)
-    desc["//:libEGL_static"] = {"type": "static_library",
-                                "deps": ["//:libGLESv2_static", "//:x(//build/toolchain/mac:clang_x64)"]}
-    flags2, n2 = ac.gn_link(desc, ["//:libEGL_static"])
-    check(n2 == 7 and "-lc++" not in flags2, "other toolchains skipped; the replaced target's libs gone")
+    for bad in ("//:missing", "//:libGLESv2"):
+        try:
+            ac.gn_link(desc(), [bad])
+            check(False, "%s refused" % bad)
+        except KeyError:
+            check(True, "")
+
+
+def test_gn_objects():
+    with tempfile.TemporaryDirectory() as b:
+        for o in OBJECTS:
+            os.makedirs(os.path.join(b, os.path.dirname(o)), exist_ok=True)
+            open(os.path.join(b, o), "w").close()
+        rows, missing, n, with_objects = ac.gn_objects(desc(), ["//:libEGL_static", "//:libGLESv2_static"], b)
+        got = dict(rows)
+        check(got == {
+            "obj/libGLESv2_static/entry_points_gles_1_0_autogen.o": "src/libGLESv2/entry_points_gles_1_0_autogen.cpp",
+            "obj/libEGL_static/egl_stubs.o": "src/libEGL/egl_stubs.cpp",
+            "obj/src/libANGLE/libANGLE/GLES1State.o": "src/libANGLE/GLES1State.cpp",
+            "obj/src/libANGLE/libANGLE/Platform.o": "src/libANGLE/Platform.cpp",
+            "obj/src/libANGLE/libANGLE/DisplayMtl.o": "src/libANGLE/renderer/metal/DisplayMtl.mm",
+            "obj/src/libANGLE/libANGLE/version_info.o": "out/ios/gen/angle/version_info.cpp",
+            "obj/src/libANGLE/libANGLE/stray.o": "?",
+            "obj/src/common/angle_common/system_utils_posix.o": "src/common/system_utils_posix.cpp",
+            "obj/src/gpu_info_util/gpu_info/SystemInfo.o": "src/gpu_info_util/SystemInfo.cpp",
+            "obj/src/compiler/translator.Compiler.o": "src/compiler/Compiler.cpp",
+        }, "gn-objects rows: %r" % rows)
+        check(len(rows) == len(got), "each object once")
+        check(missing == ["src/gpu_info_util/SystemInfo_vulkan.cpp (//src/gpu_info_util:gpu_info)"],
+              "a compiled source with no object reported, a header not: %r" % missing)
+        check(n == 8 and with_objects == 6, "counts: %d targets, %d with objects" % (n, with_objects))
 
 
 MAP_LD64 = """# Path: /w/probe-ios
@@ -114,42 +207,20 @@ def test_map_members():
     check(ac.map_members("no map here\n") == [], "no object section, no members")
 
 
-COMPDB = [
-    {"directory": "/w/angle/out/ios", "file": "../../src/common/system_utils_posix.cpp",
-     "output": "obj/src/common/angle_common/system_utils_posix.o", "command": "clang++ -c ..."},
-    {"directory": "/w/angle/out/ios", "file": "/w/angle/src/libANGLE/Context.cpp",
-     "command": "clang++ -c /w/angle/src/libANGLE/Context.cpp -o obj/libANGLE/Context.o"},
-    {"directory": "/w/angle/out/ios", "file": "../../tools/gen.cc",
-     "output": "clang_x64/obj/tools/gen/gen.o", "command": "clang++ -c ..."},
-    {"directory": "/w/angle/out/ios", "file": "../../src/x.c",
-     "arguments": ["clang", "-c", "../../src/x.c", "-o", "obj/src/x/x.o"]},
-]
-
-
-def test_sources():
-    t = ac.compdb_outputs(COMPDB)
-    check(t.get("obj/src/common/angle_common/system_utils_posix.o") == "../../src/common/system_utils_posix.cpp",
-          "output field: %r" % t)
-    check(t.get("obj/libANGLE/Context.o") == "../../src/libANGLE/Context.cpp",
-          "-o from the command, an absolute source made relative: %r" % t.get("obj/libANGLE/Context.o"))
-    check(t.get("obj/src/x/x.o") == "../../src/x.c", "-o from arguments")
-    check(t.get("clang_x64/obj/tools/gen/gen.o") == "../../tools/gen.cc", "another toolchain's object keyed by its path")
-
-
 def test_command_line():
     with tempfile.TemporaryDirectory() as d:
-        dj = os.path.join(d, "desc.json")
-        with open(dj, "w") as f:
-            json.dump(DESC, f)
+        pj = os.path.join(d, "project.json")
+        with open(pj, "w") as f:
+            json.dump(PROJECT, f)
         mp = os.path.join(d, "probe.map")
         with open(mp, "w") as f:
             f.write(MAP_LD64)
-        cj = os.path.join(d, "compdb.json")
-        with open(cj, "w") as f:
-            json.dump(COMPDB, f)
-        ol = os.path.join(d, "objects.txt")
-        with open(ol, "w") as f:
-            f.write("obj/libANGLE/Context.o\nobj/unknown/u.o\n\n")
+        b = os.path.join(d, "out")
+        for o in OBJECTS:
+            os.makedirs(os.path.join(b, os.path.dirname(o)), exist_ok=True)
+            open(os.path.join(b, o), "w").close()
+        empty = os.path.join(d, "empty")
+        os.makedirs(empty)
         script = os.path.join(HERE, "..", "angle", "angle_closure.py")
 
         def run(*args):
@@ -157,23 +228,36 @@ def test_command_line():
                                capture_output=True, text=True)
             return p.returncode, p.stdout, p.stderr
 
-        rc, out, err = run("gn-link", dj, "//:libEGL_static")
-        check(rc == 0 and out.splitlines()[0] == "-framework CoreGraphics" and "7 targets" in err,
+        rc, out, err = run("gn-link", pj, "//:libEGL_static")
+        check(rc == 0 and out.splitlines()[0] == "-framework CoreGraphics" and "8 targets" in err,
               "gn-link command: %d %r %r" % (rc, out, err))
-        rc, out, err = run("gn-link", dj, "//:nope")
+        rc, out, err = run("gn-link", pj, "//:nope")
         check(rc == 2 and "//:nope" in err, "gn-link refuses an unknown label: %d %r" % (rc, err))
+        rc, out, err = run("gn-objects", pj, b, "//:libEGL_static")
+        lines = out.splitlines()
+        check(rc == 0 and len(lines) == 10 and "obj/src/libANGLE/libANGLE/GLES1State.o\tsrc/libANGLE/GLES1State.cpp" in lines,
+              "gn-objects command: %d %r" % (rc, lines))
+        last = err.splitlines()[-1]
+        check(last == "angle_closure: 8 targets in the link closure, 6 with objects, 10 objects, "
+                      "1 compiled sources without an object" and "no object: src/gpu_info_util/SystemInfo_vulkan.cpp" in err,
+              "gn-objects summary: %r" % err)
+        rc, out, err = run("gn-objects", pj, empty, "//:libEGL_static")
+        check(rc == 3 and out == "", "gn-objects with no object: %d" % rc)
+        bad = os.path.join(d, "bad.json")
+        with open(bad, "w") as f:
+            f.write("not json\n")
+        rc, _, err = run("gn-objects", bad, b, "//:libEGL_static")
+        check(rc == 2 and "no JSON object" in err, "gn-objects on a file with no JSON: %d %r" % (rc, err))
         rc, out, _ = run("map-members", mp, "libangle-closure-ios.a")
         check(rc == 0 and out == "00012_system_utils.o\n00007_Context.o\n", "map-members command: %r" % out)
-        rc, out, _ = run("sources", cj, ol)
-        check(rc == 0 and out == "obj/libANGLE/Context.o\t../../src/libANGLE/Context.cpp\nobj/unknown/u.o\t?\n",
-              "sources command: %r" % out)
         rc, _, err = run("nothing")
         check(rc == 2 and "usage" in err, "usage on a wrong call")
 
 
+test_load()
 test_gn_link()
+test_gn_objects()
 test_map_members()
-test_sources()
 test_command_line()
 print("test_angle_closure: %d checks, %d failures" % (checks, failures))
 sys.exit(1 if failures else 0)

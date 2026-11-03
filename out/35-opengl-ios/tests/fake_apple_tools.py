@@ -12,9 +12,10 @@
 # Objective-C class or category). A fake archive is "!fake-archive", then "MEMBER <name>" and the
 # member's lines, per member. A fake program lists its imports as "UNDEF <symbol>".
 #
-# Environment: FAKE_FX (the fixtures: inputs.txt, compdb.json, gn-desc.json), FAKE_ANGLE_COMMIT
-# (what `git rev-parse HEAD` says), FAKE_PROBE_FAIL / FAKE_SIZE_FAIL (the probe link, or the size
-# link of size_main.c, fails as ld does), FAKE_GN_FAIL (gn desc fails).
+# Environment: FAKE_FX (the fixtures: project.json, which `gn gen --ide=json` puts in the build
+# directory; sdk/), FAKE_ANGLE_COMMIT (what `git rev-parse HEAD` says), FAKE_PROBE_FAIL /
+# FAKE_SIZE_FAIL (the probe link, or the size link of size_main.c, fails as ld does), FAKE_GN_FAIL
+# (gn gen writes no project.json). ninja refuses, as depot_tools' does on an out dir siso built.
 
 import os
 import sys
@@ -184,30 +185,22 @@ def git(args):
     return 0
 
 
-def fixture(name):
-    with open(os.path.join(os.environ["FAKE_FX"], name)) as f:
-        sys.stdout.write(f.read())
-
-
 def gn(args):
     if args and args[0] == "args":
         print("angle_enable_metal = true")
-    elif args and args[0] == "desc":
-        if os.environ.get("FAKE_GN_FAIL"):
-            sys.stderr.write("ERROR fake gn desc\n")
-            return 1
-        fixture("gn-desc.json")
+    elif args and args[0] == "gen" and "--ide=json" in args and not os.environ.get("FAKE_GN_FAIL"):
+        # project.json in the build directory, as gn gen --ide=json writes it
+        with open(os.path.join(os.environ["FAKE_FX"], "project.json")) as f:
+            text = f.read()
+        with open(os.path.join(args[1], "project.json"), "w") as f:
+            f.write(text)
     return 0
 
 
 def ninja(args):
-    if "-t" in args:
-        what = args[args.index("-t") + 1]
-        if what == "inputs":
-            fixture("inputs.txt")
-        elif what == "compdb":
-            fixture("compdb.json")
-    return 0
+    # depot_tools' ninja on an out dir siso built (build-angle.sh must not need it)
+    sys.stderr.write("depot_tools/ninja.py: out/ios contains Siso state file.\n")
+    return 1
 
 
 TOOLS = {"xcrun": xcrun, "nm": nm, "otool": lambda a: 0, "stat": stat, "git": git,
