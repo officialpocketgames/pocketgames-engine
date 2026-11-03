@@ -6,7 +6,7 @@
 # also defines <name>_unix_lib_init. write-exports.sh turns this into exports.txt, and the build
 # check in TESTS.md compares that with `nm -gU` of the app. Add a line when a part adds a library.
 win32u.dll          init    # spec 12
-opengl32.dll                # spec 12 clarification 8 (in libwin32u_unix.a)
+opengl32.dll                # spec 35 (libopengl32_unix.a; spec 12 clarification 8's stand-in before)
 winspool.drv                # spec 12 clarification 9 (in libwin32u_unix.a)
 netapi32.dll                # spec 12 clarification 9 (in libwin32u_unix.a)
 kerberos.dll                # spec 12 clarification 9 (in libwin32u_unix.a)

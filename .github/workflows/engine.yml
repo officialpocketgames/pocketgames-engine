@@ -170,7 +170,7 @@ jobs:
   ios-libs:
     needs: [refs, wine-host-macos]
     runs-on: macos-latest
-    timeout-minutes: 120
+    timeout-minutes: 240   # spec 35's first ANGLE build (gclient sync and the build) takes the longest
     strategy:
       fail-fast: false
       matrix:
@@ -191,6 +191,9 @@ jobs:
           - part: 34-vulkan-ios          # spec 34: UTM's MoltenVK fork, patched, first (fetch-moltenvk.sh,
             prereq: moltenvk             # build-moltenvk.sh; ios-part.sh checks the cache's stamp),
             prereq_script: out/34-vulkan-ios/build-moltenvk.sh   # then the layer and winevulkan's unix side
+          - part: 35-opengl-ios          # ANGLE first (angle/build-angle.sh: its products are the
+            prereq: angle                # cached prerequisite, keyed by the angle/ folder), then
+            prereq_script: out/35-opengl-ios/angle/*   # gl4es, pgl and opengl32's unix side
     name: ios-libs (${{ matrix.part }})
     env:
       GH_TOKEN: ${{ github.token }}
@@ -268,10 +271,17 @@ jobs:
   # 4b. spec 34 M6: vktest.exe (x86_64, i686) for the device's test builds; built here, never run
   #     (no GPU tests on CI runners or the owner's PC)
   vktest:
+    needs: refs
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.REFS_DL }}
+          key: refs-v1-${{ hashFiles('refs/README.md', 'refs/.gitignore', 'ci/refs-trees.sha256') }}
+      - name: Unpack refs/wine-11.4 (build-pe.sh checks for it even in its toolchain step)
+        run: sh ci/fetch-refs.sh "$REFS_DL" wine-11.4
       - name: Tools (glslang for the SPIR-V, llvm-mingw at spec 19's pin)
         run: |
           sudo apt-get update
@@ -376,3 +386,70 @@ jobs:
           name: pe-logs
           path: ${{ runner.temp }}/pe-work/logs
           if-no-files-found: ignore
+
+  # 6. spec 35 J3: the OpenGL render test on a macOS arm64 runner (it has a Metal device; with
+  #    none the test reports SKIP). ANGLE and gl4es for macOS, pgl, no Wine. The only place a GL
+  #    or GPU test runs (never on the owner's PC).
+  opengl-render-test:
+    runs-on: macos-latest
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+      - id: image
+        name: Runner image
+        run: |
+          echo "version=${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
+          xcodebuild -version
+          cmake --version | head -n 1
+      - id: angle-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/work/angle-macos
+          key: macos-angle-v1-${{ steps.image.outputs.version }}-${{ hashFiles('out/35-opengl-ios/angle/*') }}
+      - id: angle
+        name: ANGLE for macOS (build-angle.sh)
+        run: bash out/35-opengl-ios/angle/build-angle.sh "$RUNNER_TEMP/work/angle-src" "$RUNNER_TEMP/work/angle-macos" macos
+      - uses: actions/cache/save@v4
+        if: steps.angle.outcome == 'success' && steps.angle-cache.outputs.cache-hit != 'true'
+        with:
+          path: ${{ runner.temp }}/work/angle-macos
+          key: macos-angle-v1-${{ steps.image.outputs.version }}-${{ hashFiles('out/35-opengl-ios/angle/*') }}
+      - name: gl4es for macOS (build-gl4es.sh)
+        run: bash out/35-opengl-ios/build-gl4es.sh "$RUNNER_TEMP/work/gl4es" "$RUNNER_TEMP/work/gl4es-macos" macos
+      - name: Render test
+        run: sh out/35-opengl-ios/tests/macos/run-render-test.sh "$RUNNER_TEMP/work/angle-macos" "$RUNNER_TEMP/work/gl4es-macos" "$RUNNER_TEMP/work/render"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: opengl-macos-checks
+          path: |
+            ${{ runner.temp }}/work/angle-macos/*.txt
+            ${{ runner.temp }}/work/angle-macos/args.gn
+            ${{ runner.temp }}/work/gl4es-macos/sources.txt
+          if-no-files-found: ignore
+
+  # 7. spec 35 J4: the Windows OpenGL test programs, i686 and x86-64, with spec 19's pinned
+  #    llvm-mingw (Linux asset). Built only: they run on the device, in a test build.
+  opengl-win-tests:
+    needs: refs
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ env.REFS_DL }}
+          key: refs-v1-${{ hashFiles('refs/README.md', 'refs/.gitignore', 'ci/refs-trees.sha256') }}
+      - name: Unpack refs/wine-11.4 (build-pe.sh checks for it even in its toolchain step)
+        run: sh ci/fetch-refs.sh "$REFS_DL" wine-11.4
+      - name: llvm-mingw (build-pe.sh's toolchain step)
+        run: |
+          bash out/19-pe-dlls-build/build-pe.sh --work "$RUNNER_TEMP/pe-tool" toolchain
+          bin=$(ls -d "$RUNNER_TEMP"/pe-tool/llvm-mingw-*/bin | head -n 1)
+          echo "MINGW_BIN=$bin" >> "$GITHUB_ENV"
+      - name: Build the test programs
+        run: sh out/35-opengl-ios/tests/win/build.sh "$MINGW_BIN" "$RUNNER_TEMP/opengl-win-tests"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: opengl-win-tests
+          path: ${{ runner.temp }}/opengl-win-tests

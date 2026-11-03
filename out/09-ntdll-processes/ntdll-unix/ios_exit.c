@@ -40,6 +40,10 @@
 
 #ifdef WINE_IOS
 
+/* spec 35 Part H: opengl32's unix side (libopengl32_unix.a), when linked */
+extern void opengl_ios_thread_exit( void ) __attribute__((weak_import));
+extern void opengl_ios_process_ended( void *peb ) __attribute__((weak_import));
+
 /* how long the ending thread waits for the others, and how often it alerts them again */
 #define IOS_END_WAIT_MS     2000
 #define IOS_END_REALERT_MS  100
@@ -506,6 +510,9 @@ void ios_thread_leave( int status )
 
     /* Part D3: a thread dying inside a section that must not be interrupted leaves it */
     ios_release_held_locks( data );
+    /* spec 35 H1: a GL context current on the thread is released while its TEB and server pipes
+     * still work (also for a killed thread), so it can be destroyed later */
+    if (opengl_ios_thread_exit) opengl_ios_thread_exit();
     thread_forget( GetCurrentThreadId() );
     /* spec 11 Parts B and D: alternate signal stack off, out of the thread registry */
     ios_signal_thread_leave();
@@ -529,9 +536,11 @@ void ios_thread_leave( int status )
 
     if (left <= 0)
     {
-        /* nothing of this process runs any more: the other libraries' clean-up (spec 22 C6),
-         * its Vulkan objects (spec 34 Part H: before its memory, also before a 32-bit program's
-         * window goes, where its imported memory lies), then its memory goes back (spec 10) */
+        /* nothing of this process runs any more: the other libraries' clean-up (spec 22 C6;
+         * spec 35 H2: OpenGL's contexts and drawables), its Vulkan objects (spec 34 Part H:
+         * before its memory, also before a 32-bit program's window goes, where its imported
+         * memory lies), then its memory goes back (spec 10) */
+        if (opengl_ios_process_ended && proc->pp_peb) opengl_ios_process_ended( proc->pp_peb );
         run_end_hooks( proc );
         if (ios_vk_release_process) ios_vk_release_process( pid );
         ios_mem_release_process( proc, FALSE );

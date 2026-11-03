@@ -48,7 +48,9 @@ note "SDK: iPhoneOS $(xcrun --sdk iphoneos --show-sdk-version), $(xcodebuild -ve
 note ""
 
 # ---------------------------------------------------------------- the archives
-parts="05-dxmt-ios 08-wineserver-ios 09-ntdll-processes 12-win32u-ios 13-net-crypto-ios 14-media-audio-ios 15-controllers 34-vulkan-ios"
+# spec 35: ANGLE's and gl4es's archives are force-loaded too, so the duplicate-symbol check covers
+# all of their code (spec 35 C1.3)
+parts="05-dxmt-ios 08-wineserver-ios 09-ntdll-processes 12-win32u-ios 13-net-crypto-ios 14-media-audio-ios 15-controllers 34-vulkan-ios 35-opengl-ios"
 third_party_re='^lib(bearssl|tomcrypt_unix|avformat|avcodec|swresample|avutil|moltenvk)\.a$'
 ours=""
 missing=""

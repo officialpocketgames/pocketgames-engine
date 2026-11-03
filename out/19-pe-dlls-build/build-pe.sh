@@ -60,6 +60,7 @@ spec14-metahost|14-media-audio-ios/pe/metahost.c|dlls/mscoree/metahost.c|14
 spec15|15-controllers/pe|.|15
 spec16|16-sync-ios/pe|.|16
 spec18|18-pe-ntdll-wow64/pe|.|18
+spec35|35-opengl-ios/pe|.|35
 spec19|19-pe-dlls-build/pe|.|19
 EOF
 }

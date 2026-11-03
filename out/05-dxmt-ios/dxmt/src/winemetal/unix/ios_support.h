@@ -105,6 +105,7 @@ void pg_set_vsync_locked(int mode);
 int pg_get_vsync_locked(void);
 void pg_set_display_max_fps(int panel_hz, int intent_hz);
 uint64_t pg_get_present_count(void);
+void pg_present_count_add(uint32_t n);   /* spec 35 L1 */
 int pg_dxmt_has_40_cap(void);
 void pg_gpu_meter_enable(int on);
 double pg_gpu_meter_busy_seconds(void);

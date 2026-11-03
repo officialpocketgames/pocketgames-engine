@@ -439,6 +439,13 @@ pg_get_present_count(void) {
   return atomic_load(&g_present_count);
 }
 
+/* spec 35 L1: the iOS GL driver (pgl) counts its presents and RAW skips here too, so the app's
+   frame counter counts OpenGL frames */
+DXMT_IOS_EXPORT void
+pg_present_count_add(uint32_t n) {
+  atomic_fetch_add(&g_present_count, n);
+}
+
 DXMT_IOS_EXPORT int
 pg_dxmt_has_40_cap(void) {
   return 1;

@@ -39,7 +39,7 @@ cp "$PART"/win32u-unix/* "$W/dlls/win32u/"
 
 if [ $# -eq 0 ]; then
   set -- sysparams.c w32ios_proc.c w32ios_display.c w32ios_desktop.c w32ios_driver.c \
-         w32ios_gamepad.c w32ios_init.c w32ios_kmt.c w32ios_mem.c
+         w32ios_gamepad.c w32ios_init.c w32ios_kmt.c w32ios_mem.c opengl_ios.c
 fi
 
 cd "$W/dlls/win32u"
@@ -49,7 +49,7 @@ for f in "$@"; do
        -Wno-unused-but-set-variable -Wno-attributes -Wno-address \
        -DWINE_IOS=1 -DWINE_UNIX_LIB -D__WINESRC__ -D_WIN32U_ -D_REENTRANT \
        -I. -I"$W/include" -I"$REPO/out/09-ntdll-processes/include" -I"$BUILD/include" \
-       -I"$WINE/include" -I"$REPO/interfaces" \
+       -I"$WINE/include" -I"$REPO/interfaces" -I"$REPO/out/35-opengl-ios/pgl" \
        -include w32ios_config.h -include w32ios_rename.h "$f"; then
     echo "$f OK"
   else

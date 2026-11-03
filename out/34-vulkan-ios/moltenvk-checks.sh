@@ -7,8 +7,11 @@
 #   moltenvk-checks.sh <archive> <report file>
 #
 # 1. Members: only MoltenVK and SPIRV-Cross (with MoltenVK's own SPIR-V to MSL converter). An
-#    object whose name or whose symbols (defined or referenced) come from glslang or SPIRV-Tools
-#    fails. vkGetInstanceProcAddr must be defined, and SPIRV-Cross's code must be in it.
+#    object whose name or whose symbols (defined, globally or locally, or referenced) come from
+#    glslang or SPIRV-Tools fails. vkGetInstanceProcAddr must be defined, and SPIRV-Cross's code
+#    must be in it: as global symbols, or as the local ones of MoltenVK's prelinked object (its
+#    symbols are hidden by default, so `nm -g` doesn't show them); every SPIRV-Cross symbol the
+#    archive refers to must be defined in it.
 # 2. Undefined symbols contain none of: dlopen, fork, vfork, execve, posix_spawn*, system,
 #    popen, ptrace, task_for_pid, pthread_jit_write_protect_np.
 # 3. Every mmap and mprotect reference is listed in the report for review, and the required-
@@ -44,6 +47,9 @@ strip_prefix() {
 $AR t "$lib" > "$t/members"
 # shellcheck disable=SC2086
 $NM -g "$lib" 2>/dev/null > "$t/symbols" || true
+# every symbol, local ones too (MoltenVK's prelinked object hides SPIRV-Cross's)
+# shellcheck disable=SC2086
+$NM "$lib" 2>/dev/null > "$t/all" || true
 # shellcheck disable=SC2086
 $NM -u "$lib" 2>/dev/null | awk 'NF { print $NF }' | grep -v ':$' | strip_prefix | sort -u > "$t/undefined"
 # defined (global) symbol names
@@ -55,11 +61,19 @@ echo "== moltenvk-checks $(basename "$lib"): $(wc -l < "$t/members" | tr -d ' ')
 if grep -iE 'glslang|spvtools|spirv-tools|spirvtools' "$t/members" > "$t/bad-members"; then
     fail "glslang / SPIRV-Tools objects in the archive: $(tr '\n' ' ' < "$t/bad-members")"
 fi
-if grep -E 'glslang|spvtools' "$t/symbols" > "$t/bad-symbols"; then
+if grep -E 'glslang|spvtools' "$t/all" > "$t/bad-symbols"; then
     fail "glslang / SPIRV-Tools symbols in the archive ($(wc -l < "$t/bad-symbols" | tr -d ' ')), e.g. $(head -n 3 "$t/bad-symbols" | awk '{print $NF}' | tr '\n' ' ')"
 fi
+tools=$(NM="$NM" sh "$(dirname "$0")/moltenvk-lib.sh" spirv-tools "$lib")
+if [ -n "$tools" ]; then
+    fail "SPIRV-Tools held or referred to (build with MVK_EXCLUDE_SPIRV_TOOLS): $(echo "$tools" | head -n 5 | tr '\n' ' ')"
+fi
 if ! grep -qx 'vkGetInstanceProcAddr' "$t/defined"; then fail "vkGetInstanceProcAddr isn't defined"; fi
-if ! grep -q 'spirv_cross' "$t/defined"; then fail "no SPIRV-Cross code (no defined spirv_cross symbol)"; fi
+case $(NM="$NM" sh "$(dirname "$0")/moltenvk-lib.sh" spirv-cross "$lib") in
+    inside) ;;
+    merge) fail "SPIRV-Cross symbols referred to but not defined in the archive" ;;
+    *) fail "no SPIRV-Cross code (no spirv_cross symbol, global or local)" ;;
+esac
 
 # ---- 2. forbidden imports
 for s in dlopen fork vfork execve system popen ptrace task_for_pid pthread_jit_write_protect_np; do

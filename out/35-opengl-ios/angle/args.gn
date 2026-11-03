@@ -1,0 +1,28 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# Spec 35 Part C1.1: ANGLE's GN arguments for the app (build-angle.sh appends target_os,
+# target_cpu and the deployment target). Metal is the only backend; everything that carries a
+# JIT (SwiftShader), another GPU API, tests, samples or frame capture is off.
+
+is_debug = false
+is_component_build = false
+use_custom_libcxx = false        # the system libc++, like the rest of the app
+symbol_level = 0
+treat_warnings_as_errors = false
+
+angle_enable_metal = true
+angle_enable_vulkan = false
+angle_enable_gl = false          # its iOS variant would use EAGL
+angle_enable_d3d9 = false
+angle_enable_d3d11 = false
+angle_enable_null = false
+angle_enable_swiftshader = false
+angle_enable_wgpu = false
+
+angle_build_tests = false
+angle_has_frame_capture = false
+angle_has_histograms = false
+build_angle_deqp_tests = false
+
+ios_enable_code_signing = false

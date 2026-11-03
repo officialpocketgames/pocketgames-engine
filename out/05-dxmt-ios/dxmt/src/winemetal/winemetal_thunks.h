@@ -350,6 +350,16 @@ struct unixcall_mtlsharedevent_waituntilsignaledvalue {
   bool ret_timeout;
 };
 
+/* MYIOSDECK spec 35 D5.1: upstream's slots of the window-layer entries, named
+   once for both callers (the PE half's thunks and the iOS GL driver, pgl, which
+   calls dxmt_winemetal_unix_call_funcs directly from the unix side) */
+enum dxmt_layer_unixcalls {
+  unix_metal_layer_set_props = 70,
+  unix_metal_layer_get_props = 71,
+  unix_create_metal_view_from_hwnd = 72,
+  unix_release_metal_view = 73,
+};
+
 /* MYIOSDECK spec 05: unix-call entries added at the end of the 64-bit table,
    so upstream's slot numbers don't move. */
 enum dxmt_ios_unixcalls {

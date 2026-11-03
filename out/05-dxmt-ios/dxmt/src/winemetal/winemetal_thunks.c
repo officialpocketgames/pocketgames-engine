@@ -728,7 +728,7 @@ MetalLayer_setProps(obj_handle_t layer, const struct WMTLayerProps *props) {
   struct unixcall_generic_obj_constptr_noret params;
   params.handle = layer;
   WMT_MEMPTR_SET(params.arg, props);
-  UNIX_CALL(70, &params);
+  UNIX_CALL(unix_metal_layer_set_props, &params);
 }
 
 WINEMETAL_API void
@@ -736,7 +736,7 @@ MetalLayer_getProps(obj_handle_t layer, struct WMTLayerProps *props) {
   struct unixcall_generic_obj_ptr_noret params;
   params.handle = layer;
   WMT_MEMPTR_SET(params.arg, props);
-  UNIX_CALL(71, &params);
+  UNIX_CALL(unix_metal_layer_get_props, &params);
 }
 
 WINEMETAL_API obj_handle_t
@@ -746,7 +746,7 @@ CreateMetalViewFromHWND(intptr_t hwnd, obj_handle_t device, obj_handle_t *layer)
   params.device = device;
   params.ret_layer = NULL_OBJECT_HANDLE;
   params.ret_view = NULL_OBJECT_HANDLE;
-  UNIX_CALL(72, &params);
+  UNIX_CALL(unix_create_metal_view_from_hwnd, &params);
   *layer = params.ret_layer;
   return params.ret_view;
 }
@@ -755,7 +755,7 @@ WINEMETAL_API void
 ReleaseMetalView(obj_handle_t view) {
   struct unixcall_generic_obj_noret params;
   params.handle = view;
-  UNIX_CALL(73, &params);
+  UNIX_CALL(unix_release_metal_view, &params);
 }
 
 WINEMETAL_API void

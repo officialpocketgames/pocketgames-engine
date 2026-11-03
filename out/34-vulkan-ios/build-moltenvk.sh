@@ -33,8 +33,12 @@
 #      from a prebuilt release.
 #   2. Build (B2): xcodebuild of MoltenVKPackaging.xcodeproj's iOS-only package scheme, Release,
 #      generic iOS, arm64 only, IPHONEOS_DEPLOYMENT_TARGET=17.0, MVK_USE_METAL_PRIVATE_API=0
-#      (the fork's default, set explicitly anyway). The static XCFramework's ios-arm64 library is
-#      taken, with SPIRV-Cross merged in if MoltenVK's archive doesn't hold it, debug info stripped.
+#      (the fork's default, set explicitly anyway), MVK_EXCLUDE_SPIRV_TOOLS=1. The static
+#      XCFramework's ios-arm64 library is taken (exactly one, moltenvk-lib.sh slice), with
+#      SPIRV-Cross merged in from External/build's SPIRVCross.xcframework only if the archive
+#      refers to SPIRV-Cross symbols it doesn't define (moltenvk-lib.sh spirv-cross: MoltenVK
+#      prelinks it with hidden symbols, so `nm -g` alone doesn't see it); it must then neither
+#      hold nor refer to SPIRV-Tools; debug info stripped.
 #   3. Checks (B3, each fails the build): a compile-time check against MoltenVK's configuration
 #      header that MVK_USE_METAL_PRIVATE_API is 0; the geometry-shader mesh path was compiled for
 #      iOS (the build log compiles MVKPipeline.mm and MTLRenderPipelineDescriptor+MoltenVK.m for
@@ -134,7 +138,9 @@ sc_patches=$(LC_ALL=C ls "$here"/spirv-cross-patches/*.patch 2>/dev/null || true
 patch_rev=$(cat /dev/null $patches $sc_patches | { if command -v sha256sum >/dev/null 2>&1; then sha256sum; else shasum -a 256; fi; } | cut -c1-8)
 say "MoltenVK $tag ($commit), SPIRV-Cross $sc_commit; patches: $(echo "$patches" | grep -c . || true) MoltenVK, $(echo "$sc_patches" | grep -c . || true) SPIRV-Cross; MVK_PATCH_REVISION 0x$patch_rev; platform $platform"
 
-defs='$(inherited) MVK_USE_METAL_PRIVATE_API=0'
+# MVK_EXCLUDE_SPIRV_TOOLS: the shader converter's only use of SPIRV-Tools is disassembling SPIR-V for
+# a debug log (SPIRVSupport.cpp, mvk::logSPIRV); B3 keeps SPIRV-Tools out of the product
+defs='$(inherited) MVK_USE_METAL_PRIVATE_API=0 MVK_EXCLUDE_SPIRV_TOOLS=1'
 # the geometry-shader mesh path (B3): sources that must be compiled for arm64 (for iOS: in an
 # iphoneos build directory; a macOS build directory carries no platform name)
 mesh_sources="MVKPipeline.mm MTLRenderPipelineDescriptor+MoltenVK.m"
@@ -211,18 +217,34 @@ if ! (cd "$mvk" && xcodebuild -project MoltenVKPackaging.xcodeproj -scheme "$sch
     tail -n 40 "$logs/xcodebuild.log"
     die "xcodebuild failed"
 fi
-lib=$(find "$mvk/Package" -path '*static*' -path "*$slice*" ! -path '*simulator*' ! -path '*maccatalyst*' -name 'libMoltenVK.a' 2>/dev/null | head -n 1)
-[ -n "$lib" ] || { find "$mvk/Package" -name '*.a' | head -n 20; die "no static $slice libMoltenVK.a in Package/"; }
+# the static XCFramework's device slice: exactly one libMoltenVK.a (moltenvk-lib.sh)
+lib=$(sh "$here/moltenvk-lib.sh" slice "$mvk/Package" MoltenVK.xcframework libMoltenVK.a "$slice") ||
+    die "no single $slice libMoltenVK.a in Package/ (listed above)"
+case $lib in */static/*) ;; *) die "the $slice libMoltenVK.a isn't the static XCFramework's: ${lib#"$mvk"/}" ;; esac
 say "library: ${lib#"$mvk"/}"
 cp "$lib" "$work/libmoltenvk-full.a"
-if ! xcrun nm -g "$work/libmoltenvk-full.a" 2>/dev/null | grep -q spirv_cross; then
-    if [ "$platform" = ios ]; then ext_os=iOS; else ext_os=macOS; fi
-    cross=$(find "$mvk/External/build" -name 'libSPIRVCross.a' -path "*$ext_os*" ! -path '*imulator*' 2>/dev/null | head -n 1)
-    [ -n "$cross" ] || die "libMoltenVK.a has no SPIRV-Cross and External/build has no $ext_os libSPIRVCross.a"
-    say "merging ${cross#"$mvk"/}"
-    xcrun libtool -static -o "$work/libmoltenvk-merged.a" "$work/libmoltenvk-full.a" "$cross"
-    mv "$work/libmoltenvk-merged.a" "$work/libmoltenvk-full.a"
-fi
+# SPIRV-Cross: MoltenVK prelinks its shader converter, with SPIRV-Cross, into one object with the
+# symbols hidden, so it is usually inside as local symbols; it is merged from External/build's
+# SPIRVCross.xcframework (the same slice) only when the archive refers to SPIRV-Cross symbols that
+# nothing in it defines
+case $(sh "$here/moltenvk-lib.sh" spirv-cross "$work/libmoltenvk-full.a") in
+    inside) cross_note="inside libMoltenVK.a (prelinked)" ;;
+    merge)
+        cross=$(sh "$here/moltenvk-lib.sh" slice "$mvk/External/build" SPIRVCross.xcframework libSPIRVCross.a "$slice") ||
+            die "libMoltenVK.a refers to SPIRV-Cross, and External/build has no single $slice libSPIRVCross.a (listed above)"
+        say "merging ${cross#"$mvk"/}"
+        xcrun libtool -static -o "$work/libmoltenvk-merged.a" "$work/libmoltenvk-full.a" "$cross"
+        mv "$work/libmoltenvk-merged.a" "$work/libmoltenvk-full.a"
+        [ "$(sh "$here/moltenvk-lib.sh" spirv-cross "$work/libmoltenvk-full.a")" = inside ] ||
+            die "SPIRV-Cross references are still unresolved after merging ${cross#"$mvk"/}"
+        cross_note="merged from ${cross#"$mvk"/}"
+        ;;
+    *) die "libMoltenVK.a neither holds nor refers to SPIRV-Cross" ;;
+esac
+say "SPIRV-Cross: $cross_note"
+# SPIRV-Tools stays out (B3): MVK_EXCLUDE_SPIRV_TOOLS above leaves MoltenVK nothing to call in it
+tools=$(sh "$here/moltenvk-lib.sh" spirv-tools "$work/libmoltenvk-full.a")
+[ -z "$tools" ] || die "libMoltenVK.a holds or refers to SPIRV-Tools ($(echo "$tools" | head -n 5 | tr '\n' ' ')): MVK_EXCLUDE_SPIRV_TOOLS didn't take"
 xcrun strip -S -o "$out/libmoltenvk.a" "$work/libmoltenvk-full.a"
 
 # ---------------------------------------------------------------- 3. checks
@@ -239,6 +261,7 @@ xcrun strip -S -o "$out/libmoltenvk.a" "$work/libmoltenvk-full.a"
     echo "SPIRV-Cross patches: $(for p in $sc_patches; do printf '%s ' "$(basename "$p" | cut -c1-4)"; done)"
     echo "MVK_PATCH_REVISION 0x$patch_rev"
     echo "settings: $build_settings GCC_PREPROCESSOR_DEFINITIONS=$defs"
+    echo "SPIRV-Cross: $cross_note; SPIRV-Tools: neither held nor referred to"
 } > "$info"
 
 conf=$(grep -rlE '^[[:space:]]*#[[:space:]]*define[[:space:]]+MVK_USE_METAL_PRIVATE_API' "$mvk/Common" "$mvk/MoltenVK" 2>/dev/null | head -n 1)

@@ -95,6 +95,8 @@ WARN="-Wall -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variab
 # spec 17 Part A1 (spec 12 clarification 1): the shared header overrides (wine/unixlib.h,
 # winternl.h) before the Wine tree's include/
 INCS="-I$SRC -I$INC -I$REPO/out/09-ntdll-processes/include -I$BUILD/include -I$WINE/include -I$FT/include -I$REPO/interfaces"
+# spec 35 D1: opengl_ios.c calls pgl (out/35-opengl-ios/pgl, built into libpgl.a by spec 35)
+INCS="$INCS -I$REPO/out/35-opengl-ios/pgl"
 # w32ios_config.h: the build's config.h, then the optional libraries undefined (Part A3);
 # w32ios_rename.h: link-time renames (Part A2) and the per-thread allocation ceiling (Part B1)
 FORCE="-include $SRC/w32ios_config.h -include $SRC/w32ios_rename.h"
@@ -146,8 +148,9 @@ done
 
 # ---------------------------------------------------------------- 4b. stand-in unix tables
 # Clarifications 8 and 9: the unix call tables of the libraries in unix-tables/tables.txt
-# (opengl32, winspool, netapi32, kerberos, msv1_0), whose upstream unix sides need what iOS
-# doesn't have (OpenGL, CUPS, Samba, Kerberos, ntlm_auth) and aren't built. Only their setup
+# (winspool, netapi32, kerberos, msv1_0; opengl32's are spec 35's libopengl32_unix.a now), whose
+# upstream unix sides need what iOS doesn't have (CUPS, Samba, Kerberos, ntlm_auth) and aren't
+# built. Only their setup
 # entries succeed. Each entry list is generated from the given tree's header; the objects go
 # into the same library as win32u's.
 UT="$HERE/unix-tables"

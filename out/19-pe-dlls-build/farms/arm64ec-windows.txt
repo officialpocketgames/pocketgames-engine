@@ -44,6 +44,7 @@ esent.dll
 fontsub.dll
 gdi32.dll
 gdiplus.dll
+glu32.dll
 hid.dll
 hnetcfg.dll
 imagehlp.dll

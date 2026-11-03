@@ -11,13 +11,15 @@
 # whose code is in its tree), 08-wineserver-ios, 09-ntdll-processes (also specs 10 and 11, and
 # spec 16's src/*.c and spec 13's socket.c, which its build-ios.sh takes itself),
 # 12-win32u-ios, 13-net-crypto-ios, 14-media-audio-ios, 15-controllers, 34-vulkan-ios (MoltenVK
-# first, cached in moltenvk/). Spec 16 and spec 17 have no build-ios.sh of their own: their
-# unix-side code is compiled by 08, 09, 12-15's.
+# first, cached in moltenvk/), 35-opengl-ios (its own scripts: angle/build-angle.sh,
+# build-gl4es.sh, pgl/build-pgl.sh, opengl32-unix/build-unix.sh). Spec 16 and spec 17 have no
+# build-ios.sh of their own: their unix-side code is compiled by 08, 09, 12-15's.
 # <work dir> must hold:
 #   wine-host/   ci/wine-host-build.sh's Wine build dir (macOS configure + make include/all)
 #   dl/          the reference tarballs of ci/fetch-refs.sh (14 takes FFmpeg's from there)
 # and keeps per-part prerequisites, which CI caches: llvm/ (05), cryptodeps/ (13), ffmpeg/ (14),
-# moltenvk/ (34).
+# moltenvk/ (34), angle/ (35: ANGLE's products; its checkout and build, angle-src/, are not
+# cached).
 # <dist dir>/<part>/ receives the static libraries, LINK.txt / exports.txt where the part
 # writes them, build.log and the part's own logs. Exits with the build's status.
 
@@ -165,6 +167,35 @@ case "$part" in
             run "build-ios.sh" sh "$src/build-ios.sh" "$wine" "$wbuild" "$work/ffmpeg" "$out" || status=1
             mkdir -p "$dist/ffmpeg"
             cp "$work/ffmpeg/lib/"*.a "$dist/ffmpeg/" 2>/dev/null || true
+        fi
+        ;;
+    35-opengl-ios)
+        # spec 35: ANGLE (build-angle.sh; its products in angle/, which CI caches), gl4es with this
+        # tree's C3 changes, pgl, then opengl32's unix side. When ANGLE or gl4es fails, pgl is
+        # built without its GL backend (OpenGL stays off) and the part fails, but its archives are
+        # still collected: win32u and opengl32 need pgl's and opengl32's to link, and without them
+        # the app would lose opengl32.dll's tables (spec 12 clarification 8's regression).
+        full=1
+        run "build-angle.sh" bash "$src/angle/build-angle.sh" "$work/angle-src" "$work/angle" ios || full=0
+        for f in args.gn checks.txt third-party.txt NOTICES.txt; do
+            [ -f "$work/angle/$f" ] && cp "$work/angle/$f" "$dist/angle-$f"
+        done
+        run "build-gl4es.sh" bash "$src/build-gl4es.sh" "$work/gl4es" "$out/gl4es" ios || full=0
+        [ -f "$out/gl4es/sources.txt" ] && cp "$out/gl4es/sources.txt" "$dist/gl4es-sources.txt"
+        [ -f "$out/gl4es/LICENSE.gl4es" ] && cp "$out/gl4es/LICENSE.gl4es" "$dist/gl4es-LICENSE.txt"
+        if [ $full -eq 1 ]; then
+            run "build-pgl.sh" sh "$src/pgl/build-pgl.sh" "$work/angle" "$out/gl4es" "$out" ios || status=1
+            cp "$work/angle/libangle.a" "$out/gl4es/libgl4es.a" "$out/" || status=1
+            cp "$work/angle/LINK.txt" "$out/LINK.txt" 2>/dev/null || true
+        else
+            say "::error::ios-part: 35-opengl-ios: ANGLE or gl4es failed (see above); pgl is built without its GL backend, OpenGL stays off"
+            status=1
+            run "build-pgl.sh none" sh "$src/pgl/build-pgl.sh" none "$out" ios || status=1
+        fi
+        run "build-unix.sh" sh "$src/opengl32-unix/build-unix.sh" "$wine" "$wbuild" "$out" || status=1
+        # collected even on failure (see above), unless pgl or opengl32 themselves didn't build
+        if [ -f "$out/libpgl.a" ] && [ -f "$out/libopengl32_unix.a" ]; then
+            find "$out" -maxdepth 1 -name '*.a' -exec cp {} "$dist/" \;
         fi
         ;;
     *)

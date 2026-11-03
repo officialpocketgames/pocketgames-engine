@@ -2,7 +2,8 @@
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 12 clarifications 8 and 9: host test of the stand-in unix call tables. Built once per
-// library (-DTEST_OPENGL32, -DTEST_WINSPOOL, -DTEST_NETAPI32, -DTEST_KERBEROS, -DTEST_MSV1_0):
+// library (-DTEST_WINSPOOL, -DTEST_NETAPI32, -DTEST_KERBEROS, -DTEST_MSV1_0; opengl32's test moved
+// to out/35-opengl-ios/tests with its tables, spec 35 A4):
 // <name>_ios.c is compiled here against Wine 11.4's real header for that library
 // (run-host-tests.sh runs gen-entries.sh on it first, with tables.txt's arguments);
 // w32ios_unix_unsupported is a fake that records the report and index. Checks, per library: both
@@ -19,19 +20,7 @@
 
 #define END ~0u   /* ends the index lists below */
 
-#if defined(TEST_OPENGL32)
-#include "opengl32_ios.c"
-#define DLL_FILE  "opengl32.dll"
-#define FUNCS     opengl32_unix_call_funcs
-#define WOW64     opengl32_unix_call_wow64_funcs
-#define COUNT     funcs_count
-#define HEAD      "[opengl32] no OpenGL on iOS"
-#define FUNCS_NAME "opengl32_unix_call_funcs"
-#define WOW64_NAME "opengl32_unix_call_wow64_funcs"
-static const unsigned int setup[] = { unix_process_attach, unix_thread_attach, unix_process_detach, END };
-static const unsigned int samples[] = { unix_wglCreateContext, unix_get_pixel_formats, unix_wglSwapIntervalEXT, END };
-
-#elif defined(TEST_WINSPOOL)
+#if defined(TEST_WINSPOOL)
 #include "winspool_ios.c"
 #define DLL_FILE  "winspool.drv"
 #define FUNCS     winspool_unix_call_funcs
@@ -80,7 +69,7 @@ static const unsigned int setup[] = { END };   /* msv1_0 has no setup entry */
 static const unsigned int samples[] = { unix_chat, unix_cleanup, unix_fork, END };
 
 #else
-#error "build with one of -DTEST_OPENGL32, -DTEST_WINSPOOL, -DTEST_NETAPI32, -DTEST_KERBEROS, -DTEST_MSV1_0"
+#error "build with one of -DTEST_WINSPOOL, -DTEST_NETAPI32, -DTEST_KERBEROS, -DTEST_MSV1_0"
 #endif
 
 #include "unix_tables_pure.h"

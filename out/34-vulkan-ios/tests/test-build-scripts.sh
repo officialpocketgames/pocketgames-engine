@@ -54,7 +54,7 @@ nmvk=$(ls "$PART"/moltenvk-patches/*.patch | grep -c .)
 nsc=$(ls "$PART"/spirv-cross-patches/*.patch | grep -c .)
 if sh "$PART/build-moltenvk.sh" --dry-run "$fake" "$fakesc" "$T/work" "$T/out" > "$T/dry.out" 2>&1; then
     for want in "MoltenVK geometry-shaders ($commit), SPIRV-Cross $sc_commit" "ARCHS=arm64" \
-                "IPHONEOS_DEPLOYMENT_TARGET=17.0" "MVK_USE_METAL_PRIVATE_API=0" \
+                "IPHONEOS_DEPLOYMENT_TARGET=17.0" "MVK_USE_METAL_PRIVATE_API=0" "MVK_EXCLUDE_SPIRV_TOOLS=1" \
                 "SPIRV-Cross at $sc_commit" "Vulkan-Headers at 0123456789abcdef0123456789abcdef0123Vulkan-Headers" \
                 "patches: $nmvk MoltenVK, $nsc SPIRV-Cross; MVK_PATCH_REVISION 0x" \
                 "fetchDependencies --ios --spirv-cross-root $T/work/SPIRV-Cross" \
@@ -69,7 +69,7 @@ fi
 # the macOS build of the same sources, for the CI's render test (clarification 1, item 6)
 if sh "$PART/build-moltenvk.sh" --dry-run --platform macos "$fake" "$fakesc" "$T/work" "$T/out" > "$T/drym.out" 2>&1; then
     for want in "platform macos" "fetchDependencies --macos --spirv-cross-root" "'MoltenVK Package (macOS only)'" \
-                "MACOSX_DEPLOYMENT_TARGET=13.0" "MVK_USE_METAL_PRIVATE_API=0" "no App Store checks"; do
+                "MACOSX_DEPLOYMENT_TARGET=13.0" "MVK_USE_METAL_PRIVATE_API=0" "MVK_EXCLUDE_SPIRV_TOOLS=1" "no App Store checks"; do
         grep -qF "$want" "$T/drym.out" || bad "macOS dry run doesn't say: $want"
     done
     grep -qF "IPHONEOS_DEPLOYMENT_TARGET" "$T/drym.out" && bad "the macOS dry run has iOS settings"
