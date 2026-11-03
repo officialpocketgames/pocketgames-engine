@@ -72,15 +72,25 @@ rm -rf "$bld"
 # GL4ES_IOS selects the C3 changes; gl4es_ios_config.h, forced into every source, sends gl4es's
 # printf/fprintf(stderr) to the log callback (C3.3) and defines the per-thread marker (C3.1)
 cflags="-fvisibility=hidden -DNDEBUG -DGL4ES_IOS -include $src/src/gl/gl4es_ios_config.h"
+# C2's options but NO_LOADER: on Apple targets src/gl/loader.h defines NO_LOADER itself, and
+# CMake's NO_LOADER=ON (add_definitions(-DNO_LOADER), i.e. 1) only redefined it in every file.
+# Both files that test it (loader.c, init.c) include loader.h first, so the loader stays off.
 # shellcheck disable=SC2086
 cmake -S "$src" -B "$bld" $sys -DCMAKE_OSX_ARCHITECTURES=arm64 -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
     -DCMAKE_C_FLAGS="$cflags" -DCMAKE_C_VISIBILITY_PRESET=hidden \
-    -DNOX11=ON -DNOEGL=ON -DNO_LOADER=ON -DNO_GBM=ON -DSTATICLIB=ON -DNO_INIT_CONSTRUCTOR=ON -DDEFAULT_ES=2
+    -DNOX11=ON -DNOEGL=ON -DNO_GBM=ON -DSTATICLIB=ON -DNO_INIT_CONSTRUCTOR=ON -DDEFAULT_ES=2
 cmake --build "$bld" -j "$(sysctl -n hw.ncpu)"
 
-lib=$(find "$bld" -name '*.a' | head -n 1)
-[ -n "$lib" ] || { echo "build-gl4es: no static library built" >&2; exit 1; }
+# gl4es's CMakeLists.txt sets CMAKE_ARCHIVE_OUTPUT_DIRECTORY to the source tree's lib/ (in the
+# file, so no -D moves it): the static GL target is <src>/lib/libGL.a
+lib="$src/lib/libGL.a"
+if [ ! -f "$lib" ]; then
+    lib=$({ find "$src/lib" "$bld" -name '*.a' 2>/dev/null || true; } | sed -n '1p')
+fi
+[ -n "$lib" ] && [ -f "$lib" ] || {
+    echo "build-gl4es: no static library built (not at $src/lib/libGL.a, none in $src/lib or $bld)" >&2; exit 1; }
+echo "build-gl4es: gl4es's archive: $lib ($(ar t "$lib" | wc -l | tr -d ' ') members)"
 
 # C2.1: in a static link, hidden symbols are still global and gl4es's gl* aliases would clash
 # with ANGLE's. So the archive's objects are pre-linked into one object (ld -r) that keeps only

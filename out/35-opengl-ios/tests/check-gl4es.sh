@@ -58,11 +58,13 @@ if $CC --version 2>/dev/null | grep -qi clang; then
   arch=$(uname -m)
   case "$arch" in aarch64) darch=arm64 ;; *) darch=$arch ;; esac
   res=$($CC -print-resource-dir)/include
+  # build-gl4es.sh's definitions: no NO_LOADER, which loader.h defines itself on Apple targets
+  dflags="-DGL4ES_IOS -DNOX11 -DNOEGL -DNO_GBM -DSTATICLIB -DNO_INIT_CONSTRUCTOR -DDEFAULT_ES=2 -DNDEBUG"
   for f in $files; do
+    # shellcheck disable=SC2086
     $CC --target="$darch-apple-macos13" -U__nonnull -U__nullable -nostdinc -isystem "$res" \
         -isystem "/usr/include/$arch-linux-gnu" -isystem /usr/include \
-        -std=gnu11 -fsyntax-only -w -DGL4ES_IOS -include "$work/src/gl/gl4es_ios_config.h" \
-        -DNOX11 -DNOEGL -DNO_LOADER -DNO_GBM -DSTATICLIB -DNO_INIT_CONSTRUCTOR -DDEFAULT_ES=2 -DNDEBUG \
+        -std=gnu11 -fsyntax-only -w $dflags -include "$work/src/gl/gl4es_ios_config.h" \
         -I"$work/include" -I"$work/src/util" -I"$work/src/glx" -I"$work/src/gl" \
         "$work/src/$f" > "$work/darwin.log" 2>&1 || true
     if grep -E "^$work/.*error" "$work/darwin.log" > "$work/darwin-errors.txt"; then
@@ -71,6 +73,16 @@ if $CC --version 2>/dev/null | grep -qi clang; then
       exit 1
     fi
   done
+  # and the loader is off all the same (loader.c's NO_LOADER branch: no library handles)
+  # shellcheck disable=SC2086
+  if ! $CC --target="$darch-apple-macos13" -U__nonnull -U__nullable -nostdinc -isystem "$res" \
+        -isystem "/usr/include/$arch-linux-gnu" -isystem /usr/include \
+        -std=gnu11 -E -w $dflags -include "$work/src/gl/gl4es_ios_config.h" \
+        -I"$work/include" -I"$work/src/util" -I"$work/src/glx" -I"$work/src/gl" \
+        "$work/src/gl/loader.c" 2>/dev/null | grep -qF 'void *gles = (void*)(~(uintptr_t)0)'; then
+    echo "FAIL check-gl4es: without NO_LOADER the loader is on for a Darwin target (loader.c)"
+    exit 1
+  fi
   darwin="; for $darch-apple-macos13 too"
 else
   echo "SKIPPED check-gl4es Darwin pass (needs clang; CC=$CC)"
