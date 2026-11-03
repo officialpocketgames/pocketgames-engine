@@ -7723,23 +7723,39 @@ static ULONG_PTR highest_mapped(void)
     return end;
 }
 
-/* whether [base, base + size) is one region the app reserved without access (Part D: the app
- * reserves the exe window itself; anything else there must not be mapped over) */
-static BOOL exe_window_is_reserved( ULONG64 base, ULONG64 size )
+/* clarification 12: one vm_region_64 query for ios_exewin_walk (the region holding *addr, or
+ * the next one above it) */
+static int exe_window_region( void *ctx, uint64_t *addr, uint64_t *size, int *protection )
 {
-    vm_address_t addr = base;
+    vm_address_t region = *addr;
     vm_size_t region_size = 0;
     vm_region_basic_info_data_64_t info;
     mach_msg_type_number_t count = VM_REGION_BASIC_INFO_COUNT_64;
     mach_port_t object = MACH_PORT_NULL;
     kern_return_t kr;
 
-    kr = vm_region_64( mach_task_self(), &addr, &region_size, VM_REGION_BASIC_INFO_64,
+    kr = vm_region_64( mach_task_self(), &region, &region_size, VM_REGION_BASIC_INFO_64,
                        (vm_region_info_t)&info, &count, &object );
-    ios_boot_mark( "exe window check: kr %d, region %p-%p, protection %d", kr, (void *)addr,
-                   (void *)(addr + region_size), kr ? -1 : info.protection );
-    if (kr) return FALSE;
-    return addr <= base && addr + region_size >= base + size && info.protection == VM_PROT_NONE;
+    if (kr) return kr;
+    *addr = region;
+    *size = region_size;
+    *protection = info.protection;
+    return 0;
+}
+
+/* whether [base, base + size) is what the app reserved without access (Part D: the app
+ * reserves the exe window itself; anything else there must not be mapped over). Clarification
+ * 12: the kernel splits that one reservation into entries of at most 128 MB, so the check walks
+ * adjacent inaccessible regions (ios_exewin_walk) */
+static BOOL exe_window_is_reserved( ULONG64 base, ULONG64 size )
+{
+    struct ios_exewin_walk walk;
+    char line[192];
+    BOOL ok = !ios_exewin_walk( base, size, exe_window_region, NULL, &walk );
+
+    ios_exewin_walk_describe( &walk, line, sizeof(line) );
+    ios_boot_mark( "%s", line );
+    return ok;
 }
 
 /* VM_FLAGS_FIXED without VM_FLAGS_OVERWRITE: a range anything holds (the app, dyld) is refused,

@@ -126,6 +126,49 @@ int ios_exewin_confirm( const struct ios_exewin *w, const void *owner, uint64_t 
 /* Ends owner's claim: 1 (it was the occupant; *base, *size: what to put back), 0 otherwise. */
 int ios_exewin_retire( struct ios_exewin *w, const void *owner, uint64_t *base, uint64_t *size );
 
+/* ---------- clarification 12: the window may be several kernel regions ----------
+ * The kernel splits a large reservation into entries of at most 128 MB, so the window the app
+ * reserved with one call is checked as a walk: the first region at or below the base, each next
+ * one starting exactly where the previous ended, each with current protection VM_PROT_NONE (0),
+ * until they reach base + size. A failed query, a gap, another protection or more than
+ * IOS_EXEWIN_MAX_REGIONS regions refuse the window. */
+
+#define IOS_EXEWIN_MAX_REGIONS 64
+
+/* Like vm_region_64: the region holding *addr, else the next one above it; on success (0)
+ * *addr is its start, *size its size, *protection its current protection. Nonzero: the
+ * kern_return_t (no region at or above *addr, for example). */
+typedef int (*ios_region_query)( void *ctx, uint64_t *addr, uint64_t *size, int *protection );
+
+enum ios_exewin_walk_result
+{
+    IOS_EXEWIN_WALK_OK,
+    IOS_EXEWIN_WALK_QUERY_FAILED,   /* the query at `at` failed with kr */
+    IOS_EXEWIN_WALK_GAP,            /* nothing at `at`: the next region is [next, next_end) */
+    IOS_EXEWIN_WALK_PROTECTION,     /* region [next, next_end) isn't inaccessible */
+    IOS_EXEWIN_WALK_TOO_MANY,       /* more than IOS_EXEWIN_MAX_REGIONS regions */
+};
+
+struct ios_exewin_walk
+{
+    int       result;       /* enum ios_exewin_walk_result */
+    int       kr;           /* the failed query's kern_return_t, else 0 */
+    unsigned  regions;      /* adjacent inaccessible regions found from the base */
+    uint64_t  start, end;   /* what they cover (start = end = base: none) */
+    int       protection;   /* the last region reported's protection; -1 when the last query failed */
+    uint64_t  at;           /* where the walk stopped: the address asked last */
+    uint64_t  next, next_end;   /* the last region reported (GAP, PROTECTION) */
+};
+
+/* Walks [base, base + size). Returns 0 when the window is accepted, -1 when refused; *walk
+ * says how far the walk got either way. */
+int ios_exewin_walk( uint64_t base, uint64_t size, ios_region_query query, void *ctx,
+                     struct ios_exewin_walk *walk );
+
+/* The boot line: "exe window check: kr 0, <n> regions 0x<start>-0x<end>, protection 0", and
+ * for a refused window "; refused: <why>" after it. */
+void ios_exewin_walk_describe( const struct ios_exewin_walk *walk, char *buf, size_t size );
+
 /* ---------- Part C: dylib images ---------- */
 
 /* The folder of a machine's dylibs: AMD64 (ARM64EC) from pe_dir, ARM64 from pe_dir_a64, else

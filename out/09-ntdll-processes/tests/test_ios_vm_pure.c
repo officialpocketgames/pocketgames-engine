@@ -4,8 +4,9 @@
 // Spec 10 Part G: host tests of the pure parts of memory on iOS (ntdll-unix/ios_vm_pure.c), with
 // fake bases: the highest user address, limit translation for guest ceilings, the
 // large-address-aware rules, the window slot state machine, the exe-window claim/confirm/retire
-// with host-page rounding, the dylib folder choice and path, the executable-request rules and
-// the low windows (clarification 1, also under concurrent use).
+// with host-page rounding, the exe-window check over several kernel regions (clarification 12),
+// the dylib folder choice and path, the executable-request rules and the low windows
+// (clarification 1, also under concurrent use).
 //
 //   cc -std=c11 -Wall -pthread -I../ntdll-unix ../ntdll-unix/ios_vm_pure.c test_ios_vm_pure.c -o t && ./t
 
@@ -290,6 +291,121 @@ static void test_exewin(void)
     /* no window: nothing claimed */
     memset( &w, 0, sizeof(w) );
     CHECK( ios_exewin_claim( &w, &a, 0x140000000ull, 0x1000ull, HOST_PAGE ) == -1 );
+}
+
+/* ---------- clarification 12: the exe window as several kernel regions ---------- */
+
+#define MB128  0x8000000ull
+
+struct fake_region { uint64_t start, size; int protection; };
+
+struct fake_regions
+{
+    const struct fake_region *list;   /* sorted, not overlapping */
+    unsigned int count, queries;
+};
+
+/* vm_region_64's rule: the region holding *addr, else the next one above it, else
+ * KERN_INVALID_ADDRESS (1) */
+static int fake_region_query( void *ctx, uint64_t *addr, uint64_t *size, int *protection )
+{
+    struct fake_regions *f = ctx;
+    unsigned int i;
+
+    f->queries++;
+    for (i = 0; i < f->count; i++)
+    {
+        if (f->list[i].start + f->list[i].size <= *addr) continue;
+        *addr = f->list[i].start;
+        *size = f->list[i].size;
+        *protection = f->list[i].protection;
+        return 0;
+    }
+    return 1;
+}
+
+static int walk_regions( const struct fake_region *list, unsigned int count, uint64_t base,
+                         uint64_t size, struct ios_exewin_walk *walk, char *line, size_t line_size )
+{
+    struct fake_regions f = { list, count, 0 };
+    int ret = ios_exewin_walk( base, size, fake_region_query, &f, walk );
+
+    ios_exewin_walk_describe( walk, line, line_size );
+    return ret;
+}
+
+static void test_exewin_regions(void)
+{
+    static struct fake_region many[IOS_EXEWIN_MAX_REGIONS + 1];
+    struct fake_region list[4];
+    struct ios_exewin_walk walk;
+    char line[256];
+    unsigned int i;
+
+    /* four adjacent 128 MB PROT_NONE regions: the 512 MB window of the device run */
+    for (i = 0; i < 4; i++) list[i] = (struct fake_region){ 0x140000000ull + i * MB128, MB128, 0 };
+    CHECK( !walk_regions( list, 4, 0x140000000ull, 4 * MB128, &walk, line, sizeof(line) ) );
+    CHECK( walk.result == IOS_EXEWIN_WALK_OK && walk.regions == 4 );
+    CHECK( walk.start == 0x140000000ull && walk.end == 0x160000000ull );
+    CHECK_STR( line, "exe window check: kr 0, 4 regions 0x140000000-0x160000000, protection 0" );
+    /* a smaller window inside them stops once it is covered */
+    CHECK( !walk_regions( list, 4, 0x140000000ull, MB128 + 1, &walk, line, sizeof(line) ) );
+    CHECK( walk.regions == 2 && walk.end == 0x150000000ull );
+
+    /* one region: the 128 MB window of before, and a window starting inside a larger region */
+    CHECK( !walk_regions( list, 1, 0x140000000ull, MB128, &walk, line, sizeof(line) ) );
+    CHECK_STR( line, "exe window check: kr 0, 1 regions 0x140000000-0x148000000, protection 0" );
+    CHECK( !walk_regions( list, 1, 0x144000000ull, 0x4000000ull, &walk, line, sizeof(line) ) );
+    CHECK( walk.regions == 1 && walk.start == 0x140000000ull );
+
+    /* a gap between two regions */
+    list[1].start += 0x4000;
+    CHECK( walk_regions( list, 4, 0x140000000ull, 4 * MB128, &walk, line, sizeof(line) ) == -1 );
+    CHECK( walk.result == IOS_EXEWIN_WALK_GAP && walk.regions == 1 && walk.end == 0x148000000ull );
+    CHECK_STR( line, "exe window check: kr 0, 1 regions 0x140000000-0x148000000, protection 0; "
+               "refused: a gap at 0x148000000 (next region 0x148004000-0x150004000)" );
+    list[1].start -= 0x4000;
+    /* a first region starting above the base is a gap too */
+    CHECK( walk_regions( list, 4, 0x13fffc000ull, 4 * MB128, &walk, line, sizeof(line) ) == -1 );
+    CHECK( walk.result == IOS_EXEWIN_WALK_GAP && walk.regions == 0 );
+
+    /* one region with read access (VM_PROT_READ is 1) */
+    list[0].protection = 1;
+    CHECK( walk_regions( list, 1, 0x140000000ull, MB128, &walk, line, sizeof(line) ) == -1 );
+    CHECK( walk.result == IOS_EXEWIN_WALK_PROTECTION && walk.regions == 0 && walk.protection == 1 );
+    CHECK_STR( line, "exe window check: kr 0, 0 regions 0x140000000-0x140000000, protection 1; "
+               "refused: region 0x140000000-0x148000000 has protection 1" );
+    /* and a later one */
+    list[0].protection = 0;
+    list[2].protection = 3;
+    CHECK( walk_regions( list, 4, 0x140000000ull, 4 * MB128, &walk, line, sizeof(line) ) == -1 );
+    CHECK( walk.result == IOS_EXEWIN_WALK_PROTECTION && walk.regions == 2 && walk.protection == 3 );
+    list[2].protection = 0;
+
+    /* the list ends short of base + size: the next query finds nothing */
+    CHECK( walk_regions( list, 3, 0x140000000ull, 4 * MB128, &walk, line, sizeof(line) ) == -1 );
+    CHECK( walk.result == IOS_EXEWIN_WALK_QUERY_FAILED && walk.kr == 1 && walk.regions == 3 );
+    CHECK_STR( line, "exe window check: kr 1, 3 regions 0x140000000-0x158000000, protection -1; "
+               "refused: vm_region_64 failed at 0x158000000" );
+    /* no region at all */
+    CHECK( walk_regions( list, 0, 0x140000000ull, MB128, &walk, line, sizeof(line) ) == -1 );
+    CHECK( walk.result == IOS_EXEWIN_WALK_QUERY_FAILED && walk.regions == 0 );
+
+    /* 65 regions: refused; 64 are still accepted */
+    for (i = 0; i <= IOS_EXEWIN_MAX_REGIONS; i++)
+        many[i] = (struct fake_region){ 0x140000000ull + i * HOST_PAGE, HOST_PAGE, 0 };
+    CHECK( walk_regions( many, IOS_EXEWIN_MAX_REGIONS + 1, 0x140000000ull,
+                         (IOS_EXEWIN_MAX_REGIONS + 1) * HOST_PAGE, &walk, line, sizeof(line) ) == -1 );
+    CHECK( walk.result == IOS_EXEWIN_WALK_TOO_MANY && walk.regions == IOS_EXEWIN_MAX_REGIONS );
+    CHECK_STR( line, "exe window check: kr 0, 64 regions 0x140000000-0x140100000, protection 0; "
+               "refused: more than 64 regions" );
+    CHECK( !walk_regions( many, IOS_EXEWIN_MAX_REGIONS + 1, 0x140000000ull,
+                          IOS_EXEWIN_MAX_REGIONS * HOST_PAGE, &walk, line, sizeof(line) ) );
+    CHECK( walk.regions == IOS_EXEWIN_MAX_REGIONS );
+
+    /* the line fits a small buffer without overflowing */
+    walk_regions( list, 4, 0x140000000ull, 4 * MB128, &walk, line, 20 );
+    CHECK( strlen( line ) == 19 );
 }
 
 /* ---------- Part C ---------- */
@@ -809,6 +925,7 @@ int main(void)
     test_translate();
     test_slots();
     test_exewin();
+    test_exewin_regions();
     test_dylib();
     test_exec();
     test_lowwin();

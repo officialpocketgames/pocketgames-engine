@@ -253,6 +253,88 @@ int ios_exewin_retire( struct ios_exewin *w, const void *owner, uint64_t *base, 
     return 1;
 }
 
+/* ---------- clarification 12: the window as several kernel regions ---------- */
+
+static int walk_stop( struct ios_exewin_walk *walk, int result )
+{
+    walk->result = result;
+    return -1;
+}
+
+int ios_exewin_walk( uint64_t base, uint64_t size, ios_region_query query, void *ctx,
+                     struct ios_exewin_walk *walk )
+{
+    uint64_t limit = base + size, addr = base;
+
+    memset( walk, 0, sizeof(*walk) );
+    walk->start = walk->end = walk->at = base;
+    if (!size || limit < base) return walk_stop( walk, IOS_EXEWIN_WALK_GAP );
+
+    for (;;)
+    {
+        uint64_t region = addr, region_size = 0;
+        int protection = -1, kr;
+
+        if (walk->regions == IOS_EXEWIN_MAX_REGIONS) return walk_stop( walk, IOS_EXEWIN_WALK_TOO_MANY );
+        walk->at = addr;
+        if ((kr = query( ctx, &region, &region_size, &protection )))
+        {
+            walk->kr = kr;
+            walk->protection = -1;
+            return walk_stop( walk, IOS_EXEWIN_WALK_QUERY_FAILED );
+        }
+        walk->protection = protection;
+        walk->next = region;
+        walk->next_end = region + region_size;
+        /* the first region holds the base, each next one starts where the previous ended (an
+         * empty or wrapping region counts as a gap) */
+        if (walk->regions ? region != addr : region > base) return walk_stop( walk, IOS_EXEWIN_WALK_GAP );
+        if (!region_size || region + region_size <= addr) return walk_stop( walk, IOS_EXEWIN_WALK_GAP );
+        if (protection) return walk_stop( walk, IOS_EXEWIN_WALK_PROTECTION );
+        if (!walk->regions++) walk->start = region;
+        walk->end = addr = region + region_size;
+        if (addr >= limit)
+        {
+            walk->result = IOS_EXEWIN_WALK_OK;
+            return 0;
+        }
+    }
+}
+
+void ios_exewin_walk_describe( const struct ios_exewin_walk *walk, char *buf, size_t size )
+{
+    int n;
+
+    if (!size) return;
+    n = snprintf( buf, size, "exe window check: kr %d, %u regions 0x%llx-0x%llx, protection %d",
+                  walk->kr, walk->regions, (unsigned long long)walk->start,
+                  (unsigned long long)walk->end, walk->protection );
+    if (n < 0 || (size_t)n >= size) return;
+    buf += n;
+    size -= n;
+    switch (walk->result)
+    {
+    case IOS_EXEWIN_WALK_OK:
+        break;
+    case IOS_EXEWIN_WALK_QUERY_FAILED:
+        snprintf( buf, size, "; refused: vm_region_64 failed at 0x%llx", (unsigned long long)walk->at );
+        break;
+    case IOS_EXEWIN_WALK_GAP:
+        if (walk->next_end) snprintf( buf, size, "; refused: a gap at 0x%llx (next region 0x%llx-0x%llx)",
+                                      (unsigned long long)walk->at, (unsigned long long)walk->next,
+                                      (unsigned long long)walk->next_end );
+        else snprintf( buf, size, "; refused: an empty or wrapping range" );
+        break;
+    case IOS_EXEWIN_WALK_PROTECTION:
+        snprintf( buf, size, "; refused: region 0x%llx-0x%llx has protection %d",
+                  (unsigned long long)walk->next, (unsigned long long)walk->next_end, walk->protection );
+        break;
+    case IOS_EXEWIN_WALK_TOO_MANY:
+        snprintf( buf, size, "; refused: more than %d regions", IOS_EXEWIN_MAX_REGIONS );
+        break;
+    }
+}
+
 /* ---------- Part C ---------- */
 
 const char *ios_dylib_dir( unsigned short machine, const char *pe_dir, const char *pe_dir_a64 )
