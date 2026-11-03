@@ -1,0 +1,10 @@
+MoltenVK and SPIRV-Cross in libmoltenvk.a carry patches adopted from steamac
+(github.com/StonkGuy/steamac, commit 56aa855904ed68f955bc9e4916321df9f21eb7ba,
+host/moltenvk/patches/), Apache License 2.0. The attribution notices of steamac's NOTICE file
+that pertain to them:
+
+FX Steam Launcher (steamac)
+Copyright 2026 FX GAMES FZ LLC
+
+Patches keep the copyright of their authors as recorded in each patch; FX GAMES FZ LLC's own
+changes in a patch are licensed under the license of the project the patch applies to.

@@ -1,4 +1,5 @@
-// Changed for MYIOSDECK (spec 05 F3). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 F3; spec 05 clarification 10: an LGPL-2.1-or-later block from
+// steamac's DXMT patch 0010, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "d3d11_pipeline_cache.hpp"
 #include "airconv_public.h"
 #include "d3d11_device.hpp"
@@ -459,6 +460,13 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
   }
 
 public:
+  /* LGPL-2.1-or-later, from steamac's DXMT patch 0010 (SteveTanSaMa): members are
+     destroyed in reverse declaration order, so join the workers while the shader
+     variants, pipelines and their dependencies are still alive. */
+  ~PipelineCache() override {
+    scheduler_.shutdown();
+  }
+
   PipelineCache(MTLD3D11Device *pDevice) :
       scache_(ShaderCache::getInstance(pDevice->GetDXMTDevice().metalVersion())),
       device(pDevice),

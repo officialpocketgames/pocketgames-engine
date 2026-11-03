@@ -1,3 +1,5 @@
+// Changed for MYIOSDECK (spec 05 clarification 10: LGPL-2.1-or-later blocks from steamac's DXMT
+// patches 0018 and 0022, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "dxbc_converter_base.hpp"
 #include "../dxbc_converter.hpp"
 #include "air_builder.hpp"
@@ -16,6 +18,20 @@ llvm::ArrayType *
 GetArrayType(llvm::Value *Array) {
   return llvm::cast<llvm::ArrayType>(llvm::cast<llvm::PointerType>(Array->getType())->getNonOpaquePointerElementType());
 }
+
+/* LGPL-2.1-or-later, from steamac's DXMT patch 0022 (hanzpo): a single dynamically indexed
+   access keeps a whole indexable temp array in thread memory, since SROA can only promote
+   allocas whose accesses all use constant indices. For arrays up to this many registers,
+   dynamic accesses are lowered to select chains over constant-index accesses instead, so the
+   array can live in registers. */
+constexpr unsigned kMaxSelectLoweredIndexableTempRegisters = 8;
+
+static bool
+UseSelectLowering(llvm::Value *Index, llvm::ArrayType *TyHandle, unsigned VecSize) {
+  return !llvm::isa<llvm::ConstantInt>(Index) &&
+         TyHandle->getNumElements() / VecSize <= kMaxSelectLoweredIndexableTempRegisters;
+}
+/* end of LGPL block */
 
 llvm::Value *
 Converter::LoadOperandIndex(const IndexByTempComponent &SrcOpIndex) {
@@ -271,26 +287,36 @@ Converter::LoadOperand(const SrcOperandIndexableTemp &SrcOp, mask_t Mask) {
   auto TyHandle = GetArrayType(Handle);
   auto Index = LoadOperandIndex(SrcOp.regindex);
   auto TyInt = air.getIntTy();
+  auto VecSize = regfile.vec_size;
+
+  /* LGPL-2.1-or-later, from steamac's DXMT patch 0022 (hanzpo): a small array read with a
+     dynamic index is a select chain over constant-index loads (UseSelectLowering) */
+  auto LoadElement = [&](llvm::Value *RegIndex, unsigned Comp) -> llvm::Value * {
+    auto Ptr = ir.CreateGEP(
+        TyHandle, Handle, {ir.getInt32(0), ir.CreateAdd(ir.CreateMul(RegIndex, ir.getInt32(VecSize)), ir.getInt32(Comp))}
+    );
+    return ir.CreateLoad(TyInt, Ptr);
+  };
+  auto LoadComponent = [&](unsigned Comp) -> llvm::Value * {
+    if (!UseSelectLowering(Index, TyHandle, VecSize))
+      return LoadElement(Index, Comp);
+    llvm::Value *Value = LoadElement(ir.getInt32(0), Comp);
+    for (unsigned Reg = 1; Reg < TyHandle->getNumElements() / VecSize; Reg++)
+      Value = ir.CreateSelect(ir.CreateICmpEQ(Index, ir.getInt32(Reg)), LoadElement(ir.getInt32(Reg), Comp), Value);
+    return Value;
+  };
 
   if (auto Comp = ComponentFromScalarMask(Mask, SrcOp._.swizzle); Comp >= 0) {
-    auto Ptr = ir.CreateGEP(
-        TyHandle, Handle,
-        {ir.getInt32(0), ir.CreateAdd(ir.CreateMul(Index, ir.getInt32(regfile.vec_size)), ir.getInt32(Comp))}
-    );
-    auto ValueInt = ir.CreateLoad(TyInt, Ptr);
-    return ApplySrcModifier(SrcOp._, ValueInt, Mask);
+    return ApplySrcModifier(SrcOp._, LoadComponent(Comp), Mask);
   }
 
-  auto TyIntVec = air.getIntTy(regfile.vec_size);
+  auto TyIntVec = air.getIntTy(VecSize);
   llvm::Value *ValueIntVec = llvm::PoisonValue::get(TyIntVec);
   for (auto [DstComp, _] : EnumerateComponents(MemoryAccessMask(Mask, SrcOp._.swizzle))) {
-    auto Ptr = ir.CreateGEP(
-        TyHandle, Handle,
-        {ir.getInt32(0), ir.CreateAdd(ir.CreateMul(Index, ir.getInt32(regfile.vec_size)), ir.getInt32(DstComp))}
-    );
-    ValueIntVec = ir.CreateInsertElement(ValueIntVec, ir.CreateLoad(TyInt, Ptr), DstComp);
+    ValueIntVec = ir.CreateInsertElement(ValueIntVec, LoadComponent(DstComp), DstComp);
   }
   return ApplySrcModifier(SrcOp._, ValueIntVec, Mask);
+  /* end of LGPL block */
 }
 
 llvm::Value *
@@ -746,14 +772,32 @@ Converter::StoreOperand(const DstOperandIndexableTemp &DstOp, llvm::Value *Value
   auto Handle = regfile.ptr_int_vec;
   auto TyHandle = GetArrayType(Handle);
   auto Index = LoadOperandIndex(DstOp.regindex);
+  auto VecSize = regfile.vec_size;
+
+  /* LGPL-2.1-or-later, from steamac's DXMT patch 0022 (hanzpo) */
+  auto ElementPtr = [&](llvm::Value *RegIndex, unsigned Comp) {
+    return ir.CreateInBoundsGEP(
+        TyHandle, Handle, {ir.getInt32(0), ir.CreateAdd(ir.CreateMul(RegIndex, ir.getInt32(VecSize)), ir.getInt32(Comp))}
+    );
+  };
+
+  if (UseSelectLowering(Index, TyHandle, VecSize)) {
+    // write every register, keeping the old value where the index doesn't match
+    auto TyInt = air.getIntTy();
+    for (unsigned Reg = 0; Reg < TyHandle->getNumElements() / VecSize; Reg++) {
+      auto Match = ir.CreateICmpEQ(Index, ir.getInt32(Reg));
+      for (auto [DstComp, SrcComp] : EnumerateComponents(DstOp._.mask)) {
+        auto Ptr = ElementPtr(ir.getInt32(Reg), DstComp);
+        ir.CreateStore(ir.CreateSelect(Match, ExtractElement(ValueInt, SrcComp), ir.CreateLoad(TyInt, Ptr)), Ptr);
+      }
+    }
+    return;
+  }
 
   for (auto [DstComp, SrcComp] : EnumerateComponents(DstOp._.mask)) {
-    auto Ptr = ir.CreateInBoundsGEP(
-        TyHandle, Handle,
-        {ir.getInt32(0), ir.CreateAdd(ir.CreateMul(Index, ir.getInt32(regfile.vec_size)), ir.getInt32(DstComp))}
-    );
-    ir.CreateStore(ExtractElement(ValueInt, SrcComp), Ptr);
+    ir.CreateStore(ExtractElement(ValueInt, SrcComp), ElementPtr(Index, DstComp));
   }
+  /* end of LGPL block */
 }
 
 llvm::Value *
@@ -2514,7 +2558,10 @@ Converter::operator()(const InstAtomicBinOp &atomic) {
 
   if (Buf) {
     auto IntPtrOffset = LoadAtomicOpAddress(Buf.getValue(), atomic.dst_address);
-    auto Ptr = ir.CreateGEP(ir.getInt32Ty(), Buf->Pointer, {IntPtrOffset});
+    /* LGPL-2.1-or-later, from steamac's DXMT patch 0018 (Holly Hamilton): an
+       out-of-range index no longer becomes a wild atomic to device memory; the
+       atomic goes through the bound check the loads and stores use */
+    auto Ptr = CreateGEPInt32WithBoundCheck(Buf.getValue(), IntPtrOffset);
     auto Value = air.CreateAtomicRMW(Op, Ptr, LoadOperand(atomic.src, kMaskComponentX));
     StoreOperand(atomic.dst_original, Value);
     return;
@@ -2569,7 +2616,7 @@ Converter::operator()(const InstAtomicImmCmpExchange &atomic) {
 
   if (Buf) {
     auto IntPtrOffset = LoadAtomicOpAddress(Buf.getValue(), atomic.dst_address);
-    auto Ptr = ir.CreateGEP(ir.getInt32Ty(), Buf->Pointer, {IntPtrOffset});
+    auto Ptr = CreateGEPInt32WithBoundCheck(Buf.getValue(), IntPtrOffset); /* patch 0018 (LGPL) */
     auto Value = ir.CreateAtomicCmpXchg(
         Ptr, LoadOperand(atomic.src0, kMaskComponentX), LoadOperand(atomic.src1, kMaskComponentX), {},
         AtomicOrdering::Monotonic, AtomicOrdering::Monotonic

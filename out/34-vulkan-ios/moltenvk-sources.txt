@@ -1,0 +1,17 @@
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# Spec 34 Part B1 and clarification 1, item 1: the MoltenVK sources the iOS build uses. One line
+# per repository:
+#   <name> <git URL> <commit (40 hex)> <branch or tag it is on, - for none named>
+# fetch-moltenvk.sh fetches each at its commit and checks `git rev-parse HEAD`. MoltenVK is UTM's
+# fork (v1.4.1 with geometry shaders through Metal mesh shaders and VK_EXT_transform_feedback);
+# SPIRV-Cross is UTM's fork at the commit that fork's ExternalRevisions/SPIRV-Cross_repo_revision
+# names (build-moltenvk.sh checks they agree). The other dependencies (Vulkan-Headers, cereal) are
+# taken by MoltenVK's own fetchDependencies at the revisions of its ExternalRevisions/, read from
+# that commit, so the MoltenVK commit pins them too; build-moltenvk.sh checks each checkout and
+# writes every commit and the SHA-256 of each source's `git archive` into BUILDINFO.txt.
+# (QUESTIONS.md, spec 34: refs/README.md names the same commits, but ci/fetch-refs.sh can't read
+# that row yet, so the build fetches them here.)
+MoltenVK https://github.com/utmapp/MoltenVK.git 05604465d691118cfd20f53a48ecf1aad9c12f93 geometry-shaders
+SPIRV-Cross https://github.com/utmapp/SPIRV-Cross.git 939b40b33a44443c404c4078823c406e3c94866f -

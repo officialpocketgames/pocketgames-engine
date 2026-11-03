@@ -4,7 +4,10 @@
  * (32-bit table for WoW64 callers on iOS). Changed for MYIOSDECK spec 07 (Direct3D 9:
  * render/blit commands and the DXSO unix calls): contains LGPL-2.1-or-later blocks from
  * dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, so the file is distributed under
- * LGPL-2.1-or-later as a whole (see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+ * LGPL-2.1-or-later as a whole (see LICENSE-NOTES.md). Changed for MYIOSDECK spec 05
+ * clarification 10: LGPL-2.1-or-later blocks from steamac's DXMT patches 0006, 0007 and
+ * 0008, marked inline, and the residency-set calls 0023 needs (MYIOSDECK's own).
+ * Upstream: DXMT a3a6e8f, MIT (see LICENSE).
  */
 #include <stdatomic.h>
 #include <dlfcn.h>
@@ -424,7 +427,7 @@ _MTLDevice_newLibrary(void *obj) {
   id<MTLDevice> device = (id<MTLDevice>)params->device;
   NSError *err = NULL;
   params->ret_library = (obj_handle_t)[device newLibraryWithData:(dispatch_data_t)params->data error:&err];
-  params->ret_error = (obj_handle_t)err;
+  params->ret_error = (obj_handle_t)[err retain]; /* steamac's DXMT patch 0008 (LGPL, osy): out-errors are autoreleased; the win side owns the handle (WMT::Reference) */
   return STATUS_SUCCESS;
 }
 
@@ -472,7 +475,7 @@ _MTLDevice_newComputePipelineState(void *obj) {
       info->fail_on_binary_archive_miss ? MTLPipelineOptionFailOnBinaryArchiveMiss : MTLPipelineOptionNone;
   params->ret_pso =
       (obj_handle_t)[device newComputePipelineStateWithDescriptor:descriptor options:options reflection:nil error:&err];
-  params->ret_error = (obj_handle_t)err;
+  params->ret_error = (obj_handle_t)[err retain]; /* steamac's DXMT patch 0008 (LGPL, osy): out-errors are autoreleased; the win side owns the handle (WMT::Reference) */
   if (!err && info->binary_archive_for_serialization) {
     [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addComputePipelineFunctionsWithDescriptor:descriptor
                                                                                                       error:&err];
@@ -658,7 +661,7 @@ _MTLDevice_newRenderPipelineState(void *obj) {
                                                                                               options:options
                                                                                            reflection:nil
                                                                                                 error:&err];
-  params->ret_error = (obj_handle_t)err;
+  params->ret_error = (obj_handle_t)[err retain]; /* steamac's DXMT patch 0008 (LGPL, osy): out-errors are autoreleased; the win side owns the handle (WMT::Reference) */
   if (!err && info->binary_archive_for_serialization) {
     [(id<MTLBinaryArchive>)info->binary_archive_for_serialization addRenderPipelineFunctionsWithDescriptor:descriptor
                                                                                                      error:&err];
@@ -735,7 +738,7 @@ _MTLDevice_newMeshRenderPipelineState(void *obj) {
                                                                                                   options:options
                                                                                                reflection:nil
                                                                                                     error:&err];
-  params->ret_error = (obj_handle_t)err;
+  params->ret_error = (obj_handle_t)[err retain]; /* steamac's DXMT patch 0008 (LGPL, osy): out-errors are autoreleased; the win side owns the handle (WMT::Reference) */
 #if __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000
   if (@available(macOS 15, *)) {
     if (!err && info->binary_archive_for_serialization) {
@@ -864,18 +867,29 @@ _MTLComputeCommandEncoder_encodeCommands(void *obj) {
       break;
     case WMTComputeCommandDispatch: {
       struct wmtcmd_compute_dispatch *body = (struct wmtcmd_compute_dispatch *)next;
+      /* LGPL-2.1-or-later, from steamac's DXMT patch 0006 (Holly Hamilton):
+       * threadgroup_size is only set by SetPSO. If pipeline creation failed
+       * (e.g. the Metal compiler service died), no usable SetPSO was encoded and
+       * dispatching with a zero threadgroup size is a fatal API violation.
+       * Skip the dispatch: one compute pass drops instead of the process. */
+      if (threadgroup_size.width == 0)
+        break;
       [encoder dispatchThreadgroups:MTLSizeMake(body->size.width, body->size.height, body->size.depth)
               threadsPerThreadgroup:threadgroup_size];
       break;
     }
     case WMTComputeCommandDispatchThreads: {
       struct wmtcmd_compute_dispatch *body = (struct wmtcmd_compute_dispatch *)next;
+      if (threadgroup_size.width == 0) /* patch 0006 (LGPL) */
+        break;
       [encoder dispatchThreads:MTLSizeMake(body->size.width, body->size.height, body->size.depth)
           threadsPerThreadgroup:threadgroup_size];
       break;
     }
     case WMTComputeCommandDispatchIndirect: {
       struct wmtcmd_compute_dispatch_indirect *body = (struct wmtcmd_compute_dispatch_indirect *)next;
+      if (threadgroup_size.width == 0) /* patch 0006 (LGPL) */
+        break;
       [encoder dispatchThreadgroupsWithIndirectBuffer:(id<MTLBuffer>)body->indirect_args_buffer
                                  indirectBufferOffset:body->indirect_args_offset
                                 threadsPerThreadgroup:threadgroup_size];
@@ -883,6 +897,14 @@ _MTLComputeCommandEncoder_encodeCommands(void *obj) {
     }
     case WMTComputeCommandSetPSO: {
       struct wmtcmd_compute_setpso *body = (struct wmtcmd_compute_setpso *)next;
+      /* LGPL-2.1-or-later, from steamac's DXMT patch 0007 (Holly Hamilton): a null
+       * pipeline means creation failed: leave the encoder's pipeline as is (Metal
+       * rejects a nil state) and zero the threadgroup size so the dispatches below
+       * are dropped until a real pipeline is set. */
+      if (!body->pso) {
+        threadgroup_size = MTLSizeMake(0, 0, 0);
+        break;
+      }
       [encoder setComputePipelineState:(id<MTLComputePipelineState>)body->pso];
       threadgroup_size.width = body->threadgroup_size.width;
       threadgroup_size.height = body->threadgroup_size.height;
@@ -936,6 +958,10 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
   struct unixcall_generic_obj_cmd_noret *params = obj;
   const struct wmtcmd_base *next = params->cmd_head.ptr;
   id<MTLRenderCommandEncoder> encoder = (id<MTLRenderCommandEncoder>)params->encoder;
+  /* LGPL-2.1-or-later, from steamac's DXMT patch 0007 (Holly Hamilton): cleared by a
+   * null SetPSO (pipeline creation failed) so the draws queued for that pipeline are
+   * dropped rather than run on the previous one. Each draw below checks it. */
+  bool pso_valid = true;
   while (next) {
     switch ((enum WMTRenderCommandType)next->type) {
     default:
@@ -1021,6 +1047,9 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
     }
     case WMTRenderCommandSetPSO: {
       struct wmtcmd_render_setpso *body = (struct wmtcmd_render_setpso *)next;
+      pso_valid = body->pso != 0; /* patch 0007 (LGPL) */
+      if (!pso_valid)
+        break;
       [encoder setRenderPipelineState:(id<MTLRenderPipelineState>)body->pso];
       break;
     }
@@ -1063,6 +1092,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     case WMTRenderCommandDraw: {
+      if (!pso_valid) /* patch 0007 (LGPL), as in every draw below */
+        break;
       struct wmtcmd_render_draw *body = (struct wmtcmd_render_draw *)next;
       [encoder drawPrimitives:(MTLPrimitiveType)body->primitive_type
                   vertexStart:body->vertex_start
@@ -1072,6 +1103,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     case WMTRenderCommandDrawIndexed: {
+      if (!pso_valid)
+        break;
       struct wmtcmd_render_draw_indexed *body = (struct wmtcmd_render_draw_indexed *)next;
       [encoder drawIndexedPrimitives:(MTLPrimitiveType)body->primitive_type
                           indexCount:body->index_count
@@ -1084,6 +1117,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     case WMTRenderCommandDrawIndirect: {
+      if (!pso_valid)
+        break;
       struct wmtcmd_render_draw_indirect *body = (struct wmtcmd_render_draw_indirect *)next;
       [encoder drawPrimitives:(MTLPrimitiveType)body->primitive_type
                 indirectBuffer:(id<MTLBuffer>)body->indirect_args_buffer
@@ -1091,6 +1126,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     case WMTRenderCommandDrawIndexedIndirect: {
+      if (!pso_valid)
+        break;
       struct wmtcmd_render_draw_indexed_indirect *body = (struct wmtcmd_render_draw_indexed_indirect *)next;
       [encoder drawIndexedPrimitives:(MTLPrimitiveType)body->primitive_type
                            indexType:(MTLIndexType)body->index_type
@@ -1101,6 +1138,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     case WMTRenderCommandDrawMeshThreadgroups: {
+      if (!pso_valid)
+        break;
       struct wmtcmd_render_draw_meshthreadgroups *body = (struct wmtcmd_render_draw_meshthreadgroups *)next;
       [encoder drawMeshThreadgroups:MTLSizeMake(
                                         body->threadgroup_per_grid.width, body->threadgroup_per_grid.height,
@@ -1117,6 +1156,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     case WMTRenderCommandDrawMeshThreadgroupsIndirect: {
+      if (!pso_valid)
+        break;
       struct wmtcmd_render_draw_meshthreadgroups_indirect *body =
           (struct wmtcmd_render_draw_meshthreadgroups_indirect *)next;
       [encoder drawMeshThreadgroupsWithIndirectBuffer:(id<MTLBuffer>)body->indirect_args_buffer
@@ -1141,6 +1182,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     case WMTRenderCommandDXMTGeometryDraw: {
+      if (!pso_valid)
+        break;
       struct wmtcmd_render_dxmt_geometry_draw *body = (struct wmtcmd_render_dxmt_geometry_draw *)next;
       [encoder setObjectBufferOffset:body->draw_arguments_offset atIndex:21];
       [encoder drawMeshThreadgroups:MTLSizeMake(body->warp_count, body->instance_count, 1)
@@ -1149,6 +1192,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     case WMTRenderCommandDXMTGeometryDrawIndexed: {
+      if (!pso_valid)
+        break;
       struct wmtcmd_render_dxmt_geometry_draw_indexed *body = (struct wmtcmd_render_dxmt_geometry_draw_indexed *)next;
       [encoder setObjectBuffer:(id<MTLBuffer>)body->index_buffer offset:body->index_buffer_offset atIndex:20];
       [encoder setObjectBufferOffset:body->draw_arguments_offset atIndex:21];
@@ -1158,6 +1203,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     case WMTRenderCommandDXMTGeometryDrawIndirect: {
+      if (!pso_valid)
+        break;
       struct wmtcmd_render_dxmt_geometry_draw_indirect *body = (struct wmtcmd_render_dxmt_geometry_draw_indirect *)next;
       [encoder setObjectBuffer:(id<MTLBuffer>)body->indirect_args_buffer offset:body->indirect_args_offset atIndex:21];
       [encoder drawMeshThreadgroupsWithIndirectBuffer:(id<MTLBuffer>)body->dispatch_args_buffer
@@ -1168,6 +1215,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     case WMTRenderCommandDXMTGeometryDrawIndexedIndirect: {
+      if (!pso_valid)
+        break;
       struct wmtcmd_render_dxmt_geometry_draw_indexed_indirect *body =
           (struct wmtcmd_render_dxmt_geometry_draw_indexed_indirect *)next;
       [encoder setObjectBuffer:(id<MTLBuffer>)body->index_buffer offset:body->index_buffer_offset atIndex:20];
@@ -1180,6 +1229,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     case WMTRenderCommandDXMTTessellationMeshDraw: {
+      if (!pso_valid)
+        break;
       struct wmtcmd_render_dxmt_tessellation_mesh_draw *body = (struct wmtcmd_render_dxmt_tessellation_mesh_draw *)next;
       [encoder setObjectBufferOffset:body->draw_arguments_offset atIndex:21];
       [encoder drawMeshThreadgroups:MTLSizeMake(body->patch_per_mesh_instance, body->instance_count, 1)
@@ -1188,6 +1239,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     case WMTRenderCommandDXMTTessellationMeshDrawIndexed: {
+      if (!pso_valid)
+        break;
       struct wmtcmd_render_dxmt_tessellation_mesh_draw_indexed *body = (struct wmtcmd_render_dxmt_tessellation_mesh_draw_indexed *)next;
       [encoder setObjectBuffer:(id<MTLBuffer>)body->index_buffer offset:body->index_buffer_offset atIndex:20];
       [encoder setObjectBufferOffset:body->draw_arguments_offset atIndex:21];
@@ -1198,6 +1251,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
     }
 
     case WMTRenderCommandDXMTTessellationMeshDrawIndirect: {
+      if (!pso_valid)
+        break;
       struct wmtcmd_render_dxmt_tessellation_mesh_draw_indirect *body = (struct wmtcmd_render_dxmt_tessellation_mesh_draw_indirect *)next;
       [encoder setObjectBuffer:(id<MTLBuffer>)body->indirect_args_buffer offset:body->indirect_args_offset atIndex:21];
       [encoder drawMeshThreadgroupsWithIndirectBuffer:(id<MTLBuffer>)body->dispatch_args_buffer
@@ -1208,6 +1263,8 @@ _MTLRenderCommandEncoder_encodeCommands(void *obj) {
       break;
     }
     case WMTRenderCommandDXMTTessellationMeshDrawIndexedIndirect: {
+      if (!pso_valid) /* end of patch 0007's draw checks */
+        break;
       struct wmtcmd_render_dxmt_tessellation_mesh_draw_indexed_indirect *body =
           (struct wmtcmd_render_dxmt_tessellation_mesh_draw_indexed_indirect *)next;
       [encoder setObjectBuffer:(id<MTLBuffer>)body->index_buffer offset:body->index_buffer_offset atIndex:20];
@@ -2009,6 +2066,7 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA32 {
   bool dual_source_blending;
   bool disable_depth_output;
   uint32_t unorm_output_reg_mask;
+  uint32_t pixel_formats[8]; /* MYIOSDECK spec 05 clarification 10 (same layout on i386) */
 };
 
 struct SM50_SHADER_GS_PASS_THROUGH_DATA32 {
@@ -2090,6 +2148,7 @@ sm50_compilation_argument32_convert(
       data->disable_depth_output = src->disable_depth_output;
       data->sample_mask = src->sample_mask;
       data->dual_source_blending = src->dual_source_blending;
+      memcpy(data->pixel_formats, src->pixel_formats, sizeof(data->pixel_formats));
       break;
     }
     case SM50_SHADER_IA_INPUT_LAYOUT: {
@@ -2641,7 +2700,7 @@ _MTLLibrary_newFunctionWithConstants(void *obj) {
     [values setConstantValue:constants[i].data.ptr type:(MTLDataType)constants[i].type atIndex:constants[i].index];
 
   params->ret = (obj_handle_t)[library newFunctionWithName:name constantValues:values error:&err];
-  params->ret_error = (obj_handle_t)err;
+  params->ret_error = (obj_handle_t)[err retain]; /* steamac's DXMT patch 0008 (LGPL, osy): out-errors are autoreleased; the win side owns the handle (WMT::Reference) */
   [name release];
   [values release];
   return STATUS_SUCCESS;
@@ -2887,7 +2946,7 @@ _MTLDevice_newBinaryArchive(void *obj) {
   }
   NSError *err = NULL;
   params->ret_archive = (obj_handle_t)[(id<MTLDevice>)params->device newBinaryArchiveWithDescriptor:desc error:&err];
-  params->ret_error = (obj_handle_t)err;
+  params->ret_error = (obj_handle_t)[err retain]; /* steamac's DXMT patch 0008 (LGPL, osy): out-errors are autoreleased; the win side owns the handle (WMT::Reference) */
   [desc release];
   if (url)
     [url release];
@@ -2903,7 +2962,7 @@ _MTLBinaryArchive_serialize(void *obj) {
   NSURL *url = [[NSURL alloc] initFileURLWithPath:path_str];
   NSError *err = NULL;
   [(id<MTLBinaryArchive>)params->archive serializeToURL:url error:&err];
-  params->ret_error = (obj_handle_t)err;
+  params->ret_error = (obj_handle_t)[err retain]; /* steamac's DXMT patch 0008 (LGPL, osy): out-errors are autoreleased; the win side owns the handle (WMT::Reference) */
   [url release];
   [path_str release];
   return STATUS_SUCCESS;
@@ -3116,6 +3175,89 @@ _DXMTIOS_layer_display_sync(void *obj) {
   return STATUS_SUCCESS;
 }
 
+/* MYIOSDECK spec 05 clarification 10 (slots 134-138): Metal residency sets, which
+   steamac's DXMT patch 0023 uses instead of per-encoder useResource. MTLResidencySet is
+   public API from iOS 18 (macOS 15); below that each call answers STATUS_NOT_IMPLEMENTED
+   and the Windows half keeps useResource. */
+#if (defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 180000) ||                    \
+    (defined(__MAC_OS_X_VERSION_MAX_ALLOWED) && __MAC_OS_X_VERSION_MAX_ALLOWED >= 150000)
+#define DXMT_HAVE_RESIDENCY_SET 1
+#endif
+
+static NTSTATUS
+_MTLDevice_newResidencySet(void *obj) {
+  struct unixcall_mtldevice_newresidencyset *params = obj;
+  params->ret_set = 0;
+  params->ret_error = 0;
+#ifdef DXMT_HAVE_RESIDENCY_SET
+  if (@available(iOS 18.0, macOS 15.0, *)) {
+    MTLResidencySetDescriptor *descriptor = [[MTLResidencySetDescriptor alloc] init];
+    descriptor.initialCapacity = params->initial_capacity;
+    NSError *err = NULL;
+    params->ret_set =
+        (obj_handle_t)[(id<MTLDevice>)params->device newResidencySetWithDescriptor:descriptor error:&err];
+    params->ret_error = (obj_handle_t)[err retain]; /* +1, as patch 0008 has it for every out-error */
+    [descriptor release];
+    return STATUS_SUCCESS;
+  }
+#endif
+  return STATUS_NOT_IMPLEMENTED;
+}
+
+static NTSTATUS
+_MTLResidencySet_addAllocations(void *obj) {
+  struct unixcall_mtlresidencyset_allocations *params = obj;
+#ifdef DXMT_HAVE_RESIDENCY_SET
+  if (@available(iOS 18.0, macOS 15.0, *)) {
+    if (params->set && params->count)
+      [(id<MTLResidencySet>)params->set addAllocations:(const id<MTLAllocation> *)params->allocations.ptr
+                                                 count:params->count];
+    return STATUS_SUCCESS;
+  }
+#endif
+  return STATUS_NOT_IMPLEMENTED;
+}
+
+static NTSTATUS
+_MTLResidencySet_removeAllocations(void *obj) {
+  struct unixcall_mtlresidencyset_allocations *params = obj;
+#ifdef DXMT_HAVE_RESIDENCY_SET
+  if (@available(iOS 18.0, macOS 15.0, *)) {
+    if (params->set && params->count)
+      [(id<MTLResidencySet>)params->set removeAllocations:(const id<MTLAllocation> *)params->allocations.ptr
+                                                    count:params->count];
+    return STATUS_SUCCESS;
+  }
+#endif
+  return STATUS_NOT_IMPLEMENTED;
+}
+
+static NTSTATUS
+_MTLResidencySet_commit(void *obj) {
+  struct unixcall_generic_obj_noret *params = obj;
+#ifdef DXMT_HAVE_RESIDENCY_SET
+  if (@available(iOS 18.0, macOS 15.0, *)) {
+    if (params->handle)
+      [(id<MTLResidencySet>)params->handle commit];
+    return STATUS_SUCCESS;
+  }
+#endif
+  return STATUS_NOT_IMPLEMENTED;
+}
+
+static NTSTATUS
+_MTLCommandQueue_addResidencySet(void *obj) {
+  struct unixcall_generic_obj_obj_noret *params = obj;
+#ifdef DXMT_HAVE_RESIDENCY_SET
+  if (@available(iOS 18.0, macOS 15.0, *)) {
+    if (params->handle && params->arg)
+      [(id<MTLCommandQueue>)params->handle addResidencySet:(id<MTLResidencySet>)params->arg];
+    return STATUS_SUCCESS;
+  }
+#endif
+  return STATUS_NOT_IMPLEMENTED;
+}
+
 /*
  * Definition from cache.c
  */
@@ -3267,10 +3409,18 @@ const void *DXMT_UNIX_CALL_FUNCS[] = {
     &thunk_DXSOCompile,
     &thunk_DXSOGetCompiledBitcode,
     &thunk_DXSODestroyBitcode,    /* 133 */
+    /* MYIOSDECK spec 05 clarification 10: residency sets (steamac's DXMT patch 0023) */
+    &_MTLDevice_newResidencySet,         /* 134 */
+    &_MTLResidencySet_addAllocations,
+    &_MTLResidencySet_removeAllocations,
+    &_MTLResidencySet_commit,
+    &_MTLCommandQueue_addResidencySet,   /* 138 */
 };
 
 _Static_assert(unix_dxso_initialize == unix_dxmt_ios_dxso_first, "DXSO slot numbers disagree");
-_Static_assert(unix_dxso_destroy_bitcode + 1 == unix_dxmt_ios_unixcall_count, "DXSO slot numbers disagree");
+_Static_assert(unix_dxso_destroy_bitcode + 1 == unix_mtldevice_newresidencyset, "DXSO slot numbers disagree");
+_Static_assert(unix_mtlcommandqueue_addresidencyset + 1 == unix_dxmt_ios_unixcall_count,
+               "residency-set slot numbers disagree");
 
 _Static_assert(
     sizeof(DXMT_UNIX_CALL_FUNCS) / sizeof(DXMT_UNIX_CALL_FUNCS[0]) == unix_dxmt_ios_unixcall_count,
@@ -3420,6 +3570,13 @@ const void *DXMT_UNIX_CALL_WOW64_FUNCS[] = {
     &thunk32_DXSOCompile,
     &thunk32_DXSOGetCompiledBitcode,              /* Data written as an opaque value (C3) */
     &thunk_DXSODestroyBitcode,                    /* 133: opaque handle only */
+    /* spec 05 clarification 10: 32-bit callers keep useResource (the i386 build never
+       creates a residency set), so the residency-set calls are refused */
+    &unix_call_not_implemented,                   /* 134 */
+    &unix_call_not_implemented,
+    &unix_call_not_implemented,
+    &unix_call_not_implemented,
+    &unix_call_not_implemented,                   /* 138 */
 };
 
 _Static_assert(

@@ -1,0 +1,170 @@
+Spec 34 Part D: Vulkan on iOS in win32u's vulkan.c. The host driver is the iOS layer of part 34,
+linked (D1: dlopen/dlsym/dlclose mapped by vulkan_ios.h); every host instance, device and surface
+is recorded with its pseudo-process and released when it ends (D7); swapchains are always
+stretch-scaled and a layer-size VK_SUBOPTIMAL_KHR is hidden when the swapchain has the window's
+size (D3); the device LUID is the one DXGI reports (D4). The code is vulkan_ios.inc, included at
+the end. Applied after spec 12's, 17's and 22's patches; no earlier patch touches this file.
+
+--- a/dlls/win32u/vulkan.c
++++ b/dlls/win32u/vulkan.c
+@@ -1,6 +1,8 @@
+ /*
+  * Vulkan display driver loading
+  *
++ * Changed for MYIOSDECK (iOS, spec 34 Part D): see out/12-win32u-ios/CHANGES.md
++ *
+  * Copyright (c) 2017 Roderick Colenbrander
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -31,6 +33,9 @@
+ #include "ntstatus.h"
+ #include "win32u_private.h"
+ #include "ntuser_private.h"
++#ifdef WINE_IOS
++#include "vulkan_ios.h"
++#endif
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(vulkan);
+ 
+@@ -635,6 +640,9 @@
+         vulkan_instance_insert_object( &instance->obj, &physical_device->obj );
+     }
+     vulkan_instance_insert_object( &instance->obj, &instance->obj.obj );
++#ifdef WINE_IOS
++    ios_vk_owner_add( W32IOS_VK_INSTANCE, instance );   /* MYIOSDECK (spec 34 D7) */
++#endif
+ 
+ failed:
+     if (res)
+@@ -654,6 +662,9 @@
+     struct instance *instance = instance_from_handle( client_instance );
+ 
+     if (!instance) return;
++#ifdef WINE_IOS
++    ios_vk_owner_remove( instance );   /* MYIOSDECK (spec 34 D7) */
++#endif
+ 
+     instance->obj.p_vkDestroyInstance( instance->obj.host.instance, NULL /* allocator */ );
+     for (int i = 0; i < instance->obj.physical_device_count; i++)
+@@ -805,6 +816,9 @@
+     for (struct vulkan_queue *queue = device->queues; queue < device->queues + device->queue_count; queue++)
+         instance->p_insert_object( instance, &queue->obj );
+     instance->p_insert_object( instance, &device->obj );
++#ifdef WINE_IOS
++    ios_vk_owner_add( W32IOS_VK_DEVICE, device );   /* MYIOSDECK (spec 34 D7) */
++#endif
+ 
+ failed:
+     if (res)
+@@ -823,6 +837,9 @@
+     unsigned int i;
+ 
+     if (!device) return;
++#ifdef WINE_IOS
++    ios_vk_owner_remove( device );   /* MYIOSDECK (spec 34 D7) */
++#endif
+ 
+     device->p_vkDestroyDevice( device->host.device, NULL /* pAllocator */ );
+     for (i = 0; i < device->queue_count; i++)
+@@ -1545,6 +1562,9 @@
+     vulkan_object_init( &surface->obj.obj, host_surface );
+     surface->obj.instance = instance;
+     instance->p_insert_object( instance, &surface->obj.obj );
++#ifdef WINE_IOS
++    ios_vk_owner_add( W32IOS_VK_SURFACE, surface );   /* MYIOSDECK (spec 34 D7) */
++#endif
+ 
+     if (dummy) NtUserDestroyWindow( dummy );
+ 
+@@ -1559,6 +1579,9 @@
+     struct surface *surface = surface_from_handle( client_surface );
+ 
+     if (!surface) return;
++#ifdef WINE_IOS
++    ios_vk_owner_remove( surface );   /* MYIOSDECK (spec 34 D7) */
++#endif
+ 
+     TRACE( "instance %p, handle 0x%s, allocator %p\n", instance, wine_dbgstr_longlong( client_surface ), allocator );
+     if (allocator) FIXME( "Support for allocation callbacks not implemented yet\n" );
+@@ -1705,6 +1728,10 @@
+     else           uuid = (const GUID *)id_host.deviceUUID;
+ 
+     device_luid_valid = get_gpu_info_from_uuid( uuid, &luid, &node_mask, properties2->properties.deviceName );
++#ifdef WINE_IOS
++    /* MYIOSDECK (spec 34 D4): the LUID DXGI reports (spec 12 C1 keeps the GPU lists empty) */
++    if (!device_luid_valid) device_luid_valid = ios_vk_luid( &luid, &node_mask );
++#endif
+     if (!device_luid_valid) WARN( "luid for %s not found\n", debugstr_guid(uuid) );
+ 
+     if (id)
+@@ -1845,6 +1872,11 @@
+      * display mode change emulation), MoltenVK's vkQueuePresentKHR returns VK_SUBOPTIMAL_KHR.
+      * Create the swapchain with VkSwapchainPresentScalingCreateInfoEXT to avoid this.
+      */
++#ifdef WINE_IOS
++    /* MYIOSDECK (spec 34 D3): always, when the host can: the game view's layer is almost never
++     * the swapchain's size */
++    ios_vk_swapchain_scaling( instance, device, &create_info_host, &scaling );
++#else
+     if (get_surface_rect( surface->hwnd, &client_rect, NtUserGetWinMonitorDpi( surface->hwnd, MDT_RAW_DPI ) ) &&
+         !extents_equals( &create_info_host.imageExtent, &client_rect ) &&
+         instance->extensions.has_VK_EXT_surface_maintenance1 &&
+@@ -1853,6 +1885,7 @@
+         scaling.scalingBehavior = VK_PRESENT_SCALING_STRETCH_BIT_EXT;
+         create_info_host.pNext = &scaling;
+     }
++#endif
+ 
+     if (!(swapchain = calloc( 1, sizeof(*swapchain) ))) return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+@@ -1903,6 +1936,9 @@
+     acquire_info_host.semaphore = semaphore ? semaphore->host.semaphore : 0;
+     acquire_info_host.fence = fence ? fence->host.fence : 0;
+     res = device->p_vkAcquireNextImage2KHR( device->host.device, &acquire_info_host, image_index );
++#ifdef WINE_IOS
++    res = ios_vk_acquire_result( res, swapchain );   /* MYIOSDECK (spec 34 D3) */
++#endif
+ 
+     if (!res && get_surface_rect( surface->hwnd, &client_rect, NtUserGetDpiForWindow( surface->hwnd ) ) &&
+         !extents_equals( &swapchain->extents, &client_rect ))
+@@ -1929,6 +1965,9 @@
+     res = device->p_vkAcquireNextImageKHR( device->host.device, swapchain->obj.host.swapchain, timeout,
+                                               semaphore ? semaphore->host.semaphore : 0, fence ? fence->host.fence : 0,
+                                               image_index );
++#ifdef WINE_IOS
++    res = ios_vk_acquire_result( res, swapchain );   /* MYIOSDECK (spec 34 D3) */
++#endif
+ 
+     if (!res && get_surface_rect( surface->hwnd, &client_rect, NtUserGetDpiForWindow( surface->hwnd ) ) &&
+         !extents_equals( &swapchain->extents, &client_rect ))
+@@ -1980,6 +2019,9 @@
+     }
+ 
+     res = device->p_vkQueuePresentKHR( queue->host.queue, present_info );
++#ifdef WINE_IOS
++    res = ios_vk_present_result( res, present_info, client_swapchains );   /* MYIOSDECK (spec 34 D3) */
++#endif
+ 
+     for (uint32_t i = 0; i < present_info->swapchainCount; i++)
+     {
+@@ -3152,8 +3194,19 @@
+         free( wrapper );
+     }
+ 
+-    if (!res) return vulkan_instance_from_handle( &wrapper->client );
++    if (!res)
++    {
++#ifdef WINE_IOS
++        /* MYIOSDECK (spec 34 D7): win32u's own instances are app-wide: never released with a process */
++        ios_vk_owner_remove( instance_from_handle( &wrapper->client ) );
++#endif
++        return vulkan_instance_from_handle( &wrapper->client );
++    }
+     WARN( "Failed to create instance, res %d\n", res );
+     free( wrapper );
+     return NULL;
+ }
++
++#ifdef WINE_IOS
++#include "vulkan_ios.inc"
++#endif

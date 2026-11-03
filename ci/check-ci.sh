@@ -25,7 +25,7 @@ assert "push" in on and "workflow_dispatch" in on, "triggers"
 print(" ".join(d["jobs"]))
 ' "$wf"); then
         echo "workflow jobs: $jobs"
-        for j in refs host-tests wine-host-macos ios-libs link-check pe-farms; do
+        for j in refs host-tests wine-host-macos ios-libs link-check pe-farms vktest vk-render-macos; do
             case " $jobs " in *" $j "*) ;; *) fail "job $j missing" ;; esac
         done
     else
@@ -52,6 +52,8 @@ fi
 out=$(FETCH_REFS_DRY=1 sh "$here/fetch-refs.sh" "${TMPDIR:-/tmp}/check-ci-dl.$$") || fail "fetch-refs.sh dry run"
 echo "$out"
 for n in $(sed -n 's|^\([A-Za-z0-9._+-]*\)/$|\1|p' "$repo/refs/.gitignore"); do
+    # a name ci/refs-skip.txt lists is never fetched, so it needs no URL
+    echo "$out" | grep -q "^fetch-refs: $n: skipped" && continue
     line=$(echo "$out" | grep "^dry: $n <- ") || { fail "$n not resolved"; continue; }
     case "$line" in
         *"<- https://"*) ;;

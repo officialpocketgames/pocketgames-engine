@@ -1,4 +1,6 @@
 #pragma once
+// Changed for MYIOSDECK (spec 05 clarification 10: an LGPL-2.1-or-later block from steamac's
+// DXMT patch 0014, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "d3d11_device_child.hpp"
 
 #include "com/com_pointer.hpp"
@@ -180,7 +182,13 @@ struct D3D11ContextState {
   BOOL predicate_value = FALSE;
 };
 
-// TODO: implemente it properly
+/**
+LGPL-2.1-or-later, from steamac's DXMT patch 0014 (hanzpo): holds a complete pipeline state
+for ID3D11DeviceContext1::SwapDeviceContextState.
+
+A newly created state object holds the default (cleared) pipeline state. While a state object is active on a
+context its `state` is stale; the context writes its live state back into it when another one is swapped in.
+*/
 class MTLD3D11DeviceContextState
     : public MTLD3D11DeviceChild<ID3DDeviceContextState> {
 
@@ -189,6 +197,9 @@ public:
       : MTLD3D11DeviceChild<ID3DDeviceContextState>(pDevice) {}
 
   ~MTLD3D11DeviceContextState() {}
+
+  D3D11ContextState state = {};
+  /* end of LGPL block */
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) {
     if (ppvObject == nullptr)

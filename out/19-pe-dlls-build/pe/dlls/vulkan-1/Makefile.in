@@ -1,0 +1,14 @@
+# Wine 11.4's dlls/vulkan-1/Makefile.in (LGPL-2.1-or-later, like the rest of Wine).
+# Changed for MYIOSDECK (spec 34 Part C1): built without EXTRADLLFLAGS = -Wb,--prefer-native, so
+# Wine's builtin loader is used even when a game ships the Khronos loader in its folder; that one
+# would run as interpreted x86-64 and look for layers that don't exist here.
+MODULE    = vulkan-1.dll
+IMPORTS   = user32
+IMPORTLIB = vulkan-1
+
+VER_FILEDESCRIPTION_STR = "Wine Vulkan Loader"
+# Set to 1.0.0 so the official Vulkan runtime installer will replace this file
+VER_PRODUCTVERSION      = 1,0,0,0
+
+SOURCES = \
+	vulkan.c

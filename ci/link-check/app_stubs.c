@@ -35,6 +35,11 @@ void fatal_error(const char *err, ...) { (void)err; pthread_exit(NULL); }
 volatile int g_wineserver_should_stop;
 const char wine_build[] = "link-check";
 
+/* the app's window-to-layer table: DXMT's unix half looks it up by name, win32u's Vulkan surfaces
+ * (spec 34 Part D2) reference it weak; here all ten entries are NULL, which win32u takes as "no
+ * table" (headless surfaces) */
+struct { void (*entries[10])( void ); } macdrv_functions;
+
 /* IOKit's power-source query, which iOS lacks (CoreFoundation types, as opaque pointers) */
 const void *IOPSCopyPowerSourcesInfo(void) { return NULL; }
 const void *IOPSCopyPowerSourcesList(const void *blob) { (void)blob; return NULL; }

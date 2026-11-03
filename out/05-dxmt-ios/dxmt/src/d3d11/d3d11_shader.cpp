@@ -1,6 +1,11 @@
-// Changed for MYIOSDECK (spec 05 F3). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 F3; spec 05 clarification 10: LGPL-2.1-or-later blocks from
+// steamac's DXMT patches 0012 and 0017, marked inline, see LICENSE-NOTES.md). Upstream: DXMT
+// a3a6e8f, MIT (see LICENSE).
 #include "d3d11_shader.hpp"
+#include "d3d11_shader_bitcode.hpp"
 #include "Metal.hpp"
+#include <algorithm>
+#include <iterator>
 #include "airconv_public.h"
 #include "d3d11_input_layout.hpp"
 #include "sha1/sha1_util.hpp"
@@ -61,19 +66,23 @@ public:
       if (!compile_result)
         return this;
 
+      /* LGPL-2.1-or-later, from steamac's DXMT patch 0012 (SteveTanSaMa): the bitcode
+         is released on every path out of here, failures included */
+      CompiledBitcode owned_bitcode(compile_result);
+
       SM50GetCompiledBitcode(compile_result, &bitcode);
       lib_data = WMT::MakeDispatchData(bitcode.Data, bitcode.Size);
       auto library = device_->GetMTLDevice().newLibrary(lib_data, err);
 
-      if (err) {
+      if (err || !library) {
         ERR("Failed to create MTLLibrary: ", err.description().getUTF8String());
         shader_->dump();
         return this;
       }
 
       shader_->update_cached_variant(variant_digest_, lib_data);
+      /* end of LGPL block */
 
-      SM50DestroyBitcode(compile_result);
       function_ = library.newFunction(func_name.c_str());
 
       if (function_ == nullptr) {
@@ -158,6 +167,11 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
   if (variant.vertex_shader_handle)
     h.update(variant.vertex_shader_handle->sha1());
 #endif
+  /* steamac's DXMT patch 0017 (LGPL, StonkGuy): only pipelines with an integer render
+     target hash it: other variants keep their digest */
+  if (std::any_of(std::begin(variant.integer_rt_formats), std::end(variant.integer_rt_formats),
+                  [](uint32_t format) { return format != 0; }))
+    h.update(variant.integer_rt_formats);
   auto variant_digest = h.final();
   std::string func_name = "ps_" + shader->sha1().string().substr(0, 8) + "_" + variant_digest.string();
 
@@ -180,6 +194,7 @@ CreateVariantShader(MTLD3D11Device *pDevice, ManagedShader shader,
     data.dual_source_blending = variant.dual_source_blending;
     data.disable_depth_output = variant.disable_depth_output;
     data.unorm_output_reg_mask = variant.unorm_output_reg_mask;
+    memcpy(data.pixel_formats, variant.integer_rt_formats, sizeof(data.pixel_formats)); /* patch 0017 (LGPL) */
 
     sm50_bitcode_t compile_result = nullptr;
     sm50_error_t sm50_err = nullptr;

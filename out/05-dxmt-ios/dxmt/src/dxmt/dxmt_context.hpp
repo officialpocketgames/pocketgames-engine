@@ -1,6 +1,7 @@
 #pragma once
 // Changed for MYIOSDECK (spec 05; spec 07 A2: LGPL-2.1-or-later blocks from dxmt-d3d9 v0.4-d3d9
-// (e8dd4c6), marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10: LGPL-2.1-or-later
+// blocks from steamac's DXMT patch 0023, marked inline). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 #include "Metal.hpp"
 #include <cstring>
@@ -500,6 +501,31 @@ public:
 
   void retainAllocation(Allocation* allocation);
 
+  /* LGPL-2.1-or-later, from steamac's DXMT patch 0023 (Jakey-Jakey): with a residency set
+     (iOS 18 and later, see CommandQueue) an allocation is put in the set instead of being
+     declared with useResource per encoder. Returns false if it still needs useResource. */
+  void
+  setResidencySet(ResidencySetTracker *residency_set) {
+    residency_set_ = residency_set;
+  }
+
+  bool
+  makeResidentInSet(BufferAllocation *allocation) {
+    if (!residency_set_)
+      return false;
+    allocation->useResidencySet(residency_set_, allocation->buffer());
+    return true;
+  }
+
+  bool
+  makeResidentInSet(TextureAllocation *allocation) {
+    if (!residency_set_)
+      return false;
+    allocation->useResidencySet(residency_set_, allocation->residencyObject());
+    return true;
+  }
+  /* end of LGPL block */
+
   template <PipelineStage stage, PipelineKind kind>
   void
   makeResident(WMT::Resource resource, DXMT_RESOURCE_RESIDENCY requested) {
@@ -521,6 +547,8 @@ public:
   void
   makeResident(Buffer *buffer, bool read = true, bool write = false) {
     auto allocation = buffer->current();
+    if (makeResidentInSet(allocation)) /* patch 0023 (LGPL) */
+      return;
     uint64_t encoder_id = currentEncoder()->id;
     DXMT_RESOURCE_RESIDENCY requested = GetResidencyMask<kind>(stage, read, write);
     if (CheckResourceResidency(allocation->residencyState, encoder_id, requested)) {
@@ -531,6 +559,8 @@ public:
   void
   makeResident(Buffer *buffer, unsigned viewId, bool read = true, bool write = false) {
     auto allocation = buffer->current();
+    if (makeResidentInSet(allocation)) /* patch 0023 (LGPL) */
+      return;
     uint64_t encoder_id = currentEncoder()->id;
     DXMT_RESOURCE_RESIDENCY requested = GetResidencyMask<kind>(stage, read, write);
     if (CheckResourceResidency(buffer->residency(viewId, allocation), encoder_id, requested)) {
@@ -541,6 +571,8 @@ public:
   void
   makeResident(Texture *texture, unsigned viewId, bool read = true, bool write = false) {
     auto allocation = texture->current();
+    if (makeResidentInSet(allocation)) /* patch 0023 (LGPL) */
+      return;
     uint64_t encoder_id = currentEncoder()->id;
     DXMT_RESOURCE_RESIDENCY requested = GetResidencyMask<kind>(stage, read, write);
     auto &view = texture->view(viewId, allocation);
@@ -887,6 +919,8 @@ private:
   /* spec 07 (LGPL, from v0.4-d3d9): depth-write-always state for the depth
      resolve pass; created on first use. */
   WMT::Reference<WMT::DepthStencilState> depth_resolve_dss_;
+  /* patch 0023 (LGPL, Jakey-Jakey): the queue's residency set, null without one */
+  ResidencySetTracker *residency_set_ = nullptr;
 };
 
 template <>

@@ -188,6 +188,9 @@ jobs:
             prereq: ffmpeg
             prereq_script: out/14-media-audio-ios/build-ffmpeg.sh
           - part: 15-controllers         # with spec 17's additions
+          - part: 34-vulkan-ios          # spec 34: UTM's MoltenVK fork, patched, first (fetch-moltenvk.sh,
+            prereq: moltenvk             # build-moltenvk.sh; ios-part.sh checks the cache's stamp),
+            prereq_script: out/34-vulkan-ios/build-moltenvk.sh   # then the layer and winevulkan's unix side
     name: ios-libs (${{ matrix.part }})
     env:
       GH_TOKEN: ${{ github.token }}
@@ -260,6 +263,73 @@ jobs:
             ${{ runner.temp }}/link-report/*.md
             ${{ runner.temp }}/link-report/*.txt
             ${{ runner.temp }}/link-report/*.log
+          if-no-files-found: ignore
+
+  # 4b. spec 34 M6: vktest.exe (x86_64, i686) for the device's test builds; built here, never run
+  #     (no GPU tests on CI runners or the owner's PC)
+  vktest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools (glslang for the SPIR-V, llvm-mingw at spec 19's pin)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslang-tools
+          bash out/19-pe-dlls-build/build-pe.sh --work "$RUNNER_TEMP/pe-tool" toolchain
+          echo "MINGW_BIN=$(ls -d "$RUNNER_TEMP"/pe-tool/llvm-mingw-*/bin | head -n 1)" >> "$GITHUB_ENV"
+      - name: Vulkan-Headers at the revision the MoltenVK fork pins
+        run: |
+          set -eu
+          sh out/34-vulkan-ios/fetch-moltenvk.sh "$RUNNER_TEMP/moltenvk-src"
+          rev=$(head -n 1 "$RUNNER_TEMP/moltenvk-src/ExternalRevisions/Vulkan-Headers_repo_revision" | tr -d '[:space:]')
+          git init -q "$RUNNER_TEMP/vulkan-headers"
+          git -C "$RUNNER_TEMP/vulkan-headers" fetch -q --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git "$rev"
+          git -C "$RUNNER_TEMP/vulkan-headers" checkout -q --detach FETCH_HEAD
+          echo "Vulkan-Headers $rev: $(git -C "$RUNNER_TEMP/vulkan-headers" rev-parse HEAD)"
+      - name: Build vktest
+        run: sh out/34-vulkan-ios/tests/windows/build-vktest.sh "$MINGW_BIN" "$RUNNER_TEMP/vulkan-headers/include" "$RUNNER_TEMP/vktest"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vktest
+          path: ${{ runner.temp }}/vktest/*.exe
+
+  # 4c. spec 34 clarification 1, item 6: the Vulkan render test, on the macOS runner's Metal
+  #     device only (never on the owner's PC): the MoltenVK fork with the same patches, built for
+  #     macOS, linked into tests/macos/vk-render-test, which draws with a geometry shader and
+  #     captures transform feedback offscreen. A runner whose GPU lacks Metal mesh shaders (or has
+  #     no Metal device) reports SKIP and passes.
+  vk-render-macos:
+    runs-on: macos-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tools (glslang for the SPIR-V)
+        run: |
+          brew install glslang || true
+          command -v glslangValidator
+          xcodebuild -version
+      - name: MoltenVK for macOS
+        run: |
+          set -eu
+          sh out/34-vulkan-ios/fetch-moltenvk.sh "$RUNNER_TEMP/moltenvk-src" MoltenVK
+          sh out/34-vulkan-ios/fetch-moltenvk.sh "$RUNNER_TEMP/spirv-cross-src" SPIRV-Cross
+          sh out/34-vulkan-ios/build-moltenvk.sh --platform macos "$RUNNER_TEMP/moltenvk-src" \
+            "$RUNNER_TEMP/spirv-cross-src" "$RUNNER_TEMP/moltenvk-work" "$RUNNER_TEMP/moltenvk-macos"
+      - name: Build and run the render test
+        run: |
+          set -eu
+          sh out/34-vulkan-ios/tests/macos/build-render-test.sh "$RUNNER_TEMP/moltenvk-macos" "$RUNNER_TEMP/render-test"
+          set -o pipefail
+          "$RUNNER_TEMP/render-test/vk-render-test" 2>&1 | tee "$RUNNER_TEMP/render-test/result.txt"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vk-render-macos
+          path: |
+            ${{ runner.temp }}/render-test/result.txt
+            ${{ runner.temp }}/moltenvk-macos/BUILDINFO.txt
+            ${{ runner.temp }}/moltenvk-macos/logs/*.log
           if-no-files-found: ignore
 
   # 5. spec 19: the three PE farms with the Linux llvm-mingw build-pe.sh pins, and the LGPL

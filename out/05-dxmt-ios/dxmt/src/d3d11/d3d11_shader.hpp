@@ -1,8 +1,10 @@
 #pragma once
-// Changed for MYIOSDECK (spec 05 F3). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 F3; spec 05 clarification 10: an LGPL-2.1-or-later block from
+// steamac's DXMT patch 0017, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 #include "airconv_public.h"
 #include "com/com_guid.hpp"
+#include <cstring>
 #include <vector>
 #include "d3d11_device.hpp"
 #include "d3d11_device_child.hpp"
@@ -111,6 +113,11 @@ struct ShaderVariantPixel {
      which pixel shader inputs are written (null: unknown). */
   ManagedShader vertex_shader_handle = nullptr;
 #endif
+  /* LGPL-2.1-or-later, from steamac's DXMT patch 0017 (StonkGuy): MTLPixelFormat of each
+     integer (Uint/Sint) render target, 0 for any other format: airconv then declares that
+     output with the attachment's component type (SM50_SHADER_PSO_PIXEL_SHADER_DATA::
+     pixel_formats). Non-integer targets stay 0 so they do not multiply the variants. */
+  uint32_t integer_rt_formats[8] = {};
   bool operator==(const this_type &rhs) const {
     return sample_mask == rhs.sample_mask &&
            dual_source_blending == rhs.dual_source_blending &&
@@ -118,6 +125,7 @@ struct ShaderVariantPixel {
 #ifdef DXMT_IOS
            vertex_shader_handle == rhs.vertex_shader_handle &&
 #endif
+           !memcmp(integer_rt_formats, rhs.integer_rt_formats, sizeof(integer_rt_formats)) && /* patch 0017 */
            unorm_output_reg_mask == rhs.unorm_output_reg_mask;
   }
 };

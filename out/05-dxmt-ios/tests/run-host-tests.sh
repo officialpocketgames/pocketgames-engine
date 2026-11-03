@@ -5,7 +5,8 @@
 # Spec 05 Part I, spec 06 Part F and spec 07 Part D: builds and runs the host unit tests (BC
 # decoder, mip-clamp policy, 32-bit pointer/chain/record helpers, atomic wait,
 # the DXSO 32-bit argument chain, the Direct3D 9 iOS rules, the Direct3D 9 call
-# statistics and their call-site coverage) with any C++20 compiler.
+# statistics and their call-site coverage; spec 05 clarification 10: the fixes adopted
+# from steamac's DXMT patches) with any C++20 compiler.
 # Usage: run-host-tests.sh [build-dir]
 # CXX selects the C++ compiler (default c++), CC the C compiler (default cc).
 
@@ -40,6 +41,22 @@ $cxx -std=c++20 -O2 -Wall -Wextra -Werror -DDXMT_PAGE_SIZE=4096 -DDXMT_NATIVE=1 
   -I"$src/../include/native/windows" -I"$src/../include/native/directx" \
   -o "$build/bench_dynamic_discard" "$here/bench_dynamic_discard.cpp" \
   "$src/dxmt/dxmt_dynamic.cpp" "$src/dxmt/dxmt_buffer.cpp" "$src/dxmt/dxmt_allocation.cpp" "$src/util/util_bloom.cpp"
+# Spec 05 clarification 10 (steamac's DXMT patches): 0019's slot reservation, 0017's integer
+# render-target table, 0010/0011/0012's regression tests (with 0008's out-error slot), and
+# 0002/0004/0023 against DXMT's own code with fake Metal.
+# (DXMT's native Win32 shims, util_win32_compat.h and log.hpp, need __cdecl and have unused
+# parameters; that is upstream's header, not the code under test.)
+native_flags="-DDXMT_PAGE_SIZE=4096 -DDXMT_NATIVE=1 -DDXMT_IOS=1 -D__cdecl= -Wno-unused-parameter \
+  -I$src/../include -I$src/../include/native/windows -I$src/../include/native/directx"
+$cxx $flags -pthread -I"$src/dxmt" -I"$src/util" -o "$build/test_chunk_slots" "$here/test_chunk_slots.cpp"
+$cxx $flags -DDXMT_NATIVE=1 -I"$src/airconv" -I"$src/winemetal" -o "$build/test_integer_rt_formats" \
+  "$here/test_integer_rt_formats.cpp"
+$cxx $flags -pthread $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" \
+  -o "$build/test_scheduler_lifetime" "$here/test_scheduler_lifetime.cpp"
+$cxx $flags $native_flags -I"$src/winemetal" -o "$build/test_metal_reference" "$here/test_metal_reference.cpp"
+$cxx $flags -I"$src/d3d11" -I"$src/airconv" -o "$build/test_shader_bitcode" "$here/test_shader_bitcode.cpp"
+$cxx $flags -pthread $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
+  -o "$build/test_core_fixes" "$here/test_core_fixes.cpp" "$src/dxmt/dxmt_allocation.cpp"
 
 status=0
 "$build/test_bc_decode" || status=1
@@ -53,4 +70,10 @@ status=0
 sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_swap_effect" || status=1
 "$build/bench_dynamic_discard" --check || status=1
+"$build/test_chunk_slots" || status=1
+"$build/test_integer_rt_formats" || status=1
+"$build/test_scheduler_lifetime" || status=1
+"$build/test_metal_reference" || status=1
+"$build/test_shader_bitcode" || status=1
+"$build/test_core_fixes" || status=1
 exit $status

@@ -1,5 +1,5 @@
-/* Changed for MYIOSDECK (spec 05 B8, E2, H6; spec 07: LGPL-2.1-or-later blocks from dxmt-d3d9
-   v0.4-d3d9, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
+/* Changed for MYIOSDECK (spec 05 B8, E2, H6, clarification 10; spec 07: LGPL-2.1-or-later blocks
+   from dxmt-d3d9 v0.4-d3d9, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 #ifndef _WINEMETAL_H
 #define _WINEMETAL_H
 
@@ -1900,5 +1900,21 @@ WINEMETAL_API bool MTLCommandBuffer_getGPUTimes(obj_handle_t cmdbuf, double *sta
 
 /* E2.4: set CAMetalLayer.displaySyncEnabled (slot 128). */
 WINEMETAL_API void MetalLayer_setDisplaySyncEnabled(obj_handle_t layer, bool enabled);
+
+/* Clarification 10 (slots 134-138): Metal residency sets, for steamac's DXMT patch 0023.
+   Available from iOS 18; below that, and for 32-bit callers, newResidencySet returns 0 and
+   the others do nothing. Allocations are MTLBuffer / MTLTexture handles. */
+WINEMETAL_API obj_handle_t
+MTLDevice_newResidencySet(obj_handle_t device, uint64_t initial_capacity, obj_handle_t *err_out);
+
+WINEMETAL_API void
+MTLResidencySet_addAllocations(obj_handle_t set, const obj_handle_t *allocations, uint64_t count);
+
+WINEMETAL_API void
+MTLResidencySet_removeAllocations(obj_handle_t set, const obj_handle_t *allocations, uint64_t count);
+
+WINEMETAL_API void MTLResidencySet_commit(obj_handle_t set);
+
+WINEMETAL_API void MTLCommandQueue_addResidencySet(obj_handle_t queue, obj_handle_t set);
 
 #endif

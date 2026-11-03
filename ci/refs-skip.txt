@@ -6,3 +6,7 @@
 #
 # (GnuTLS 3.8.9, nettle 3.10.1 and GMP 6.3.0 are gone from refs/README.md and refs/.gitignore
 # since part 13's build stopped using them, spec 13 clarification 5, so they need no entry here.)
+steamac-56aa855 the adopted steamac patches are copied into parts 05 and 34; no build reads this folder
+dxmt-upstream-e94c312 context for fitting spec 05 clarification 10's patches; no build reads it
+khronos-gl-0b449b9 only opengl32-unix/regen.sh reads it, run by hand; the generated thunks are committed
+khronos-egl-3ae2b7c only opengl32-unix/regen.sh reads it, run by hand; the generated thunks are committed

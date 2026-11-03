@@ -109,6 +109,8 @@ int pg_dxmt_has_40_cap(void);
 void pg_gpu_meter_enable(int on);
 double pg_gpu_meter_busy_seconds(void);
 uint64_t pg_gpu_meter_cmdbufs(void);
+/* Spec 34: adds 1 to the count pg_get_present_count() reports (the Vulkan layer's presents) */
+void pg_note_external_present(void);
 
 /* ---- Spec 06 (32-bit callers) ---- */
 

@@ -1,6 +1,7 @@
 #pragma once
 // Changed for MYIOSDECK (spec 05 E2, H1, H2, H5; spec 07 A2: LGPL-2.1-or-later blocks from
-// dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT.
+// dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10:
+// an LGPL-2.1-or-later member from steamac's DXMT patch 0023, marked inline). Upstream: DXMT a3a6e8f, MIT.
 
 #include "Metal.hpp"
 #include "dxmt_allocation.hpp"
@@ -209,6 +210,9 @@ private:
   dxmt::thread finishThread;
   WMT::Device device;
   WMT::Reference<WMT::CommandQueue> commandQueue;
+  /* steamac's DXMT patch 0023 (LGPL, Jakey-Jakey): the queue's residency set; null below
+     iOS 18 (spec 05 clarification 10) */
+  Rc<ResidencySetTracker> residency_set;
 
   obj_handle_t shared_event_listener;
   dxmt::thread event_listener_thread;

@@ -1,9 +1,69 @@
 #pragma once
+// Changed for MYIOSDECK (spec 05 clarification 10: an LGPL-2.1-or-later block from steamac's
+// DXMT patch 0023, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "winemetal.h"
+#include "Metal.hpp"
+#include "thread.hpp"
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include "ftl.hpp"
 
 namespace dxmt {
+
+/**
+LGPL-2.1-or-later, from steamac's DXMT patch 0023 (Jakey-Jakey): an `MTLResidencySet`
+attached to the command queue, which replaces per-encoder `useResource`. Allocations are
+added on first use, and committed right before the command buffer that uses them. Removal
+(once freed) is committed immediately. MYIOSDECK spec 05 clarification 10: only on iOS 18
+and later (CommandQueue decides); a handle is a WMT::Object here (MTLBuffer / MTLTexture).
+*/
+class ResidencySetTracker {
+public:
+  ResidencySetTracker(WMT::Reference<WMT::ResidencySet> &&set) : set_(std::move(set)) {}
+
+  void
+  incRef() {
+    refcount_.fetch_add(1u, std::memory_order_acquire);
+  }
+
+  void
+  decRef() {
+    if (refcount_.fetch_sub(1u, std::memory_order_release) == 1u)
+      delete this;
+  }
+
+  void
+  add(WMT::Object allocation) {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    set_.addAllocations(&allocation.handle, 1);
+    dirty_ = true;
+  }
+
+  void
+  remove(WMT::Object allocation) {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    set_.removeAllocations(&allocation.handle, 1);
+    set_.commit();
+    dirty_ = false;
+  }
+
+  void
+  commit() {
+    std::lock_guard<dxmt::mutex> lock(mutex_);
+    if (!dirty_)
+      return;
+    set_.commit();
+    dirty_ = false;
+  }
+
+private:
+  std::atomic<uint32_t> refcount_ = {0u};
+  dxmt::mutex mutex_;
+  WMT::Reference<WMT::ResidencySet> set_;
+  bool dirty_ = false;
+};
+/* end of LGPL block */
 
 enum DXMT_RESOURCE_RESIDENCY : uint32_t {
   DXMT_RESOURCE_RESIDENCY_NULL = 0,

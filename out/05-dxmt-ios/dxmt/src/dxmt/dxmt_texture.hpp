@@ -1,6 +1,7 @@
 #pragma once
 // Changed for MYIOSDECK (spec 05 D5, H7; spec 07 A2: LGPL-2.1-or-later blocks from dxmt-d3d9
-// v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT.
+// v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10: an
+// LGPL-2.1-or-later block from steamac's DXMT patch 0023, marked inline). Upstream: DXMT a3a6e8f, MIT.
 #include "Metal.hpp"
 #include "dxmt_deptrack.hpp"
 #include "dxmt_residency.hpp"
@@ -109,6 +110,15 @@ public:
      allocations); the D3D9 frontend keeps its own reference for LockRect. */
   WMT::Buffer buffer() const {
     return buffer_;
+  }
+
+  /* LGPL-2.1-or-later, from steamac's DXMT patch 0023 (Jakey-Jakey): a linear texture
+     is created from a buffer, which is the actual allocation for the residency set */
+  WMT::Object
+  residencyObject() const {
+    if (buffer_ != nullptr)
+      return buffer_;
+    return obj_;
   }
 
   Flags<TextureAllocationFlag>

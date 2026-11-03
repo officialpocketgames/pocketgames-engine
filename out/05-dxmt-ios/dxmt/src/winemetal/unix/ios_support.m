@@ -444,6 +444,13 @@ pg_dxmt_has_40_cap(void) {
   return 1;
 }
 
+/* Spec 34 (changes to spec 05): a present that didn't go through DXMT (the Vulkan layer's,
+   spec 34 E6) counts too, so the app's frame-rate overlay sees it. */
+DXMT_IOS_EXPORT void
+pg_note_external_present(void) {
+  atomic_fetch_add(&g_present_count, 1);
+}
+
 /* Precise limiter (DXMT_PRESENT_LIMITER=1): hold the encode thread until an
    absolute deadline, advanced by one period from the previous deadline; more
    than one period late restarts from now, and a late frame doesn't sleep. */

@@ -1,0 +1,29 @@
+Spec 34 Part D5: D3DKMT stays as it is. With Vulkan on (spec 34 D1), d3dkmt_init_vulkan would
+create a host instance of its own; on iOS it creates none, so spec 12 Parts C and D answer every
+D3DKMT query exactly as before spec 34 (w32ios_vk_d3dkmt_wants_instance, w32ios_vk_pure.c).
+Applied after D-01-d3dkmt.patch.
+
+--- a/dlls/win32u/d3dkmt.c
++++ b/dlls/win32u/d3dkmt.c
+@@ -496,6 +496,10 @@
+ 
+ static struct vulkan_instance *d3dkmt_vulkan_instance; /* Vulkan instance for D3DKMT functions */
+ 
++#ifdef WINE_IOS
++#include "w32ios_vk_pure.h"   /* Changed for MYIOSDECK (iOS, spec 34 D5): see out/12-win32u-ios/CHANGES.md */
++#endif
++
+ static void d3dkmt_init_vulkan(void)
+ {
+     static const struct vulkan_instance_extensions extensions =
+@@ -504,6 +508,10 @@
+         .has_VK_KHR_external_memory_capabilities = 1,
+     };
+ 
++#ifdef WINE_IOS
++    /* MYIOSDECK (spec 34 D5): no instance on iOS; spec 12 Parts C and D answer every D3DKMT query */
++    if (!w32ios_vk_d3dkmt_wants_instance()) return;
++#endif
+     d3dkmt_vulkan_instance = vulkan_instance_create( &extensions );
+     if (!d3dkmt_vulkan_instance) WARN( "Failed to create the vulkan instance\n" );
+ }

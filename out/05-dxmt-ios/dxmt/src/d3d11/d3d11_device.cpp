@@ -1,3 +1,5 @@
+// Changed for MYIOSDECK (spec 05 clarification 10: an LGPL-2.1-or-later block from
+// steamac's DXMT patch 0015, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "com/com_guid.hpp"
 #include "d3d11_fence.hpp"
 #include "d3d11_input_layout.hpp"
@@ -446,6 +448,18 @@ public:
               this, pQueryDesc));
       return S_OK;
     }
+    /* LGPL-2.1-or-later, from steamac's DXMT patch 0015 (Mybono): stream-output queries
+       cannot be implemented on Metal; a program that fails to create one may quit, so
+       answer with a dummy like PIPELINE_STATISTICS */
+    case D3D11_QUERY_SO_STATISTICS: {
+      *ppQuery = ref(new MTLD3D11DummyQuery<D3D11_QUERY_DATA_SO_STATISTICS>(this, pQueryDesc));
+      return S_OK;
+    }
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE: {
+      *ppQuery = ref(new MTLD3D11DummyQuery<BOOL>(this, pQueryDesc));
+      return S_OK;
+    }
+    /* end of LGPL block */
     default:
       ERR("CreateQuery: query type not implemented: ", pQueryDesc->Query);
       return E_NOTIMPL;

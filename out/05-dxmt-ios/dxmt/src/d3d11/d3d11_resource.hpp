@@ -1,4 +1,6 @@
 #pragma once
+// Changed for MYIOSDECK (spec 05 clarification 10: an LGPL-2.1-or-later block from steamac's
+// DXMT patch 0013, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "dxmt_buffer.hpp"
 #include "dxmt_dynamic.hpp"
 #include "dxmt_staging.hpp"
@@ -8,6 +10,7 @@
 #include "com/com_guid.hpp"
 #include "d3d11_view.hpp"
 #include "dxgi_resource.hpp"
+#include "d3d11_dxgi_surface.hpp"
 #include "dxmt_resource_binding.hpp"
 #include "log/log.hpp"
 #include "../d3d10/d3d10_buffer.hpp"
@@ -169,6 +172,7 @@ public:
             device),
         desc(desc),
         dxgi_resource(new MTLDXGIResource<TResourceBase<tag, Base...>>(this)),
+        dxgi_surface(this),
         d3d10(reinterpret_cast<tag::COM *>(this), device->GetImmediateContextPrivate()) {}
 
   template <std::size_t n> HRESULT ResolveBase(REFIID riid, void **ppvObject) {
@@ -216,6 +220,20 @@ public:
       *ppvObject = ref(dxgi_resource.get());
       return S_OK;
     }
+
+    /* LGPL-2.1-or-later, from steamac's DXMT patch 0013 (hanzpo): Direct2D interop
+       queries a texture for IDXGISurface; only a 2D texture with exactly one
+       subresource can be viewed as a surface, as on Windows */
+    if (riid == __uuidof(IDXGISurface) || riid == __uuidof(IDXGISurface1) || riid == __uuidof(IDXGISurface2)) {
+      if constexpr (tag::dimension == D3D11_RESOURCE_DIMENSION_TEXTURE2D) {
+        if (this->desc.MipLevels == 1 && this->desc.ArraySize == 1) {
+          *ppvObject = ref(&dxgi_surface);
+          return S_OK;
+        }
+      }
+      return E_NOINTERFACE;
+    }
+    /* end of LGPL block */
 
     if (logQueryInterfaceError(__uuidof(typename tag::COM), riid)) {
       WARN("D3D11Resource(", tag::debug_name ,"): Unknown interface query ", str::format(riid));
@@ -286,6 +304,7 @@ public:
 protected:
   tag::DESC1 desc;
   std::unique_ptr<IDXGIResource1> dxgi_resource;
+  MTLDXGISurface<TResourceBase<tag, Base...>> dxgi_surface; /* patch 0013 (LGPL) */
   tag::D3D10_IMPL d3d10;
 };
 

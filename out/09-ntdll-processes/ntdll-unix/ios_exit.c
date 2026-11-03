@@ -19,6 +19,7 @@
 #include "config.h"
 
 #include <errno.h>
+#include <poll.h>
 #include <pthread.h>
 #include <setjmp.h>
 #include <stdarg.h>
@@ -214,6 +215,36 @@ BOOL ios_thread_was_killed(void)
     return thread_killed;
 }
 
+
+/***********************************************************************
+ *           ios_thread_kill_pending   (spec 09 D3 as spec 34 E7 asks)
+ *
+ * 1 when the calling thread's pseudo-process is being killed, else 0. For code that waits outside
+ * Wine's waits (the Vulkan layer's sliced waits in the driver), between its slices: it asks
+ * nothing of the server, never leaves the thread and consumes no alert. Killed means: the
+ * process is ending (Part D1), the server already closed this thread's pipes (spec 22 C3), or
+ * it has closed them now, which the reply pipe shows as hung up (a kill closes them, spec 08;
+ * an APC's alert doesn't, so a pending APC never reads as a kill).
+ */
+int ios_thread_kill_pending(void)
+{
+    struct ntdll_thread_data *data;
+    struct ios_proc *proc;
+    struct pollfd pfd;
+
+    if (!ios_current_teb()) return 0;
+    if (thread_killed) return 1;
+    if ((proc = ios_proc_current()) && proc->state >= IOS_PROC_ENDING) return 1;
+    data = ntdll_get_thread_data();
+    if (data->ios_leaving) return 1;
+    if (data->reply_fd < 0) return 0;
+    pfd.fd = data->reply_fd;
+    pfd.events = POLLIN;
+    pfd.revents = 0;
+    if (poll( &pfd, 1, 0 ) == 1 && (pfd.revents & (POLLHUP | POLLERR | POLLNVAL))) return 1;
+    return 0;
+}
+
 static BOOL is_main_thread( struct ios_proc *proc )
 {
     return __atomic_load_n( &proc->have_main, __ATOMIC_ACQUIRE ) && pthread_equal( proc->main_thread, pthread_self() );
@@ -223,6 +254,10 @@ static BOOL is_main_thread( struct ios_proc *proc )
 /* ---------- spec 22 C6: process-end hooks ---------- */
 
 static struct ios_hook_list end_hooks;
+
+/* spec 34 Part H: win32u's release of the ended process's Vulkan devices, surfaces and instances
+ * (spec 34 D7); weak: absent when win32u is built without it */
+extern void ios_vk_release_process( unsigned int pid ) __attribute__((weak));
 
 /***********************************************************************
  *           ios_process_end_hook_add   (cross-library, spec 22 C6)
@@ -440,10 +475,12 @@ void ios_thread_leave( int status )
     struct ntdll_thread_data *data;
     TEB *teb = ios_current_teb();
     BOOL session, mine;
+    unsigned int pid;
     LONG left;
     int code;
 
     if (!teb) native_thread_exit( status );
+    pid = HandleToULong( teb->ClientId.UniqueProcess );   /* spec 34 Part H, below */
     data = ntdll_get_thread_data();
     proc = ios_proc_current();
     session = ios_is_session_thread();
@@ -493,8 +530,10 @@ void ios_thread_leave( int status )
     if (left <= 0)
     {
         /* nothing of this process runs any more: the other libraries' clean-up (spec 22 C6),
-         * then its memory goes back (spec 10) */
+         * its Vulkan objects (spec 34 Part H: before its memory, also before a 32-bit program's
+         * window goes, where its imported memory lies), then its memory goes back (spec 10) */
         run_end_hooks( proc );
+        if (ios_vk_release_process) ios_vk_release_process( pid );
         ios_mem_release_process( proc, FALSE );
         code = proc->exit_code;
         mine = mark_dead_last( proc );   /* proc may be gone after this when !mine */

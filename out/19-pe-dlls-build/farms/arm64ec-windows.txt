@@ -118,6 +118,7 @@ uxtheme.dll
 vcruntime140.dll
 vcruntime140_1.dll
 version.dll
+vulkan-1.dll    # spec 34 C1: Wine's loader, built without --prefer-native (pe/dlls/vulkan-1/Makefile.in)
 wbemdisp.dll
 wbemprox.dll
 wevtapi.dll
@@ -127,6 +128,7 @@ windows.ui.dll
 windowscodecs.dll
 wined3d.dll
 winegstreamer.dll
+winevulkan.dll  # spec 34 C1: its unix side is out/34-vulkan-ios/winevulkan-unix
 winhttp.dll
 wininet.dll
 winmm.dll

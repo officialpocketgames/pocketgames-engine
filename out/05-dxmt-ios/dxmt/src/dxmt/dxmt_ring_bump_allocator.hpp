@@ -1,6 +1,7 @@
 #pragma once
 // Changed for MYIOSDECK (spec 05 D6, D7; spec 06 A, B2, B3; spec 07 A2: LGPL-2.1-or-later blocks
-// from dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT.
+// from dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10:
+// an LGPL-2.1-or-later block from steamac's DXMT patch 0002, marked inline). Upstream: DXMT a3a6e8f, MIT.
 
 #include "Metal.hpp"
 #include "log/log.hpp"
@@ -217,6 +218,10 @@ public:
     WMT::Reference<WMT::Buffer> buffer;
     uint64_t gpu_address;
     void *mapped_address;
+    /* LGPL-2.1-or-later, from steamac's DXMT patch 0002 (StonkGuy): the memory placed
+       under the buffer, freed with the block. mapped_address is where newBuffer says
+       the contents are, which a unix side may back with other memory. */
+    void *placed_address;
 
     ~Block() {
 #ifdef DXMT_IOS
@@ -224,10 +229,11 @@ public:
       // newBufferWithBytesNoCopy:, so release it before freeing the memory.
       buffer = WMT::Reference<WMT::Buffer>();
 #endif
-      if (mapped_address) {
-        freePlaced(mapped_address);
-        mapped_address = nullptr;
+      if (placed_address) {
+        freePlaced(placed_address);
+        placed_address = nullptr;
       }
+      mapped_address = nullptr;
     };
 
     Block() = default;
@@ -237,24 +243,29 @@ public:
       buffer = std::move(move.buffer);
       gpu_address = move.gpu_address;
       mapped_address = move.mapped_address;
+      placed_address = move.placed_address;
       move.mapped_address = nullptr;
+      move.placed_address = nullptr;
     };
   };
 
   Block
   allocate(size_t block_size) {
     Block block{};
-    block.mapped_address = placed_buffer_ ? allocatePlaced(block_size) : nullptr;
+    block.placed_address = placed_buffer_ ? allocatePlaced(block_size) : nullptr;
     WMTBufferInfo info;
     info.options = buffer_info_;
-    info.memory.set(block.mapped_address);
+    info.memory.set(block.placed_address);
 #ifdef DXMT_IOS
-    info.length = block.mapped_address ? PlacedMemoryLength(block_size) : block_size;
+    info.length = block.placed_address ? PlacedMemoryLength(block_size) : block_size;
 #else
     info.length = block_size;
 #endif
     block.buffer = device_.newBuffer(info);
     block.gpu_address = info.gpu_address;
+    /* CPU writes go where newBuffer says the contents are, as BufferAllocation does */
+    block.mapped_address = placed_buffer_ ? info.memory.get() : nullptr;
+    /* end of LGPL block */
     return block;
   };
 

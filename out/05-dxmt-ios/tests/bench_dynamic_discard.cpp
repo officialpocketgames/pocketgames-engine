@@ -110,6 +110,17 @@ MTLDevice_supportsFamily(obj_handle_t, enum WMTGPUFamily) {
   return false;
 }
 
+/* Spec 05 clarification 10: Allocation::decRef takes an allocation out of the queue's
+   residency set (steamac's DXMT patch 0023); the benchmark runs without a set. */
+void
+MTLResidencySet_removeAllocations(obj_handle_t, const obj_handle_t *, uint64_t) {}
+
+void
+MTLResidencySet_addAllocations(obj_handle_t, const obj_handle_t *, uint64_t) {}
+
+void
+MTLResidencySet_commit(obj_handle_t) {}
+
 } // extern "C"
 
 namespace dxmt {

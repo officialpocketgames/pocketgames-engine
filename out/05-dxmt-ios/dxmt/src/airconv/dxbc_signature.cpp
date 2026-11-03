@@ -1,5 +1,6 @@
-// Changed for MYIOSDECK (spec 05 F1, F3, F4). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 F1, F3, F4, clarification 10). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "dxbc_converter.hpp"
+#include "dxbc_integer_rt.hpp"
 #include <format>
 
 using namespace microsoft;
@@ -593,8 +594,24 @@ void handle_signature_ps(
       max_output_register = std::max(reg + 1, max_output_register);
       pso_valid_output_reg_mask |= (1 << reg);
       if (sig.mask() == 0) break;
-      auto type = sig.componentType();
+      auto declared_type = sig.componentType();
       signature_handlers.push_back([=](SignatureContext &ctx) {
+        // MYIOSDECK spec 05 clarification 10 (for steamac's DXMT patch 0017): an
+        // output bound to an integer render target takes the target's component
+        // type, whatever the signature declares (dxbc_integer_rt.hpp).
+        auto type = declared_type;
+        if (ctx.pixel_formats && reg < 8) {
+          switch (ClassifyIntegerRenderTarget(ctx.pixel_formats[reg])) {
+          case IntegerRenderTargetKind::Uint:
+            type = RegisterComponentType::Uint;
+            break;
+          case IntegerRenderTargetKind::Sint:
+            type = RegisterComponentType::Int;
+            break;
+          case IntegerRenderTargetKind::None:
+            break;
+          }
+        }
         uint32_t assigned_index;
         if (ctx.dual_source_blending) {
           if (reg > 1 || reg < 0)

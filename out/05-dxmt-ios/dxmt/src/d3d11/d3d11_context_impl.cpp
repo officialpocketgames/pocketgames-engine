@@ -1,3 +1,6 @@
+// Changed for MYIOSDECK (spec 05 B, C, D; spec 05 clarification 10: LGPL-2.1-or-later blocks from
+// steamac's DXMT patches 0005, 0007 and 0014, marked inline, see LICENSE-NOTES.md).
+// Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 /**
 This file is included by d3d11_context_{imm|def}.cpp
@@ -1203,7 +1206,29 @@ public:
           return;
         }
       }
-      if (auto bindable = reinterpret_cast<D3D11ResourceCommon *>(pDstResource)) {
+      if (auto staging = GetStagingResource(pDstResource, DstSubresource)) {
+        /* LGPL-2.1-or-later, from steamac's DXMT patch 0005 (osy): MSDN excludes only
+           IMMUTABLE and DYNAMIC destinations, so a STAGING one is legal; order the write
+           with the rest of the GPU timeline by blitting it into the staging buffer, like
+           a copy into staging. */
+        auto [upload, upload_offset] = AllocateStagingBuffer(copy_len, 16);
+        upload.updateContents(upload_offset, pSrcData, copy_len);
+        SwitchToBlitEncoder(CommandBufferState::UpdateBlitEncoderActive);
+        UseCopyDestination(staging);
+        EmitOP([upload, upload_offset, dst_ = std::move(staging), copy_offset,
+                copy_len](ArgumentEncodingContext &enc) {
+          auto [dst, dst_offset] = enc.access(dst_->buffer(), copy_offset, copy_len, DXMT_ENCODER_RESOURCE_ACESS_WRITE);
+          auto &cmd = enc.encodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
+          cmd.type = WMTBlitCommandCopyFromBufferToBuffer;
+          cmd.copy_length = copy_len;
+          cmd.src = upload;
+          cmd.src_offset = upload_offset;
+          cmd.dst = dst->buffer();
+          cmd.dst_offset = copy_offset + dst_offset;
+        });
+        promote_flush = true;
+        /* end of LGPL block */
+      } else if (auto bindable = reinterpret_cast<D3D11ResourceCommon *>(pDstResource)) {
         // if (auto _ = UseImmediate(bindable.ptr())) {
         //   auto buffer = _.buffer();
         //   memcpy(((char *)buffer->contents()) + copy_offset, pSrcData, copy_len);
@@ -1844,7 +1869,37 @@ public:
   void
   STDMETHODCALLTYPE
   SwapDeviceContextState(ID3DDeviceContextState *pState, ID3DDeviceContextState **ppPreviousState) override {
-    IMPLEMENT_ME
+    /* LGPL-2.1-or-later, from steamac's DXMT patch 0014 (hanzpo) */
+    std::lock_guard<mutex_t> lock(mutex);
+
+    if (ppPreviousState)
+      *ppPreviousState = nullptr;
+
+    if (!pState)
+      return;
+
+    // the context starts out with an implicit state object holding its current state
+    if (!active_context_state_)
+      active_context_state_ = new MTLD3D11DeviceContextState(device);
+
+    if (ppPreviousState)
+      *ppPreviousState = ref(active_context_state_.ptr());
+
+    auto next = static_cast<MTLD3D11DeviceContextState *>(pState);
+    if (next == active_context_state_.ptr())
+      return;
+
+    // end the current pass while state_ still describes it
+    ResetEncodingContextState();
+
+    // binding sets are move-only; moving marks every bound slot dirty, and pipeline state is rebuilt on the next
+    // draw/dispatch. the incoming object's copy is left stale while it is active (see MTLD3D11DeviceContextState)
+    active_context_state_->state = std::move(state_);
+    state_ = std::move(next->state);
+    active_context_state_ = next;
+
+    RestoreEncodingContextState();
+    /* end of LGPL block */
   }
 
   void
@@ -4113,7 +4168,10 @@ public:
     if (auto dst = GetTexture(cmd.pDst))
       physical_level -= int32_t(dst->mipBias());
     // Spec 05 C3: UpdateSubresource into an emulated BC texture is decoded here.
-    if ((cmd.DstFormat.Flag & MTL_DXGI_FORMAT_BC) && BCEmulationActive(device->GetMTLDevice())) {
+    // A STAGING destination keeps D3D's block rows (spec 05 clarification 10,
+    // steamac's DXMT patch 0005): it goes on to the staging path below.
+    if ((cmd.DstFormat.Flag & MTL_DXGI_FORMAT_BC) && BCEmulationActive(device->GetMTLDevice()) &&
+        !GetStagingResource(cmd.pDst, cmd.DstSubresource)) {
       if (auto dst = GetTexture(cmd.pDst)) {
         UploadEmulatedBC(
             std::move(dst), physical_level, cmd.Dst.ArraySlice, cmd.DstOrigin, cmd.DstSize.width,
@@ -4170,8 +4228,40 @@ public:
         cmd_cptex.options = DepthStencilPlaneBlitOption(dst->pixelFormat(), cmd.DstFormat.Flag);
       });
     } else if (auto staging_dst = GetStagingResource(cmd.pDst, cmd.DstSubresource)) {
-      // staging: ...
-      UNIMPLEMENTED("update staging texture");
+      /* LGPL-2.1-or-later, from steamac's DXMT patch 0005 (osy): a STAGING texture is a
+         buffer in D3D's own layout (block rows for BC, also under BC emulation): pack the
+         rows, then blit each one to its place, ordered like any other copy into staging. */
+      const uint32_t row_bytes = cmd.EffectiveBytesPerRow, rows = cmd.EffectiveRows, depth = cmd.DstSize.depth;
+      const bool bc = cmd.DstFormat.Flag & MTL_DXGI_FORMAT_BC;
+      const uint32_t dst_x = (bc ? cmd.DstOrigin.x >> 2 : cmd.DstOrigin.x) * cmd.DstFormat.BytesPerTexel;
+      const uint32_t dst_y = bc ? cmd.DstOrigin.y >> 2 : cmd.DstOrigin.y;
+      auto [upload, upload_offset] = AllocateStagingBuffer(row_bytes * rows * depth, 16);
+      for (uint32_t z = 0; z < depth; z++)
+        for (uint32_t row = 0; row < rows; row++)
+          upload.updateContents(
+              upload_offset + (z * rows + row) * row_bytes,
+              (const char *)pSrcData + z * SrcDepthPitch + row * SrcRowPitch, row_bytes
+          );
+      SwitchToBlitEncoder(CommandBufferState::UpdateBlitEncoderActive);
+      UseCopyDestination(staging_dst);
+      EmitOP([upload, upload_offset, dst_ = std::move(staging_dst), row_bytes, rows, depth, dst_x, dst_y,
+              dst_z = cmd.DstOrigin.z](ArgumentEncodingContext &enc) {
+        auto [dst, dst_sub_offset] = enc.access(dst_->buffer(), 0, dst_->length, DXMT_ENCODER_RESOURCE_ACESS_WRITE);
+        for (uint32_t z = 0; z < depth; z++) {
+          for (uint32_t row = 0; row < rows; row++) {
+            auto &cp = enc.encodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
+            cp.type = WMTBlitCommandCopyFromBufferToBuffer;
+            cp.copy_length = row_bytes;
+            cp.src = upload;
+            cp.src_offset = upload_offset + (z * rows + row) * row_bytes;
+            cp.dst = dst->buffer();
+            cp.dst_offset =
+                dst_sub_offset + (dst_z + z) * dst_->bytesPerImage + (dst_y + row) * dst_->bytesPerRow + dst_x;
+          }
+        }
+      });
+      promote_flush = true;
+      /* end of LGPL block */
     } else {
       UNIMPLEMENTED("unknown texture");
     }
@@ -4673,8 +4763,10 @@ public:
       pso->GetPipeline(&GraphicsPipeline); // may block
       enc.tess_num_output_control_point_element = GraphicsPipeline.NumControlPointOutputElement;
       enc.tess_threads_per_patch = GraphicsPipeline.ThreadsPerPatch;
-      if (!GraphicsPipeline.PipelineState)
-        return;
+      /* LGPL-2.1-or-later, from steamac's DXMT patch 0007 (Holly Hamilton): a null
+         pipeline (compilation failed) is encoded anyway; it tells winemetal to drop the
+         draws queued for it rather than run them with whatever pipeline the encoder had
+         bound before. */
       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setpso>();
       cmd.type = WMTRenderCommandSetPSO;
       cmd.pso = GraphicsPipeline.PipelineState;
@@ -4718,8 +4810,7 @@ public:
       render_encoder->use_geometry = 1;
       MTL_COMPILED_GRAPHICS_PIPELINE GraphicsPipeline{};
       pso->GetPipeline(&GraphicsPipeline); // may block
-      if (!GraphicsPipeline.PipelineState)
-        return;
+      /* steamac's DXMT patch 0007 (LGPL, Holly Hamilton): a null pipeline is encoded too */
       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setpso>();
       cmd.type = WMTRenderCommandSetPSO;
       cmd.pso = GraphicsPipeline.PipelineState;
@@ -4773,8 +4864,7 @@ public:
     EmitST([pso = std::move(pipeline)](ArgumentEncodingContext& enc) {
       MTL_COMPILED_GRAPHICS_PIPELINE GraphicsPipeline{};
       pso->GetPipeline(&GraphicsPipeline); // may block
-      if (!GraphicsPipeline.PipelineState)
-        return;
+      /* steamac's DXMT patch 0007 (LGPL, Holly Hamilton): a null pipeline is encoded too */
       auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setpso>();
       cmd.type = WMTRenderCommandSetPSO;
       cmd.pso = GraphicsPipeline.PipelineState;
@@ -4932,12 +5022,14 @@ public:
                ArgumentEncodingContext &enc) {
       MTL_COMPILED_COMPUTE_PIPELINE ComputePipeline;
       pso->GetPipeline(&ComputePipeline); // may block
-      if (!ComputePipeline.PipelineState)
-        return;
+      /* LGPL-2.1-or-later, from steamac's DXMT patch 0007 (Holly Hamilton): a null
+         pipeline (compilation failed) is encoded anyway, with a zero threadgroup size:
+         winemetal then drops the dispatches queued for it instead of running them on
+         whatever kernel was bound before. */
       auto &cmd = enc.encodeComputeCommand<wmtcmd_compute_setpso>();
       cmd.type = WMTComputeCommandSetPSO;
       cmd.pso = ComputePipeline.PipelineState;
-      cmd.threadgroup_size = tg_size;
+      cmd.threadgroup_size = ComputePipeline.PipelineState ? tg_size : WMTSize{0, 0, 0};
     });
 
     cmdbuf_state = CommandBufferState::ComputePipelineReady;
@@ -5122,6 +5214,9 @@ public:
 
 protected:
   D3D11ContextState state_;
+  /* patch 0014 (LGPL, hanzpo): the active state object; a private reference, since a
+     public one would keep the device alive */
+  Com<MTLD3D11DeviceContextState, false> active_context_state_;
   D3D11UserDefinedAnnotation annotation_;
   MTLD3D11ContextExt<ContextInternalState> ext_;
   uint64_t max_object_threadgroups_;

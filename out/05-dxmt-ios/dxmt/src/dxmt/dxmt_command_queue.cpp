@@ -1,9 +1,13 @@
 // Changed for MYIOSDECK (spec 05 B9, D2, H2, H5; spec 06 D; spec 07 A2: LGPL-2.1-or-later blocks
-// from dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT.
+// from dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10:
+// LGPL-2.1-or-later blocks from steamac's DXMT patches 0019 and 0023, marked inline). Upstream: DXMT
+// a3a6e8f, MIT.
 #include "dxmt_command_queue.hpp"
 #include "Metal.hpp"
+#include "dxmt_chunk_slots.hpp"
 #include "dxmt_statistics.hpp"
 #include "util_atomic_wait.hpp"
+#include "util_bitness.hpp"
 #include "util_env.hpp"
 #include "util_win32_compat.h"
 #include <algorithm>
@@ -40,6 +44,40 @@ CommandQueue::CommandQueue(WMT::Device device) :
     cmd_library(device),
     argument_encoding_ctx(*this, device, cmd_library),
     initializer(device) {
+  /* LGPL-2.1-or-later, from steamac's DXMT patch 0023 (Jakey-Jakey), fitted for MYIOSDECK
+     spec 05 clarification 10: a residency set attached to the queue replaces per-encoder
+     useResource. MTLResidencySet needs iOS 18 and the app supports iOS 17, so below 18 the
+     old path stays; so does the i386 build (its unix calls are refused) and
+     DXMT_RESIDENCY_SET=0. One log line says which path is in use. */
+  {
+    uint64_t os_major = 0, os_minor = 0, os_patch = 0;
+    WMTGetOSVersion(&os_major, &os_minor, &os_patch);
+    const char *without = nullptr;
+    if (kI386Build) {
+      without = "32-bit program";
+    } else if (os_major < 18) {
+      without = "iOS below 18";
+    } else if (env::getEnvVar("DXMT_RESIDENCY_SET") == "0") {
+      without = "DXMT_RESIDENCY_SET=0";
+    } else {
+      WMT::Reference<WMT::Error> err;
+      auto set = device.newResidencySet(0, err);
+      if (set != nullptr) {
+        commandQueue.addResidencySet(set);
+        residency_set = new ResidencySetTracker(std::move(set));
+        argument_encoding_ctx.setResidencySet(residency_set.ptr());
+      } else {
+        WARN("Failed to create MTLResidencySet: ", err ? err.description().getUTF8String() : std::string("no error"));
+        without = "MTLResidencySet creation failed";
+      }
+    }
+    if (without)
+      Logger::info(str::format("residency: useResource per encoder (", without, "; iOS ", os_major, ".", os_minor, ")"));
+    else
+      Logger::info(str::format("residency: MTLResidencySet (iOS ", os_major, ".", os_minor, ")"));
+  }
+  /* end of LGPL block */
+
   for (unsigned i = 0; i < kCommandChunkCount; i++) {
     auto &chunk = chunks[i];
     chunk.queue = this;
@@ -77,24 +115,28 @@ CommandQueue::~CommandQueue() {
 
 void
 CommandQueue::CommitCurrentChunk() {
+  auto& statistics = CurrentFrameStatistics();
+#if ASYNC_ENCODING
+  /* LGPL-2.1-or-later, from steamac's DXMT patch 0019 (时雨): reserve the chunk's slot
+     before publishing it (dxmt_chunk_slots.hpp); upstream published first and counted
+     the chunk in afterwards, so the finish thread could release it before that. */
+  auto t0 = clock::now();
+  ReserveChunkSlot(chunk_ongoing, kCommandChunkCount - 1);
+  auto t1 = clock::now();
+  statistics.commit_interval += (t1 - t0);
+#endif
+
   auto chunk_id = ready_for_encode.load(std::memory_order_relaxed);
   auto &chunk = chunks[chunk_id % kCommandChunkCount];
   chunk.chunk_id = chunk_id;
   chunk.chunk_event_id = GetNextEventSeqId();
   chunk.frame_ = frame_count;
   chunk.resource_initializer_event_id = initializer.flushToWait();
-  auto& statistics = CurrentFrameStatistics();
   statistics.command_buffer_count++;
 #if ASYNC_ENCODING
   ready_for_encode.fetch_add(1, std::memory_order_release);
   atomic_notify_one(ready_for_encode);
-
-  auto t0 = clock::now();
-  atomic_wait(chunk_ongoing, kCommandChunkCount - 1, std::memory_order_acquire);
-  chunk_ongoing.fetch_add(1, std::memory_order_relaxed);
-  auto t1 = clock::now();
-  statistics.commit_interval += (t1 - t0);
-
+  /* end of LGPL block */
 #else
   CommitChunkInternal(chunk, ready_for_encode.fetch_add(1, std::memory_order_relaxed));
 #endif
@@ -147,6 +189,8 @@ CommandQueue::CommitChunkInternal(CommandChunk &chunk, uint64_t seq) {
     cmdbuf.encodeWaitForEvent(initializer.event(), chunk.resource_initializer_event_id);
   }
   chunk.encode(chunk.attached_cmdbuf, this->argument_encoding_ctx);
+  if (residency_set.ptr()) /* patch 0023 (LGPL): what this chunk added is resident before it runs */
+    residency_set->commit();
   cmdbuf.commit();
 
   ready_for_commit.fetch_add(1, std::memory_order_release);
@@ -213,8 +257,7 @@ CommandQueue::WaitForFinishThread() {
 
     chunk.reset();
     cpu_coherent.signal(internal_seq);
-    chunk_ongoing.fetch_sub(1, std::memory_order_release);
-    atomic_notify_one(chunk_ongoing);
+    ReleaseChunkSlot(chunk_ongoing); /* patch 0019 (LGPL): the release half, dxmt_chunk_slots.hpp */
 
     staging_allocator.free_blocks(internal_seq);
     copy_temp_allocator.free_blocks(internal_seq);

@@ -21,7 +21,7 @@
 
 #define PtrToUInt64(v) ((uint64_t)(uintptr_t)(v))
 
-/* Changed for MYIOSDECK (spec 05 B1, E, H). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
+/* Changed for MYIOSDECK (spec 05 B1, E, H, clarification 10). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 
 #ifdef DXMT_IOS
 /* Spec 05 B1: iOS has no MTLStorageModeManaged (Metal asserts on it). Every
@@ -1195,4 +1195,60 @@ MetalLayer_setDisplaySyncEnabled(obj_handle_t layer, bool enabled) {
   params.layer = layer;
   params.enabled = enabled;
   UNIX_CALL(unix_dxmt_ios_layer_display_sync, &params);
+}
+
+/* ---- MYIOSDECK spec 05 clarification 10: residency sets (slots 134-138) ----
+   The unix half refuses these below iOS 18 and for 32-bit callers, so the status is
+   checked here instead of asserted (UNIX_CALL). */
+
+WINEMETAL_API obj_handle_t
+MTLDevice_newResidencySet(obj_handle_t device, uint64_t initial_capacity, obj_handle_t *err_out) {
+  struct unixcall_mtldevice_newresidencyset params;
+  params.device = device;
+  params.initial_capacity = initial_capacity;
+  params.ret_set = 0;
+  params.ret_error = 0;
+  NTSTATUS status = WINE_UNIX_CALL(unix_mtldevice_newresidencyset, &params);
+  if (err_out)
+    *err_out = status ? 0 : params.ret_error;
+  return status ? 0 : params.ret_set;
+}
+
+WINEMETAL_API void
+MTLResidencySet_addAllocations(obj_handle_t set, const obj_handle_t *allocations, uint64_t count) {
+  struct unixcall_mtlresidencyset_allocations params;
+  params.set = set;
+  params.allocations.ptr = allocations;
+#if defined(__i386__)
+  params.allocations.high_part = 0;
+#endif
+  params.count = count;
+  WINE_UNIX_CALL(unix_mtlresidencyset_addallocations, &params);
+}
+
+WINEMETAL_API void
+MTLResidencySet_removeAllocations(obj_handle_t set, const obj_handle_t *allocations, uint64_t count) {
+  struct unixcall_mtlresidencyset_allocations params;
+  params.set = set;
+  params.allocations.ptr = allocations;
+#if defined(__i386__)
+  params.allocations.high_part = 0;
+#endif
+  params.count = count;
+  WINE_UNIX_CALL(unix_mtlresidencyset_removeallocations, &params);
+}
+
+WINEMETAL_API void
+MTLResidencySet_commit(obj_handle_t set) {
+  struct unixcall_generic_obj_noret params;
+  params.handle = set;
+  WINE_UNIX_CALL(unix_mtlresidencyset_commit, &params);
+}
+
+WINEMETAL_API void
+MTLCommandQueue_addResidencySet(obj_handle_t queue, obj_handle_t set) {
+  struct unixcall_generic_obj_obj_noret params;
+  params.handle = queue;
+  params.arg = set;
+  WINE_UNIX_CALL(unix_mtlcommandqueue_addresidencyset, &params);
 }

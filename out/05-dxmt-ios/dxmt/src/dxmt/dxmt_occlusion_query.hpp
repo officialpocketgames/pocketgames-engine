@@ -220,4 +220,16 @@ public:
   bool empty = false;
 };
 
+/* MYIOSDECK spec 05 H1: the pending queries that end in submission `seq_id`
+   (they get an empty readback when that submission has no visibility samples). */
+inline std::vector<Rc<VisibilityResultQuery>>
+QueriesEndingAt(const std::vector<Rc<VisibilityResultQuery>> &pending, uint64_t seq_id) {
+  std::vector<Rc<VisibilityResultQuery>> ending;
+  for (auto &query : pending) {
+    if (query->queryEndAt() == seq_id)
+      ending.push_back(query);
+  }
+  return ending;
+}
+
 } // namespace dxmt

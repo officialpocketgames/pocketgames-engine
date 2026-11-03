@@ -1,0 +1,90 @@
+Spec 34 Part C3 and C4 in winevulkan's unix vulkan.c. C3: until Part G (IOS_VK_WOW64=0),
+wow64_init_vulkan returns STATUS_NOT_SUPPORTED and logs once "[vk-ios] 32-bit Vulkan not
+available". C4: VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT stands for the host's
+VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT, the same clock as ntdll's NtQueryPerformanceCounter on iOS
+(CHANGES.md), and is listed only when the host offers that domain; a request for it otherwise is
+refused. Applied by winevulkan-unix/build-ios.sh to its copy of the Wine 11.4 file.
+
+--- a/dlls/winevulkan/vulkan.c
++++ b/dlls/winevulkan/vulkan.c
+@@ -1,5 +1,7 @@
+ /* Wine Vulkan ICD implementation
+  *
++ * Changed for MYIOSDECK (iOS, spec 34 Part C): see out/34-vulkan-ios/CHANGES.md
++ *
+  * Copyright 2017 Roderick Colenbrander
+  *
+  * This library is free software; you can redistribute it and/or
+@@ -582,7 +584,13 @@
+ 
+ static inline VkTimeDomainEXT get_performance_counter_time_domain(void)
+ {
+-#if !defined(__APPLE__) && defined(HAVE_CLOCK_GETTIME)
++#if defined(WINE_IOS)
++    /* MYIOSDECK (spec 34 C4): ntdll's NtQueryPerformanceCounter on iOS is mach_continuous_time() in
++     * 100 ns units; Darwin's CLOCK_MONOTONIC_RAW, which VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT
++     * names, is the same clock in ns (it goes on while the device sleeps; CLOCK_UPTIME_RAW,
++     * mach_absolute_time's, doesn't) */
++    return VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT;
++#elif !defined(__APPLE__) && defined(HAVE_CLOCK_GETTIME)
+ # ifdef CLOCK_MONOTONIC_RAW
+     return VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_EXT;
+ # else
+@@ -594,6 +602,24 @@
+ #endif
+ }
+ 
++#ifdef WINE_IOS
++/* MYIOSDECK (spec 34 C4): whether the physical device offers the host domain behind
++ * VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT (wine_vk_get_time_domains lists it only then) */
++static BOOL ios_qpc_domain_offered(struct vulkan_physical_device *physical_device)
++{
++    struct vulkan_instance *instance = physical_device->instance;
++    PFN_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR get_domains = instance->p_vkGetPhysicalDeviceCalibrateableTimeDomainsKHR;
++    VkTimeDomainKHR domains[16];
++    uint32_t count = ARRAY_SIZE(domains), i;
++
++    if (!get_domains) get_domains = instance->p_vkGetPhysicalDeviceCalibrateableTimeDomainsEXT;
++    if (!get_domains || get_domains(physical_device->host.physical_device, &count, domains) < 0) return FALSE;
++    for (i = 0; i < count; i++)
++        if (domains[i] == get_performance_counter_time_domain()) return TRUE;
++    return FALSE;
++}
++#endif
++
+ static VkTimeDomainEXT map_to_host_time_domain(VkTimeDomainEXT domain)
+ {
+     /* Matches ntdll/unix/sync.c's performance counter implementation. */
+@@ -634,6 +660,15 @@
+     if (timestamp_count == 0)
+         return VK_SUCCESS;
+ 
++#ifdef WINE_IOS
++    /* MYIOSDECK (spec 34 C4): without the host clock behind it the domain isn't offered, and a
++     * request for it is refused instead of being passed on */
++    for (i = 0; i < timestamp_count; i++)
++        if (timestamp_infos[i].timeDomain == VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_EXT &&
++            !ios_qpc_domain_offered(device->physical_device))
++            return VK_ERROR_FEATURE_NOT_PRESENT;
++#endif
++
+     if (!(host_timestamp_infos = calloc(sizeof(VkCalibratedTimestampInfoEXT), timestamp_count)))
+         return VK_ERROR_OUT_OF_HOST_MEMORY;
+ 
+@@ -1011,6 +1046,16 @@
+         ULONG extensions;
+     } *params32 = arg;
+     struct init_params params;
++
++#if defined(WINE_IOS) && !IOS_VK_WOW64
++    /* MYIOSDECK (spec 34 C3): until Part G, 32-bit programs get no Vulkan: the i386 PE side's
++     * init fails, vkCreateInstance returns VK_ERROR_INITIALIZATION_FAILED, and a program with
++     * another renderer falls back to it */
++    static LONG logged;
++    if (!InterlockedExchange( &logged, 1 )) __wine_dbg_output( "[vk-ios] 32-bit Vulkan not available\n" );
++    return STATUS_NOT_SUPPORTED;
++#endif
++
+     params.call_vulkan_debug_report_callback = params32->call_vulkan_debug_report_callback;
+     params.call_vulkan_debug_utils_callback = params32->call_vulkan_debug_utils_callback;
+     params.extensions = UlongToPtr(params32->extensions);

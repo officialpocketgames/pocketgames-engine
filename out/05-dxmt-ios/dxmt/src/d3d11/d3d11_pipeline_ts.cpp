@@ -1,4 +1,5 @@
-// Changed for MYIOSDECK (spec 06 D). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 06 D; spec 05 clarification 10: an LGPL-2.1-or-later block from
+// steamac's DXMT patch 0017, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "Metal.hpp"
 #include "airconv_public.h"
 #include "d3d11_device.hpp"
@@ -22,8 +23,12 @@ public:
         RasterizationEnabled(pDesc->RasterizationEnabled),
         SampleCount(pDesc->SampleCount) {
     uint32_t unorm_output_reg_mask = 0;
+    ShaderVariantPixel ps_variant{};
     for (unsigned i = 0; i < num_rtvs; i++) {
       rtv_formats[i] = pDesc->ColorAttachmentFormats[i];
+      /* steamac's DXMT patch 0017 (LGPL, StonkGuy): integer targets go to airconv */
+      if (IsIntegerFormat(pDesc->ColorAttachmentFormats[i]))
+        ps_variant.integer_rt_formats[i] = pDesc->ColorAttachmentFormats[i];
       unorm_output_reg_mask |= (uint32_t(IsUnorm8RenderTargetFormat(
                                     pDesc->ColorAttachmentFormats[i]))
                                 << i);
@@ -53,10 +58,11 @@ public:
             pDesc->HullShader, pDesc->GSPassthrough,
             max_potential_factor, !pDesc->RasterizationEnabled});
     if (pDesc->PixelShader) {
-      PixelShader = pDesc->PixelShader->get_shader(ShaderVariantPixel{
-          pDesc->SampleMask, pDesc->BlendState->IsDualSourceBlending(),
-          depth_stencil_format == WMTPixelFormatInvalid,
-          unorm_output_reg_mask});
+      ps_variant.sample_mask = pDesc->SampleMask;
+      ps_variant.dual_source_blending = pDesc->BlendState->IsDualSourceBlending();
+      ps_variant.disable_depth_output = depth_stencil_format == WMTPixelFormatInvalid;
+      ps_variant.unorm_output_reg_mask = unorm_output_reg_mask;
+      PixelShader = pDesc->PixelShader->get_shader(ps_variant);
       ps_valid_render_targets = pDesc->PixelShader->reflection().PSValidRenderTargets;
     } else {
       PixelShader = nullptr;

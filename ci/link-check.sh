@@ -11,7 +11,7 @@
 #
 # <dist dir>/<part>/ as ci/ios-part.sh leaves it. This repository's own archives are
 # force-loaded (all their code is meant to be in the app, and specs 14 and 15 require it); the
-# third-party archives (BearSSL, LibTomCrypt, FFmpeg) are linked normally, as their parts' notes
+# third-party archives (BearSSL, LibTomCrypt, FFmpeg, MoltenVK) are linked normally, as their parts' notes
 # say. Spec 13's LINK.txt contributes its -Wl,-u, -l and -framework lines.
 #
 # Pass 1 links for real and reports what the linker says. LLVM's own symbols (libdxmt_unix.a's
@@ -48,8 +48,8 @@ note "SDK: iPhoneOS $(xcrun --sdk iphoneos --show-sdk-version), $(xcodebuild -ve
 note ""
 
 # ---------------------------------------------------------------- the archives
-parts="05-dxmt-ios 08-wineserver-ios 09-ntdll-processes 12-win32u-ios 13-net-crypto-ios 14-media-audio-ios 15-controllers"
-third_party_re='^lib(bearssl|tomcrypt_unix|avformat|avcodec|swresample|avutil)\.a$'
+parts="05-dxmt-ios 08-wineserver-ios 09-ntdll-processes 12-win32u-ios 13-net-crypto-ios 14-media-audio-ios 15-controllers 34-vulkan-ios"
+third_party_re='^lib(bearssl|tomcrypt_unix|avformat|avcodec|swresample|avutil|moltenvk)\.a$'
 ours=""
 missing=""
 for p in $parts; do
@@ -70,6 +70,8 @@ done
 for n in libavformat.a libavcodec.a libswresample.a libavutil.a; do
     [ -f "$dist/14-media-audio-ios/ffmpeg/$n" ] && third="$third $dist/14-media-audio-ios/ffmpeg/$n"
 done
+# spec 34 Part B: MoltenVK, after the layer that calls it
+[ -f "$dist/34-vulkan-ios/libmoltenvk.a" ] && third="$third $dist/34-vulkan-ios/libmoltenvk.a"
 if [ -n "$missing" ]; then
     note "**Parts without libraries (their ios-libs build failed):**$missing — the symbols they define show up as undefined below."
     note ""

@@ -35,6 +35,8 @@ wineoss.drv
 wineps.drv
 
 # wrappers of host libraries not built for iOS (and host-dependent in configure)
+# (winevulkan and vulkan-1: the arm64ec farm has them since spec 34 phase 1; 32-bit programs get
+# them in its phase 3, Part G)
 winevulkan.dll
 vulkan-1.dll
 opencl.dll

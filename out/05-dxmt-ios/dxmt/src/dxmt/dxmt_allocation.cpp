@@ -1,3 +1,5 @@
+// Changed for MYIOSDECK (spec 05 clarification 10: an LGPL-2.1-or-later block from steamac's
+// DXMT patch 0023, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "dxmt_allocation.hpp"
 #include "util_likely.hpp"
 #include <cassert>
@@ -13,8 +15,15 @@ Allocation::incRef() {
 
 void
 Allocation::decRef() {
-  if (refcount_.fetch_sub(1u, std::memory_order_release) == 1u)
+  if (refcount_.fetch_sub(1u, std::memory_order_release) == 1u) {
+    /* LGPL-2.1-or-later, from steamac's DXMT patch 0023 (Jakey-Jakey): residency is
+       set up by the encoder thread; take the object out of the set before it goes */
+    std::atomic_thread_fence(std::memory_order_acquire);
+    if (residency_set_.ptr())
+      residency_set_->remove(residency_object_);
+    /* end of LGPL block */
     delete this;
+  }
 };
 
 AllocationRefTracking::AllocationRefTracking() {

@@ -1,4 +1,6 @@
-// Changed for MYIOSDECK (spec 05 D2, D5, E1, E2; dynamic-buffer discard). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 D2, D5, E1, E2; dynamic-buffer discard; spec 05 clarification 10:
+// LGPL-2.1-or-later blocks from steamac's DXMT patch 0015, marked inline, see LICENSE-NOTES.md).
+// Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "config/config.hpp"
 #include "d3d11_fence.hpp"
 #include "d3d11_private.h"
@@ -374,7 +376,9 @@ public:
         });
       break;
     }
-    case D3D11_QUERY_PIPELINE_STATISTICS: {
+    case D3D11_QUERY_PIPELINE_STATISTICS:
+    case D3D11_QUERY_SO_STATISTICS:          /* steamac's DXMT patch 0015 (LGPL, Mybono) */
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE: {
       // ignore
       break;
     }
@@ -420,7 +424,9 @@ public:
       promote_flush = true;
       break;
     }
-    case D3D11_QUERY_PIPELINE_STATISTICS: {
+    case D3D11_QUERY_PIPELINE_STATISTICS:
+    case D3D11_QUERY_SO_STATISTICS:          /* steamac's DXMT patch 0015 (LGPL, Mybono) */
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE: {
       // ignore
       break;
     }
@@ -500,6 +506,21 @@ public:
       }
       return S_OK;
     }
+    /* LGPL-2.1-or-later, from steamac's DXMT patch 0015 (Mybono): zeroed statistics,
+       no overflow */
+    case D3D11_QUERY_SO_STATISTICS: {
+      if (pData) {
+        (*static_cast<D3D11_QUERY_DATA_SO_STATISTICS *>(pData)) = {};
+      }
+      return S_OK;
+    }
+    case D3D11_QUERY_SO_OVERFLOW_PREDICATE: {
+      if (pData) {
+        *static_cast<BOOL *>(pData) = FALSE;
+      }
+      return S_OK;
+    }
+    /* end of LGPL block */
     default:
       ERR("Unknown query type ", desc.Query);
       return E_FAIL;

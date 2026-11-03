@@ -1,4 +1,4 @@
-/* Changed for MYIOSDECK (spec 05 F3; spec 07: DXSO API block, LGPL). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
+/* Changed for MYIOSDECK (spec 05 F3, clarification 10; spec 07: DXSO API block, LGPL). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 #include "stddef.h"
 #include "stdint.h"
 #include "stdbool.h"
@@ -250,6 +250,10 @@ struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {
   bool dual_source_blending;
   bool disable_depth_output;
   uint32_t unorm_output_reg_mask;
+  /* MYIOSDECK spec 05 clarification 10 (for steamac's DXMT patch 0017): the MTLPixelFormat
+     of each integer (Uint/Sint) render target, 0 for any other target. The output of that
+     register is declared with the target's component type (dxbc_integer_rt.hpp). */
+  uint32_t pixel_formats[8];
 };
 
 /* MYIOSDECK spec 05 F3: pixel-shader inputs the vertex shader doesn't write

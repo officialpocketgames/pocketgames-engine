@@ -1,5 +1,5 @@
 #pragma once
-// Changed for MYIOSDECK (spec 05 F3, F5). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 F3, F5, clarification 10). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 #include <cstdint>
 #include <algorithm>
@@ -342,6 +342,9 @@ struct SignatureContext {
      previous stage writes; null when unknown. */
   const std::vector<std::string> *previous_stage_outputs = nullptr;
   uint32_t zeroed_inputs = 0;
+  /* MYIOSDECK spec 05 clarification 10: SM50_SHADER_PSO_PIXEL_SHADER_DATA::pixel_formats
+     (8 entries), null when not given. */
+  const uint32_t *pixel_formats = nullptr;
 
   SignatureContext(
     IREffect &prologue, IRValue &epilogue, air::FunctionSignatureBuilder &func_signature, io_binding_map &resource

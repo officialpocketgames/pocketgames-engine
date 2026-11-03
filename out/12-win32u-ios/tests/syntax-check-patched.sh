@@ -19,7 +19,7 @@ shift
 HERE=$(cd "$(dirname "$0")" && pwd)
 PART=$(cd "$HERE/.." && pwd)
 REPO=$(cd "$PART/../.." && pwd)
-WINE="$REPO/refs/wine-11.4"
+WINE=${WINE_SRC:-"$REPO/refs/wine-11.4"}
 CC=${CC:-cc}
 W=${TMPDIR:-/tmp}/w32ios-syntax.$$
 trap 'rm -rf "$W"' EXIT

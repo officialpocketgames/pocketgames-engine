@@ -1,6 +1,9 @@
 #pragma once
 // Changed for MYIOSDECK (spec 07 A2): contains an LGPL-2.1-or-later block from dxmt-d3d9
-// v0.4-d3d9 (e8dd4c6), marked inline (see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT.
+// v0.4-d3d9 (e8dd4c6), marked inline (see LICENSE-NOTES.md). Changed for spec 05
+// clarification 10: LGPL-2.1-or-later blocks from steamac's DXMT patches 0008 and 0011,
+// marked inline, and the residency-set wrappers 0023 needs (MYIOSDECK's own).
+// Upstream: DXMT a3a6e8f, MIT.
 
 #include "./winemetal.h"
 #include <cstddef>
@@ -67,11 +70,11 @@ public:
   Reference() {
     this->handle = NULL_OBJECT_HANDLE;
   }
-  Reference(const Reference &copy) {
+  Reference(const Reference &copy) : Class() { /* base named: clean under GCC -Wextra (spec 05 clarification 10's host test) */
     this->handle = copy.handle;
     this->retain();
   }
-  Reference(Reference &&move) {
+  Reference(Reference &&move) noexcept {
     this->handle = move.handle;
     move.handle = NULL_OBJECT_HANDLE;
   }
@@ -83,30 +86,33 @@ public:
     this->handle = retained;
   }
 
+  /* LGPL-2.1-or-later, from steamac's DXMT patch 0011 (SteveTanSaMa): the assignments
+     keep ownership right when the source aliases this reference's own object (self
+     assignment, or the last owning reference passed in borrowed). */
   Reference &
   operator=(const Reference &copy) {
-    if (this->handle != NULL_OBJECT_HANDLE)
-      this->release();
-    this->handle = copy.handle;
-    this->retain();
-    return *this;
+    return operator=(static_cast<Class>(copy));
   }
   Reference &
   operator=(Class non_retained) {
+    // The borrowed input may alias our last owning reference.
+    non_retained.retain();
     if (this->handle != NULL_OBJECT_HANDLE)
       this->release();
     this->handle = non_retained.handle;
-    this->retain();
     return *this;
   }
   Reference &
-  operator=(Reference &&move) {
+  operator=(Reference &&move) noexcept {
+    if (this == &move)
+      return *this;
     if (this->handle != NULL_OBJECT_HANDLE)
       this->release();
     this->handle = move.handle;
     move.handle = NULL_OBJECT_HANDLE;
     return *this;
   }
+  /* end of LGPL block */
   Reference &
   operator=(std::nullptr_t) {
     if (this->handle != NULL_OBJECT_HANDLE)
@@ -169,6 +175,18 @@ Object::description() {
 
 class Error : public Object {
 public:
+  /* LGPL-2.1-or-later, from steamac's DXMT patch 0008 (osy): out-error slot for the
+     creation wrappers. The unix side retains the error before writing the handle back,
+     so drop whatever a previous call left here first; a retry reusing one
+     Reference<Error> would otherwise leak it. */
+  obj_handle_t *
+  out_handle() {
+    if (handle) {
+      NSObject_release(handle);
+      handle = 0;
+    }
+    return &handle;
+  }
 };
 
 class DispatchData : public Object {
@@ -666,11 +684,38 @@ public:
   }
 };
 
+/* MYIOSDECK spec 05 clarification 10: an MTLResidencySet (iOS 18 and later), for steamac's
+   DXMT patch 0023. Allocations are MTLBuffer / MTLTexture handles. */
+class ResidencySet : public Object {
+public:
+  void
+  addAllocations(const obj_handle_t *allocations, uint64_t count) {
+    MTLResidencySet_addAllocations(handle, allocations, count);
+  }
+
+  void
+  removeAllocations(const obj_handle_t *allocations, uint64_t count) {
+    MTLResidencySet_removeAllocations(handle, allocations, count);
+  }
+
+  void
+  commit() {
+    MTLResidencySet_commit(handle);
+  }
+};
+
 class CommandQueue : public Object {
 public:
   CommandBuffer
   commandBuffer() {
     return CommandBuffer{MTLCommandQueue_commandBuffer(handle)};
+  }
+
+  /* spec 05 clarification 10: the set's allocations are resident for every command
+     buffer of this queue */
+  void
+  addResidencySet(ResidencySet residency_set) {
+    MTLCommandQueue_addResidencySet(handle, residency_set.handle);
   }
 };
 
@@ -688,7 +733,7 @@ public:
       const char *name, const WMTFunctionConstant *constants, uint32_t num_constants, Error &error
   ) {
     return Reference<Function>(
-        MTLLibrary_newFunctionWithConstants(handle, name, constants, num_constants, &error.handle)
+        MTLLibrary_newFunctionWithConstants(handle, name, constants, num_constants, error.out_handle())
     );
   }
 };
@@ -697,7 +742,7 @@ class BinaryArchive : public Object {
 public:
   void
   serialize(const char *url, Error &error) {
-    MTLBinaryArchive_serialize(handle, url, &error.handle);
+    MTLBinaryArchive_serialize(handle, url, error.out_handle());
   }
 };
 
@@ -761,7 +806,7 @@ public:
   Reference<Library>
   newLibrary(const void *bytecode, uint64_t bytecode_length, Error &error) {
     auto data = DispatchData_alloc_init((uint64_t)bytecode, bytecode_length);
-    auto ret = Reference<Library>(MTLDevice_newLibrary(handle, data, &error.handle));
+    auto ret = Reference<Library>(MTLDevice_newLibrary(handle, data, error.out_handle()));
     NSObject_release(data);
     return ret;
   }
@@ -769,14 +814,14 @@ public:
   Reference<Library>
   newLibraryFromNativeBuffer(uint64_t bytecode, uint64_t bytecode_length, Error &error) {
     auto data = DispatchData_alloc_init(bytecode, bytecode_length);
-    auto ret = Reference<Library>(MTLDevice_newLibrary(handle, data, &error.handle));
+    auto ret = Reference<Library>(MTLDevice_newLibrary(handle, data, error.out_handle()));
     NSObject_release(data);
     return ret;
   }
 
   Reference<Library>
   newLibrary(DispatchData data, Error &error) {
-    return Reference<Library>(MTLDevice_newLibrary(handle, data, &error.handle));
+    return Reference<Library>(MTLDevice_newLibrary(handle, data, error.out_handle()));
   }
 
   Reference<ComputePipelineState>
@@ -789,7 +834,7 @@ public:
     info.binary_archives_for_lookup.set(nullptr);
     info.num_binary_archives_for_lookup = 0;
     info.fail_on_binary_archive_miss = false;
-    return Reference<ComputePipelineState>(MTLDevice_newComputePipelineState(handle, &info, &error.handle));
+    return Reference<ComputePipelineState>(MTLDevice_newComputePipelineState(handle, &info, error.out_handle()));
   }
 
   Reference<ComputePipelineState>
@@ -802,22 +847,22 @@ public:
     info.binary_archives_for_lookup.set(nullptr);
     info.num_binary_archives_for_lookup = 0;
     info.fail_on_binary_archive_miss = false;
-    return Reference<ComputePipelineState>(MTLDevice_newComputePipelineState(handle, &info, &error.handle));
+    return Reference<ComputePipelineState>(MTLDevice_newComputePipelineState(handle, &info, error.out_handle()));
   }
 
   Reference<RenderPipelineState>
   newRenderPipelineState(const WMTRenderPipelineInfo &info, Error &error) {
-    return Reference<RenderPipelineState>(MTLDevice_newRenderPipelineState(handle, &info, &error.handle));
+    return Reference<RenderPipelineState>(MTLDevice_newRenderPipelineState(handle, &info, error.out_handle()));
   }
 
   Reference<ComputePipelineState>
   newComputePipelineState(const WMTComputePipelineInfo &info, Error &error) {
-    return Reference<ComputePipelineState>(MTLDevice_newComputePipelineState(handle, &info, &error.handle));
+    return Reference<ComputePipelineState>(MTLDevice_newComputePipelineState(handle, &info, error.out_handle()));
   }
 
   Reference<RenderPipelineState>
   newRenderPipelineState(const WMTMeshRenderPipelineInfo &info, Error &error) {
-    return Reference<RenderPipelineState>(MTLDevice_newMeshRenderPipelineState(handle, &info, &error.handle));
+    return Reference<RenderPipelineState>(MTLDevice_newMeshRenderPipelineState(handle, &info, error.out_handle()));
   }
 
   Reference<Fence>
@@ -867,7 +912,13 @@ public:
 
   Reference<BinaryArchive>
   newBinaryArchive(const char *url, Error &error) {
-    return Reference<BinaryArchive>(MTLDevice_newBinaryArchive(handle, url, &error.handle));
+    return Reference<BinaryArchive>(MTLDevice_newBinaryArchive(handle, url, error.out_handle()));
+  }
+
+  /* spec 05 clarification 10: null below iOS 18 (and for 32-bit callers) */
+  Reference<ResidencySet>
+  newResidencySet(uint64_t initial_capacity, Error &error) {
+    return Reference<ResidencySet>(MTLDevice_newResidencySet(handle, initial_capacity, error.out_handle()));
   }
 
   bool

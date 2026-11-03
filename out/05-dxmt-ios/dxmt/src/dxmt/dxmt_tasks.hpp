@@ -1,4 +1,6 @@
 #pragma once
+// Changed for MYIOSDECK (spec 05 clarification 10): contains LGPL-2.1-or-later blocks from
+// steamac's DXMT patch 0010, marked inline (see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT.
 
 #include "thread.hpp"
 #include "util_win32_compat.h"
@@ -20,6 +22,10 @@ public:
 
   task_scheduler();
   ~task_scheduler();
+  /* LGPL-2.1-or-later, from steamac's DXMT patch 0010 (SteveTanSaMa): called by the
+     owner before destroying the objects referenced by tasks. Queued work may be
+     abandoned; running work is joined before returning. Calling it again is a no-op. */
+  void shutdown();
 
   uint64_t
   get_running_threads() {
@@ -56,7 +62,16 @@ template <typename Task> task_scheduler<Task>::task_scheduler() {
 }
 
 template <typename Task> task_scheduler<Task>::~task_scheduler() {
-  destroyed.store(true);
+  shutdown();
+}
+
+/* patch 0010 (LGPL): the flag is set under the worker mutex, so a worker between
+   its check and its wait can't miss the wake-up */
+template <typename Task> void task_scheduler<Task>::shutdown() {
+  {
+    std::lock_guard<dxmt::mutex> lock(worker_mutex_);
+    destroyed.store(true);
+  }
   worker_cond_.notify_all();
 
   for (auto &worker : workers_) {
@@ -83,6 +98,9 @@ task_scheduler<Task>::worker_func() {
           return task_queue_.size() || task_continuation_queue_.size() || destroyed.load();
         });
       }
+
+      if (destroyed.load()) /* patch 0010 (LGPL): queued work is abandoned at shutdown */
+        break;
 
       if (!task_continuation_queue_.empty()) {
         task = task_continuation_queue_.front();
@@ -133,6 +151,8 @@ template <typename Task>
 void
 task_scheduler<Task>::submit(Task task) {
   std::unique_lock<dxmt::mutex> lock(worker_mutex_);
+  if (destroyed.load()) /* patch 0010 (LGPL): no work after shutdown */
+    return;
   task_queue_.push(task);
 
   if (running.load(std::memory_order_relaxed) == threads && threads < max_threads) {

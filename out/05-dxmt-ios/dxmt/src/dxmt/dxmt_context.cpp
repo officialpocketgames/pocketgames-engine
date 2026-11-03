@@ -870,17 +870,14 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
   }
 #ifdef DXMT_IOS
   else {
-    // Spec 05 H1 (DXMT_QUERY_SETTLE_EMPTY, default on in the i386 build only,
-    // spec 06 A): a submission with no visibility samples builds no readback,
-    // so a query that ends in it would never complete. Attach an empty
-    // readback for those queries.
-    static const bool settle_empty = env::readSwitch("DXMT_QUERY_SETTLE_EMPTY", kI386Build);
+    // Spec 05 H1 (DXMT_QUERY_SETTLE_EMPTY): a submission with no visibility
+    // samples builds no readback, so a query that ends in it would never
+    // complete. Attach an empty readback for those queries. Default on in
+    // every build since spec 05 clarification 10 (steamac's DXMT patch 0004
+    // completes such a query unconditionally); before, only in the i386 build.
+    static const bool settle_empty = env::readSwitch("DXMT_QUERY_SETTLE_EMPTY", true);
     if (settle_empty) {
-      std::vector<Rc<VisibilityResultQuery>> ending;
-      for (auto &query : pending_queries_) {
-        if (query->queryEndAt() == seqId)
-          ending.push_back(query);
-      }
+      auto ending = QueriesEndingAt(pending_queries_, seqId);
       if (!ending.empty())
         visibility_readback = std::make_unique<VisibilityResultReadback>(seqId, std::move(ending));
     }

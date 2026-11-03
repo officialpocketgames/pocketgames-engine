@@ -10,12 +10,14 @@
 # <part> is a folder name under out/ that has a build-ios.sh: 05-dxmt-ios (also specs 06 and 07,
 # whose code is in its tree), 08-wineserver-ios, 09-ntdll-processes (also specs 10 and 11, and
 # spec 16's src/*.c and spec 13's socket.c, which its build-ios.sh takes itself),
-# 12-win32u-ios, 13-net-crypto-ios, 14-media-audio-ios, 15-controllers. Spec 16 and spec 17
-# have no build-ios.sh of their own: their unix-side code is compiled by 08, 09, 12-15's.
+# 12-win32u-ios, 13-net-crypto-ios, 14-media-audio-ios, 15-controllers, 34-vulkan-ios (MoltenVK
+# first, cached in moltenvk/). Spec 16 and spec 17 have no build-ios.sh of their own: their
+# unix-side code is compiled by 08, 09, 12-15's.
 # <work dir> must hold:
 #   wine-host/   ci/wine-host-build.sh's Wine build dir (macOS configure + make include/all)
 #   dl/          the reference tarballs of ci/fetch-refs.sh (14 takes FFmpeg's from there)
-# and keeps per-part prerequisites, which CI caches: llvm/ (05), cryptodeps/ (13), ffmpeg/ (14).
+# and keeps per-part prerequisites, which CI caches: llvm/ (05), cryptodeps/ (13), ffmpeg/ (14),
+# moltenvk/ (34).
 # <dist dir>/<part>/ receives the static libraries, LINK.txt / exports.txt where the part
 # writes them, build.log and the part's own logs. Exits with the build's status.
 
@@ -118,6 +120,31 @@ case "$part" in
             cp "$work/cryptodeps/.build/"*.log "$dist/cryptodeps-logs/" 2>/dev/null || true
         fi
         ;;
+    34-vulkan-ios)
+        # spec 34 Part A4: MoltenVK first (fetch-moltenvk.sh fetches UTM's MoltenVK and SPIRV-Cross
+        # forks at their pinned commits, then build-moltenvk.sh), kept in the cached moltenvk/
+        # while the inputs that make it are the same (both patch series included); then the layer
+        # and winevulkan's unix side (build-ios.sh)
+        stamp=$(cat "$src/fetch-moltenvk.sh" "$src/build-moltenvk.sh" "$src/moltenvk-checks.sh" \
+                    "$src/moltenvk-sources.txt" "$src"/moltenvk-patches/* "$src"/spirv-cross-patches/* 2>/dev/null | cksum)
+        if [ -f "$work/moltenvk/libmoltenvk.a" ] && [ "$(cat "$work/moltenvk/.ci-done" 2>/dev/null)" = "$stamp" ]; then
+            say "== build-moltenvk.sh: $work/moltenvk already built from the same inputs (cache)"
+        else
+            rm -rf "$work/moltenvk"
+            if run "fetch-moltenvk.sh" sh "$src/fetch-moltenvk.sh" "$work/moltenvk-src" MoltenVK &&
+               run "fetch-moltenvk.sh SPIRV-Cross" sh "$src/fetch-moltenvk.sh" "$work/spirv-cross-src" SPIRV-Cross &&
+               run "build-moltenvk.sh" sh "$src/build-moltenvk.sh" "$work/moltenvk-src" "$work/spirv-cross-src" "$work/moltenvk-work" "$work/moltenvk"; then
+                echo "$stamp" > "$work/moltenvk/.ci-done"
+            else
+                status=1
+                mkdir -p "$dist/moltenvk-logs"
+                cp "$work/moltenvk/logs/"*.log "$dist/moltenvk-logs/" 2>/dev/null || true
+            fi
+        fi
+        if [ $status -eq 0 ]; then
+            run "build-ios.sh" sh "$src/build-ios.sh" "$wine" "$wbuild" "$out" "$work/moltenvk" || status=1
+        fi
+        ;;
     14-media-audio-ios)
         if [ -f "$work/ffmpeg/lib/libavcodec.a" ] && [ -f "$work/ffmpeg/.ci-done" ] &&
            [ "$(cat "$work/ffmpeg/.ci-done")" = "$(cksum < "$src/build-ffmpeg.sh")" ]; then
@@ -152,8 +179,8 @@ esac
 if [ $status -eq 0 ]; then
     find "$out" -maxdepth 1 -name '*.a' ! -name libfreetype.a -exec cp {} "$dist/" \;
 fi
-for f in LINK.txt exports.txt; do [ -f "$out/$f" ] && cp "$out/$f" "$dist/"; done
-for d in logs log gen; do [ -d "$out/$d" ] && cp -R "$out/$d" "$dist/$d"; done
+for f in LINK.txt exports.txt BUILDINFO.txt; do [ -f "$out/$f" ] && cp "$out/$f" "$dist/"; done
+for d in logs log gen LICENSES; do [ -d "$out/$d" ] && cp -R "$out/$d" "$dist/$d"; done
 
 say "== collected in $dist:"
 ls -l "$dist" | tee -a "$log"

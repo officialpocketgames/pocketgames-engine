@@ -581,8 +581,12 @@ static UINT ios_UpdateDisplayDevices( const struct gdi_device_manager *manager, 
     return STATUS_SUCCESS;
 }
 
+/* spec 34 Part D2: the Vulkan surface functions (vulkan_ios.inc, compiled into vulkan.c) */
+extern UINT w32ios_VulkanInit( UINT version, void *vulkan_handle, const struct vulkan_driver_funcs **driver_funcs );
+
 static const struct user_driver_funcs ios_driver_funcs =
 {
+    .pVulkanInit = w32ios_VulkanInit,
     .pSetCursor = ios_SetCursor,
     .pSetCursorPos = ios_SetCursorPos,
     .pDestroyCursorIcon = ios_DestroyCursorIcon,

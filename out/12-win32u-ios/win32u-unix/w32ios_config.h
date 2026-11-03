@@ -19,6 +19,10 @@
 #undef SONAME_LIBMOLTENVK
 #undef SONAME_LIBGNUTLS
 
+/* spec 34 Part D1: Vulkan is on. The host driver is part 34's layer, linked into the app; vulkan.c's
+ * dlopen of this name is mapped to it (vulkan_ios.h), so nothing is opened. */
+#define SONAME_LIBVULKAN "libvulkan-ios"
+
 #undef SONAME_LIBFREETYPE
 #define SONAME_LIBFREETYPE "libfreetype.6.dylib"   /* never opened: see w32ios_freetype.c */
 #undef HAVE_FT2BUILD_H

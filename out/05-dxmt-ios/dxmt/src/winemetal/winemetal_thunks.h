@@ -1,5 +1,5 @@
 
-/* Changed for MYIOSDECK (spec 05 E2, H6). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
+/* Changed for MYIOSDECK (spec 05 E2, H6, clarification 10). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 #ifndef __WINEMETAL_THUNKS_H
 #define __WINEMETAL_THUNKS_H
 
@@ -357,7 +357,29 @@ enum dxmt_ios_unixcalls {
   unix_dxmt_ios_layer_display_sync = 128,  /* E2.4 */
   /* spec 07 A3: 129..133 are the five DXSO entries (unix_dxso_* in airconv_thunks.h) */
   unix_dxmt_ios_dxso_first = 129,
-  unix_dxmt_ios_unixcall_count = 134,
+  /* spec 05 clarification 10: Metal residency sets (iOS 18 and later) for steamac's DXMT
+     patch 0023; below iOS 18, and for 32-bit callers, they return STATUS_NOT_IMPLEMENTED */
+  unix_mtldevice_newresidencyset = 134,
+  unix_mtlresidencyset_addallocations = 135,
+  unix_mtlresidencyset_removeallocations = 136,
+  unix_mtlresidencyset_commit = 137,
+  unix_mtlcommandqueue_addresidencyset = 138,
+  unix_dxmt_ios_unixcall_count = 139,
+};
+
+/* spec 05 clarification 10: slot 134 */
+struct unixcall_mtldevice_newresidencyset {
+  obj_handle_t device;
+  uint64_t initial_capacity;
+  obj_handle_t ret_set;   /* retained (+1); 0 on failure */
+  obj_handle_t ret_error; /* retained (+1), like every out-error since patch 0008 */
+};
+
+/* spec 05 clarification 10: slots 135 and 136 */
+struct unixcall_mtlresidencyset_allocations {
+  obj_handle_t set;
+  struct WMTConstMemoryPointer allocations; /* `count` obj_handle_t: MTLBuffer / MTLTexture */
+  uint64_t count;
 };
 
 /* H6: { uint32 op; uint64 ptr; uint64 ret; } (natural alignment: 4 bytes of

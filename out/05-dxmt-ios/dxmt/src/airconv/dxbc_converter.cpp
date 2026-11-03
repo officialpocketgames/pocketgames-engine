@@ -1,4 +1,4 @@
-// Changed for MYIOSDECK (spec 05 F3, F5). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 F3, F5, clarification 10). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "dxbc_converter.hpp"
 #include <atomic>
 #include <cstdio>
@@ -473,6 +473,8 @@ llvm::Error convert_dxbc_pixel_shader(
     sig_ctx.pull_mode_reg_mask = shader_info->pull_mode_reg_mask;
     sig_ctx.unorm_output_reg_mask = pso_unorm_output_reg_mask;
     sig_ctx.previous_stage_outputs = have_previous_stage ? &previous_stage_outputs : nullptr;
+    // MYIOSDECK spec 05 clarification 10: integer render-target formats (steamac's DXMT patch 0017)
+    sig_ctx.pixel_formats = pso_data ? pso_data->pixel_formats : nullptr;
     for (auto &p : pShaderInternal->signature_handlers) {
       p(sig_ctx);
     }

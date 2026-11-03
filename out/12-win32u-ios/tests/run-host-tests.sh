@@ -38,11 +38,19 @@ if "$OUT.s22"; then status=0; else status=$?; fi
 rm -f "$OUT.s22"
 [ $status -eq 0 ] || exit $status
 
+# spec 34 Part M2 (Part D): Vulkan's switch, the window's Metal layer through a fake app table and
+# its headless fallbacks, the suboptimal rule, the LUID, D3DKMT, the owners of a process
+$CC -std=c11 -Wall -Wextra -Werror -Wno-unused-parameter -O1 -g -I"$SRC" -I"$INTERFACES" \
+    "$HERE/test_w32ios_vk.c" "$SRC/w32ios_vk_pure.c" "$SRC/w32ios_pure.c" -o "$OUT.vk"
+if "$OUT.vk"; then status=0; else status=$?; fi
+rm -f "$OUT.vk"
+[ $status -eq 0 ] || exit $status
+
 # spec 12 clarifications 8 and 9: the stand-in unix tables of unix-tables/tables.txt, each built
 # against its library's real Wine 11.4 header and the Wine headers of refs/ (read only; the
 # generated lists go to $OUT.ut), and each listed in spec 09's unixlibs.txt
 UT="$PART/unix-tables"
-WINE_REF="$REPO/refs/wine-11.4"
+WINE_REF=${WINE_SRC:-"$REPO/refs/wine-11.4"}
 UNIXLIBS="$REPO/out/09-ntdll-processes/unixlibs.txt"
 mkdir -p "$OUT.ut"
 status=0
