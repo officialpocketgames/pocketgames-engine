@@ -5535,12 +5535,78 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
 }
 
 
+#ifdef WINE_IOS
+/***********************************************************************
+ *             ios_log_alloc
+ *
+ * MYIOSDECK (spec 10 clarification 13): a line for a failed allocation of the process's own, or
+ * for a reservation at a given base, at most 256 per process, then one suppression line.
+ * base and size are what the caller asked for; got and got_size what it has after the call.
+ */
+static void ios_log_alloc( void *base, SIZE_T size, ULONG type, ULONG protect, ULONG_PTR zero_bits,
+                           BOOL has_range, ULONG_PTR range_low, ULONG_PTR range_high,
+                           NTSTATUS status, void *got, SIZE_T got_size )
+{
+    struct ios_proc *proc = ios_proc_current();
+    char range[64] = "";
+    int kind = ios_alloc_log_kind( type, base != NULL, status );
+
+    if (kind == IOS_ALLOC_LOG_NONE || !proc) return;
+    switch (ios_alloc_log_take( &proc->alloc_lines ))
+    {
+    case IOS_ALLOC_LINE_SUPPRESS:
+        ios_log( "alloc: further allocation lines suppressed (%u so far)\n", (unsigned int)IOS_ALLOC_LOG_CAP );
+        return;
+    case IOS_ALLOC_LINE_QUIET:
+        return;
+    }
+    if (kind == IOS_ALLOC_LOG_FAILED)
+    {
+        if (has_range) snprintf( range, sizeof(range), " range %#lx-%#lx",
+                                 (unsigned long)range_low, (unsigned long)range_high );
+        ios_log( "alloc failed: base %#lx size %#lx type %#x prot %#x zero_bits %lu status %#x%s\n",
+                 (unsigned long)(ULONG_PTR)base, (unsigned long)size, (unsigned int)type,
+                 (unsigned int)protect, (unsigned long)zero_bits, (unsigned int)status, range );
+    }
+    else
+        ios_log( "alloc at %#lx size %#lx type %#x prot %#x: status %#x, got %#lx size %#lx\n",
+                 (unsigned long)(ULONG_PTR)base, (unsigned long)size, (unsigned int)type,
+                 (unsigned int)protect, (unsigned int)status, (unsigned long)(ULONG_PTR)got,
+                 (unsigned long)got_size );
+}
+
+
+static NTSTATUS nt_allocate_virtual_memory( HANDLE process, PVOID *ret, ULONG_PTR zero_bits,
+                                            SIZE_T *size_ptr, ULONG type, ULONG protect );
+
+/***********************************************************************
+ *             NtAllocateVirtualMemory   (NTDLL.@)
+ *             ZwAllocateVirtualMemory   (NTDLL.@)
+ *
+ * MYIOSDECK (spec 10 clarification 13): upstream's call, then the allocation line.
+ */
+NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR zero_bits,
+                                         SIZE_T *size_ptr, ULONG type, ULONG protect )
+{
+    void *base = *ret;
+    SIZE_T size = *size_ptr;
+    NTSTATUS status = nt_allocate_virtual_memory( process, ret, zero_bits, size_ptr, type, protect );
+
+    if (process == NtCurrentProcess())
+        ios_log_alloc( base, size, type, protect, zero_bits, FALSE, 0, 0, status, *ret, *size_ptr );
+    return status;
+}
+
+static NTSTATUS nt_allocate_virtual_memory( HANDLE process, PVOID *ret, ULONG_PTR zero_bits,
+                                            SIZE_T *size_ptr, ULONG type, ULONG protect )
+#else
 /***********************************************************************
  *             NtAllocateVirtualMemory   (NTDLL.@)
  *             ZwAllocateVirtualMemory   (NTDLL.@)
  */
 NTSTATUS WINAPI NtAllocateVirtualMemory( HANDLE process, PVOID *ret, ULONG_PTR zero_bits,
                                          SIZE_T *size_ptr, ULONG type, ULONG protect )
+#endif
 {
     static const ULONG type_mask = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH | MEM_RESET;
     ULONG_PTR limit;
@@ -5673,6 +5739,45 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
 }
 
 
+#ifdef WINE_IOS
+static NTSTATUS nt_allocate_virtual_memory_ex( HANDLE process, PVOID *ret, SIZE_T *size_ptr, ULONG type,
+                                               ULONG protect, MEM_EXTENDED_PARAMETER *parameters,
+                                               ULONG count );
+
+/***********************************************************************
+ *             NtAllocateVirtualMemoryEx   (NTDLL.@)
+ *             ZwAllocateVirtualMemoryEx   (NTDLL.@)
+ *
+ * MYIOSDECK (spec 10 clarification 13): upstream's call, then the allocation line, with the
+ * address requirements' range when the call gives one.
+ */
+NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *size_ptr, ULONG type,
+                                           ULONG protect, MEM_EXTENDED_PARAMETER *parameters,
+                                           ULONG count )
+{
+    void *base = *ret;
+    SIZE_T size = *size_ptr;
+    NTSTATUS status = nt_allocate_virtual_memory_ex( process, ret, size_ptr, type, protect,
+                                                     parameters, count );
+
+    if (process == NtCurrentProcess() &&
+        ios_alloc_log_kind( type, base != NULL, status ) != IOS_ALLOC_LOG_NONE)
+    {
+        ULONG_PTR low = 0, high = 0, align = 0;
+        ULONG attributes = 0;
+        USHORT machine = 0;
+        BOOL has_range = !get_extended_params( parameters, count, &low, &high, &align,
+                                               &attributes, &machine ) && (low || high);
+
+        ios_log_alloc( base, size, type, protect, 0, has_range, low, high, status, *ret, *size_ptr );
+    }
+    return status;
+}
+
+static NTSTATUS nt_allocate_virtual_memory_ex( HANDLE process, PVOID *ret, SIZE_T *size_ptr, ULONG type,
+                                               ULONG protect, MEM_EXTENDED_PARAMETER *parameters,
+                                               ULONG count )
+#else
 /***********************************************************************
  *             NtAllocateVirtualMemoryEx   (NTDLL.@)
  *             ZwAllocateVirtualMemoryEx   (NTDLL.@)
@@ -5680,6 +5785,7 @@ static NTSTATUS get_extended_params( const MEM_EXTENDED_PARAMETER *parameters, U
 NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *size_ptr, ULONG type,
                                            ULONG protect, MEM_EXTENDED_PARAMETER *parameters,
                                            ULONG count )
+#endif
 {
     static const ULONG type_mask = MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH
                                    | MEM_RESET | MEM_RESERVE_PLACEHOLDER | MEM_REPLACE_PLACEHOLDER;

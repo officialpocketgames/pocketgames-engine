@@ -231,6 +231,23 @@ int ios_image_fits_process( unsigned short main_machine, unsigned short image_ma
 int ios_dylib_view_reusable( int starts_at_image, int is_dylib_view, const void *view_owner,
                              const void *owner );
 
+/* ---------- clarification 13: allocation lines ----------
+ * Which line a NtAllocateVirtualMemory(Ex) call of the process's own gets: FAILED for any
+ * failure (status not 0); FIXED for MEM_RESERVE (0x2000) at a non-zero base, whatever the
+ * result; NONE otherwise (a successful commit inside a reservation, a reservation anywhere). */
+#define IOS_ALLOC_LOG_NONE   0
+#define IOS_ALLOC_LOG_FAILED 1
+#define IOS_ALLOC_LOG_FIXED  2
+int ios_alloc_log_kind( uint32_t type, int base_given, uint32_t status );
+
+/* The per-process cap: lines 1-256 are logged (LINE), the 257th becomes the suppression line
+ * (SUPPRESS), nothing after it (QUIET). counter is the process's own, taken atomically. */
+#define IOS_ALLOC_LOG_CAP      256
+#define IOS_ALLOC_LINE_QUIET    0
+#define IOS_ALLOC_LINE_LOG      1
+#define IOS_ALLOC_LINE_SUPPRESS 2
+int ios_alloc_log_take( unsigned int *counter );
+
 /* ---------- Part E4: what a 32-bit process's own window holds ----------
  * Only memory the guest asked for. A guest request reaches map_view with its range translated
  * into the window, [B + low, B + high]; a unix-side request with no guest limit (the shared data

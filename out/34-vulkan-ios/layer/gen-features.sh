@@ -19,7 +19,10 @@
 # letters and digits both spellings are tried ("Float16Int8": FLOAT16_INT8, "Robustness2":
 # ROBUSTNESS_2), "Vulkan<d><d>" is VULKAN_<d>_<d> and "ASTCHDR" is ASTC_HDR. Only a spelling that the header's
 # VkStructureType enumeration contains is used; a struct with none is left out and named on
-# stderr. ios_vk_features.c checks every struct's size and first member at compile time.
+# stderr. A struct or sType the header declares under a preprocessor condition (Khronos puts
+# provisional extensions under #ifdef VK_ENABLE_BETA_EXTENSIONS) is emitted between #if <the same
+# condition> and #endif, so the table names nothing the layer's compile doesn't declare.
+# ios_vk_features.c checks every struct's size and first member at compile time.
 
 set -eu
 
@@ -37,15 +40,54 @@ if [ -n "$refs" ]; then
 fi
 
 awk '
-# pass 1: every VkStructureType enumerator (also the aliases)
+# the preprocessor conditionals the header declares things under: a stack of conditions, an
+# #ifndef that is the first directive being the include guard (no condition). Khronos puts a provisional
+# extension (VK_ENABLE_BETA_EXTENSIONS) under #ifdef in vulkan_core.h: its enumerators, and in
+# some revisions its structs. Whatever is conditional in the header is emitted under the same
+# condition, so the table never names what the compile does not declare.
+function directive(line,    d, kw, rest) {
+    if (line !~ /^[ \t]*#[ \t]*(if|ifdef|ifndef|elif|else|endif)([^a-z_]|$)/) return 0
+    d = line
+    sub(/^[ \t]*#[ \t]*/, "", d)
+    sub(/\/\*.*/, "", d); sub(/\/\/.*/, "", d)
+    match(d, /^[a-z]+/); kw = substr(d, 1, RLENGTH); rest = substr(d, RLENGTH + 1)
+    sub(/^[ \t]+/, "", rest); sub(/[ \t]+$/, "", rest)
+    ndir++
+    if (kw == "ifdef") { cond[++depth] = "defined(" rest ")"; taken[depth] = cond[depth] }
+    else if (kw == "ifndef") {
+        # the include guard: an #ifndef that is the first directive of the file
+        if (ndir == 1) { cond[++depth] = ""; taken[depth] = "" }
+        else { cond[++depth] = "!defined(" rest ")"; taken[depth] = cond[depth] }
+    }
+    else if (kw == "if") { cond[++depth] = "(" rest ")"; taken[depth] = cond[depth] }
+    else if (kw == "elif" && depth > 0) {
+        cond[depth] = "!(" taken[depth] ") && (" rest ")"; taken[depth] = "(" taken[depth] ") || (" rest ")"
+    }
+    else if (kw == "else" && depth > 0) cond[depth] = (taken[depth] == "") ? "0" : "!(" taken[depth] ")"
+    else if (kw == "endif" && depth > 0) depth--
+    return 1
+}
+function current(    i, c) {
+    c = ""
+    for (i = 1; i <= depth; i++) if (cond[i] != "") c = c (c == "" ? "" : " && ") cond[i]
+    return c
+}
+
+# the second pass reads the header again from its start
+FNR == 1 && NR > 1 { depth = 0; ndir = 0 }
+
+# pass 1: every VkStructureType enumerator (also the aliases), with its condition
 FNR == NR {
+    if (directive($0)) next
     if (match($0, /^[ \t]*VK_STRUCTURE_TYPE_[A-Z0-9_]+[ \t]*=/)) {
         s = substr($0, RSTART, RLENGTH)
         sub(/^[ \t]*/, "", s); sub(/[ \t]*=$/, "", s)
         stypes[s] = 1
+        scond[s] = current()
     }
     next
 }
+directive($0) { next }
 
 function kind(c) {
     if (c ~ /[A-Z]/) return "U"
@@ -85,7 +127,7 @@ function stype_of(name,    s, i, n, c, p, q, k, piece, pieces, np, amb, total, m
     return ""
 }
 
-function finish(    i, names, st) {
+function finish(    i, names, st, c) {
     if (!ok || nm < 1) return
     names = ""
     for (i = 1; i <= nm; i++) names = names (i > 1 ? " \"\\0\" " : "") "\"" member[i] "\""
@@ -98,13 +140,18 @@ function finish(    i, names, st) {
     if (st == "") { print "gen-features.sh: no sType found for " sname ", left out" > "/dev/stderr"; return }
     if (st in done) return
     done[st] = 1
+    # the struct'"'"'s condition and its sType'"'"'s, both (once when they are the same)
+    c = tcond
+    if (scond[st] != "" && scond[st] != c) c = c (c == "" ? "" : " && ") scond[st]
+    if (c != "") { printf "#if %s\n", c; nguarded++ }
     printf "IVK_FEATURE_STRUCT(%s, %s, %d, %s, %s)\n", sname, st, nm, member[1], names
+    if (c != "") print "#endif"
 }
 
 # pass 2: the structs
 /^typedef struct VkPhysicalDevice[A-Za-z0-9]*Features[A-Z]*[ \t]*[{]?[ \t]*$/ {
     sname = $3; sub(/[{].*/, "", sname)
-    instruct = 1; ok = 1; nm = 0; have_stype = 0; field = 0
+    instruct = 1; ok = 1; nm = 0; have_stype = 0; field = 0; tcond = current()
     next
 }
 instruct && /^[ \t]*[{][ \t]*$/ { next }
@@ -130,4 +177,4 @@ instruct {
 } > "$out"
 rm -f "$out.tmp"
 grep -q '^IVK_CORE_FEATURES(' "$out" || { echo "$0: VkPhysicalDeviceFeatures not found in $hdr" >&2; exit 1; }
-echo "gen-features.sh: $(grep -c '^IVK_FEATURE_STRUCT(' "$out") feature structs from $(basename "$hdr")"
+echo "gen-features.sh: $(grep -c '^IVK_FEATURE_STRUCT(' "$out") feature structs from $(basename "$hdr") ($(grep -c '^#if ' "$out" || true) under the header's own conditions)"

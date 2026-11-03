@@ -633,6 +633,44 @@ static void test_native_copy(void)
 
 /* ---------- clarification 10: no second instance in the same process ---------- */
 
+/* ---------- clarification 13: allocation lines ---------- */
+
+static void test_alloc_log(void)
+{
+    const unsigned int commit = 0x1000, reserve = 0x2000, top_down = 0x100000;
+    unsigned int counter = 0, i, logged = 0, suppress = 0, quiet = 0;
+
+    /* a failed call: logged, whatever it asked for */
+    CHECK( ios_alloc_log_kind( commit, 1, 0xc0000018 /* conflicting addresses */ ) == IOS_ALLOC_LOG_FAILED );
+    CHECK( ios_alloc_log_kind( reserve | commit, 0, 0xc0000017 /* no memory */ ) == IOS_ALLOC_LOG_FAILED );
+    CHECK( ios_alloc_log_kind( commit, 0, 0xc000000d ) == IOS_ALLOC_LOG_FAILED );
+    /* MEM_RESERVE at a given base: logged on success and on failure */
+    CHECK( ios_alloc_log_kind( reserve, 1, 0 ) == IOS_ALLOC_LOG_FIXED );
+    CHECK( ios_alloc_log_kind( reserve | commit | top_down, 1, 0 ) == IOS_ALLOC_LOG_FIXED );
+    CHECK( ios_alloc_log_kind( reserve, 1, 0xc0000018 ) == IOS_ALLOC_LOG_FAILED );
+    /* MEM_COMMIT inside an existing reservation, succeeding: not logged */
+    CHECK( ios_alloc_log_kind( commit, 1, 0 ) == IOS_ALLOC_LOG_NONE );
+    /* MEM_RESERVE with a base of 0, succeeding: not logged */
+    CHECK( ios_alloc_log_kind( reserve, 0, 0 ) == IOS_ALLOC_LOG_NONE );
+    CHECK( ios_alloc_log_kind( reserve | commit, 0, 0 ) == IOS_ALLOC_LOG_NONE );
+
+    /* the cap: 256 lines, the 257th is the suppression line, nothing follows it */
+    for (i = 0; i < 1000; i++)
+    {
+        int line = ios_alloc_log_take( &counter );
+
+        if (line == IOS_ALLOC_LINE_LOG) { CHECK( !suppress ); logged++; }
+        else if (line == IOS_ALLOC_LINE_SUPPRESS) { CHECK( i == 256 ); suppress++; }
+        else { CHECK( suppress == 1 ); quiet++; }
+    }
+    CHECK( logged == 256 );
+    CHECK( suppress == 1 );
+    CHECK( quiet == 1000 - 257 );
+    /* each process has its own counter */
+    counter = 0;
+    CHECK( ios_alloc_log_take( &counter ) == IOS_ALLOC_LINE_LOG );
+}
+
 static void test_loaded_again(void)
 {
     static const char *const advapi_names[] =
@@ -916,6 +954,7 @@ int main(void)
 {
     test_native_copy();
     test_loaded_again();
+    test_alloc_log();
     test_image_machine();
     test_window_requests();
     test_module_match();

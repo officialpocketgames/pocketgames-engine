@@ -484,6 +484,25 @@ int ios_dylib_view_reusable( int starts_at_image, int is_dylib_view, const void 
     return starts_at_image && is_dylib_view && owner && view_owner == owner;
 }
 
+/* ---------- clarification 13: allocation lines ---------- */
+
+int ios_alloc_log_kind( uint32_t type, int base_given, uint32_t status )
+{
+    if (status) return IOS_ALLOC_LOG_FAILED;
+    if ((type & 0x2000 /* MEM_RESERVE */) && base_given) return IOS_ALLOC_LOG_FIXED;
+    return IOS_ALLOC_LOG_NONE;
+}
+
+int ios_alloc_log_take( unsigned int *counter )
+{
+    unsigned int n;
+
+    if (__atomic_load_n( counter, __ATOMIC_RELAXED ) > IOS_ALLOC_LOG_CAP) return IOS_ALLOC_LINE_QUIET;
+    n = __atomic_fetch_add( counter, 1, __ATOMIC_RELAXED );
+    if (n < IOS_ALLOC_LOG_CAP) return IOS_ALLOC_LINE_LOG;
+    return n == IOS_ALLOC_LOG_CAP ? IOS_ALLOC_LINE_SUPPRESS : IOS_ALLOC_LINE_QUIET;
+}
+
 /* ---------- Part E4: what a window holds ---------- */
 
 int ios_win_request_in_window( uint64_t base, uint64_t range_low, uint64_t range_high )

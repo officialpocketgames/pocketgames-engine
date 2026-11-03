@@ -269,7 +269,8 @@ jobs:
           if-no-files-found: ignore
 
   # 4b. spec 34 M6: vktest.exe (x86_64, i686) for the device's test builds; built here, never run
-  #     (no GPU tests on CI runners or the owner's PC)
+  #     (no GPU tests on CI runners or the owner's PC). With the same Vulkan-Headers, the iOS layer
+  #     and its generated feature table are compiled on Linux first (check-layer-khronos.sh)
   vktest:
     needs: refs
     runs-on: ubuntu-latest
@@ -297,6 +298,8 @@ jobs:
           git -C "$RUNNER_TEMP/vulkan-headers" fetch -q --depth 1 https://github.com/KhronosGroup/Vulkan-Headers.git "$rev"
           git -C "$RUNNER_TEMP/vulkan-headers" checkout -q --detach FETCH_HEAD
           echo "Vulkan-Headers $rev: $(git -C "$RUNNER_TEMP/vulkan-headers" rev-parse HEAD)"
+      - name: The iOS layer against those headers (spec 34 E; what build-ios.sh compiles it with)
+        run: sh out/34-vulkan-ios/tests/check-layer-khronos.sh "$RUNNER_TEMP/vulkan-headers/include"
       - name: Build vktest
         run: sh out/34-vulkan-ios/tests/windows/build-vktest.sh "$MINGW_BIN" "$RUNNER_TEMP/vulkan-headers/include" "$RUNNER_TEMP/vktest"
       - uses: actions/upload-artifact@v4

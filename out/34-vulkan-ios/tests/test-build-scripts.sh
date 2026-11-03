@@ -12,7 +12,9 @@
 #   2b. the patch series: our patch last, author lines kept, the skipped ones absent, no game
 #      names; with refs/'s copies of the forks, every patch applies in order with no fuzz
 #   3. the scripts that write refuse a destination inside refs/, and create nothing there
-#   4. gen-features.sh on a header spaced as Khronos' vulkan_core.h (the iOS build's input)
+#   4. gen-features.sh on a header spaced as Khronos' vulkan_core.h (the iOS build's input), and
+#      (4b) on one with the header's own conditionals (VK_ENABLE_BETA_EXTENSIONS, #if 0 / #else):
+#      the table compiles against it with and without the define, with the right entries
 #   5. spec 34's win32u patches apply with no fuzz after spec 12's (macOS's patch doesn't fuzz)
 # Environment: WINE_SRC (the Wine 11.4 tree, read only), MOLTENVK_REF and SPIRV_CROSS_REF (copies
 # of the pinned forks, read only; default refs/moltenvk-utm-0560446 and refs/spirv-cross-utm-939b40b),
@@ -218,6 +220,106 @@ grep -q '^IVK_FEATURE_STRUCT(VkPhysicalDeviceASTCDecodeFeaturesEXT, VK_STRUCTURE
 grep -q '^IVK_FEATURE_STRUCT(VkPhysicalDeviceRobustness2FeaturesKHR, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ROBUSTNESS_2_FEATURES_KHR, 1,' "$T/gen.h" || bad "Robustness2 struct"
 grep -q 'Mixed' "$T/gen.h" && bad "a struct with a non-VkBool32 member was taken"
 grep -q 'no sType found for VkPhysicalDeviceUnknownFeaturesEXT' "$T/gen.err" || bad "an unknown sType isn't reported"
+grep -q '^#if' "$T/gen.h" && bad "an unconditional header gave conditional entries"
+
+# ---- 4b: the header's own conditionals (the CI's first layer build: a provisional extension's
+# sType is under #ifdef VK_ENABLE_BETA_EXTENSIONS in vulkan_core.h; the table named it anyway).
+# The generated table must compile without the define, and hold both entries with it.
+cat > "$T/beta_core.h" <<'EOF'
+#ifndef VULKAN_CORE_H_
+#define VULKAN_CORE_H_ 1
+#ifdef __cplusplus
+extern "C" {
+#endif
+#include <stdint.h>
+typedef uint32_t VkBool32;
+typedef enum VkStructureType {
+    VK_STRUCTURE_TYPE_APPLICATION_INFO = 0,
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES = 1000082000,
+#ifdef VK_ENABLE_BETA_EXTENSIONS
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_METERING_FEATURES_NV = 1000613001,
+#endif
+#ifdef VK_ENABLE_BETA_EXTENSIONS
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PORTABILITY_SUBSET_FEATURES_KHR = 1000163000,
+#endif
+#if 0
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OTHER_FEATURES_EXT = 1000999000,
+#else
+    VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ELSE_FEATURES_EXT = 1000999001,
+#endif /* 0 */
+    VK_STRUCTURE_TYPE_MAX_ENUM = 0x7FFFFFFF
+} VkStructureType;
+typedef struct VkPhysicalDeviceFeatures {
+    VkBool32    robustBufferAccess;
+} VkPhysicalDeviceFeatures;
+typedef struct VkPhysicalDeviceShaderFloat16Int8Features {
+    VkStructureType    sType;
+    void*              pNext;
+    VkBool32           shaderFloat16;
+} VkPhysicalDeviceShaderFloat16Int8Features;
+typedef struct VkPhysicalDevicePresentMeteringFeaturesNV {
+    VkStructureType    sType;
+    void*              pNext;
+    VkBool32           presentMetering;
+} VkPhysicalDevicePresentMeteringFeaturesNV;
+#ifdef VK_ENABLE_BETA_EXTENSIONS
+typedef struct VkPhysicalDevicePortabilitySubsetFeaturesKHR {
+    VkStructureType    sType;
+    void*              pNext;
+    VkBool32           constantAlphaColorBlendFactors;
+} VkPhysicalDevicePortabilitySubsetFeaturesKHR;
+#endif
+typedef struct VkPhysicalDeviceOtherFeaturesEXT {
+    VkStructureType    sType;
+    void*              pNext;
+    VkBool32           other;
+} VkPhysicalDeviceOtherFeaturesEXT;
+typedef struct VkPhysicalDeviceElseFeaturesEXT {
+    VkStructureType    sType;
+    void*              pNext;
+    VkBool32           elseFeature;
+} VkPhysicalDeviceElseFeaturesEXT;
+#ifdef __cplusplus
+}
+#endif
+#endif
+EOF
+if sh "$PART/layer/gen-features.sh" "$T/beta_core.h" "$T/beta_gen.h" > /dev/null 2>&1; then
+    grep -q '^#if defined(VK_ENABLE_BETA_EXTENSIONS)$' "$T/beta_gen.h" || bad "conditionals: the provisional entries aren't under VK_ENABLE_BETA_EXTENSIONS: $(cat "$T/beta_gen.h")"
+    grep -q '^#if defined(VK_ENABLE_BETA_EXTENSIONS) && defined(VK_ENABLE_BETA_EXTENSIONS)' "$T/beta_gen.h" &&
+        bad "conditionals: one condition repeated"
+    grep -q '^#if !((0))$' "$T/beta_gen.h" || bad "conditionals: the #else branch isn't !((0)): $(cat "$T/beta_gen.h")"
+    grep -B1 'VkPhysicalDeviceShaderFloat16Int8Features' "$T/beta_gen.h" | grep -q '^#if' && bad "conditionals: an unconditional entry got a condition"
+    cat > "$T/beta_use.c" <<'EOF'
+/* the generated table used as ios_vk_features.c uses it, against the header it came from */
+#include <stddef.h>
+#include "beta_core.h"
+struct entry { VkStructureType stype; size_t size; unsigned int n; const char *names; };
+#define IVK_CORE_FEATURES(n, names)
+#define IVK_FEATURE_STRUCT(type, stype, n, first, names) { stype, sizeof(type), n, names },
+static const struct entry entries[] = {
+#include "beta_gen.h"
+};
+/* the count, read through an entry so the table is used (clang's -Wunneeded-internal-declaration) */
+int main( void ) { return entries[0].size ? (int)(sizeof(entries) / sizeof(entries[0])) : 100; }
+EOF
+    n=0
+    if ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -I"$T" "$T/beta_use.c" -o "$T/beta_use" 2> "$T/beta_use.err"; then
+        "$T/beta_use" || n=$?
+        [ "$n" = 2 ] || bad "conditionals: $n entries without VK_ENABLE_BETA_EXTENSIONS, wanted 2 (Float16Int8, Else)"
+    else
+        bad "conditionals: the table doesn't compile without VK_ENABLE_BETA_EXTENSIONS: $(head -n 3 "$T/beta_use.err")"
+    fi
+    n=0
+    if ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -DVK_ENABLE_BETA_EXTENSIONS -I"$T" "$T/beta_use.c" -o "$T/beta_use2" 2> "$T/beta_use.err"; then
+        "$T/beta_use2" || n=$?
+        [ "$n" = 4 ] || bad "conditionals: $n entries with VK_ENABLE_BETA_EXTENSIONS, wanted 4"
+    else
+        bad "conditionals: the table doesn't compile with VK_ENABLE_BETA_EXTENSIONS: $(head -n 3 "$T/beta_use.err")"
+    fi
+else
+    bad "gen-features.sh failed on a header with conditionals"
+fi
 
 # ---- 5
 if [ -f "$WINE/dlls/win32u/vulkan.c" ]; then

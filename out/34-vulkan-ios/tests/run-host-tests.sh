@@ -66,5 +66,13 @@ for t in test-winevulkan.sh test-moltenvk-checks.sh test-build-scripts.sh window
     fi
 done
 
+# the layer against Khronos' headers at the MoltenVK fork's pin (the CI's vktest job has them)
+if [ -n "${VULKAN_HEADERS:-}" ]; then
+    echo "== check-layer-khronos.sh"
+    env CC="$CC" TMPDIR="$OUT" sh "$HERE/check-layer-khronos.sh" "$VULKAN_HEADERS"
+else
+    echo "SKIPPED: check-layer-khronos.sh (set VULKAN_HEADERS to a Vulkan-Headers include dir; the CI's vktest job runs it)"
+fi
+
 echo "== check-app-store.sh"
 sh "$REPO/check-app-store.sh" "$PART"
