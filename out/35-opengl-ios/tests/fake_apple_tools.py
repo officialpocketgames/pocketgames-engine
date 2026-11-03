@@ -13,10 +13,14 @@
 # member's lines, per member. A fake program lists its imports as "UNDEF <symbol>".
 #
 # Environment: FAKE_FX (the fixtures: project.json, which `gn gen --ide=json` puts in the build
-# directory; sdk/), FAKE_ANGLE_COMMIT (what `git rev-parse HEAD` says), FAKE_PROBE_FAIL /
-# FAKE_SIZE_FAIL (the probe link, or the size link of size_main.c, fails as ld does), FAKE_GN_FAIL
-# (gn gen writes no project.json). ninja refuses, as depot_tools' does on an out dir siso built.
+# directory, without Perfetto's targets when args.gn sets angle_use_perfetto = false;
+# declared-args.txt, what `gn args --list --short` prints, args.gn's values applied; sdk/),
+# FAKE_ANGLE_COMMIT (what `git rev-parse HEAD` says), FAKE_PROBE_FAIL / FAKE_SIZE_FAIL (the probe
+# link, or the size link of size_main.c, fails as ld does), FAKE_GN_FAIL (gn gen writes no
+# project.json), FAKE_NO_PERFETTO_ARG (the revision declares no Perfetto switch). clang fails on
+# an input path that doesn't exist; ninja refuses, as depot_tools' does on an out dir siso built.
 
+import json
 import os
 import sys
 
@@ -83,6 +87,11 @@ def clang(args):
         else:
             expanded.append(a)
     out = expanded[expanded.index("-o") + 1]
+    # an input path that isn't there, as clang reports it (a "//" path from GN, say)
+    for i, a in enumerate(expanded):
+        if "/" in a and not a.startswith("-") and expanded[i - 1] != "-o" and not os.path.exists(a):
+            sys.stderr.write("clang: error: no such file or directory: '%s'\n" % a)
+            return 1
     roots = [a[len("-Wl,-u,"):] for a in expanded if a.startswith("-Wl,-u,")]
     mapfile = next((a[len("-Wl,-map,"):] for a in expanded if a.startswith("-Wl,-map,")), None)
     dead_strip = "-Wl,-dead_strip" in expanded
@@ -185,15 +194,48 @@ def git(args):
     return 0
 
 
+def overrides(build):
+    """[(name, value)] of <build>/args.gn, comments dropped"""
+    out = []
+    path = os.path.join(build, "args.gn")
+    if os.path.exists(path):
+        with open(path) as f:
+            for line in f:
+                line = line.split("#", 1)[0].strip()
+                if "=" in line:
+                    name, value = (p.strip() for p in line.split("=", 1))
+                    out.append((name, value))
+    return out
+
+
 def gn(args):
+    fx = os.environ.get("FAKE_FX", "/nonexistent")
     if args and args[0] == "args":
-        print("angle_enable_metal = true")
+        set_ = dict(overrides(args[1]))
+        if "--overrides-only" in args:
+            for name, value in overrides(args[1]):
+                print("%s = %s" % (name, value))
+            return 0
+        # the declared arguments with their values (FAKE_NO_PERFETTO_ARG: a revision without it)
+        with open(os.path.join(fx, "declared-args.txt")) as f:
+            for line in f:
+                name, value = (p.strip() for p in line.split("=", 1))
+                if os.environ.get("FAKE_NO_PERFETTO_ARG") and "perfetto" in name:
+                    continue
+                print("%s = %s" % (name, set_.get(name, value)))
     elif args and args[0] == "gen" and "--ide=json" in args and not os.environ.get("FAKE_GN_FAIL"):
-        # project.json in the build directory, as gn gen --ide=json writes it
-        with open(os.path.join(os.environ["FAKE_FX"], "project.json")) as f:
-            text = f.read()
+        # project.json in the build directory, as gn gen --ide=json writes it; with
+        # angle_use_perfetto = false, Perfetto's targets are gone
+        with open(os.path.join(fx, "project.json")) as f:
+            project = json.load(f)
+        if dict(overrides(args[1])).get("angle_use_perfetto") == "false":
+            targets = project["targets"]
+            for label in [l for l in targets if "perfetto" in l]:
+                del targets[label]
+            for t in targets.values():
+                t["deps"] = [d for d in t.get("deps", []) if "perfetto" not in d]
         with open(os.path.join(args[1], "project.json"), "w") as f:
-            f.write(text)
+            json.dump(project, f)
     return 0
 
 

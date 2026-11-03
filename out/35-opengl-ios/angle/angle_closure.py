@@ -14,7 +14,13 @@
 #
 #   python3 -I angle_closure.py gn-link <gn json> <label>...
 #       the closure's frameworks, weak frameworks and libraries as linker flags, one per line
-#       (-framework X, -weak_framework X, -lx, or a library's path), each once.
+#       (-framework X, -weak_framework X, -lx, or a library's path), each once. A path in the
+#       source tree ("//...") is left out, Chromium's clang runtime (libclang_rt.*) among them:
+#       the app links with Xcode's clang, which brings its own; each is named on standard error
+#       ("dropped: <item> (<reason>)").
+#   python3 -I angle_closure.py gn-paths <gn json> <label>...
+#       for each target of the closure, "label<TAB>start > ... > label": the shortest chain of
+#       deps that brings it in (why a target such as Perfetto's or volk's is there).
 #   python3 -I angle_closure.py gn-objects <gn json> <build dir> <label>...
 #       the object files of the closure's static libraries and source sets, found in <build dir>
 #       where Chromium's toolchains put them (obj/<dir>/<target>/<name>.o, or
@@ -26,7 +32,7 @@
 #       the archive members a link loaded, from ld's -map output ("# Object files:" lines
 #       "[  n] /path/lib.a(member.o)", or "lib.a[k](member.o)"), in order, once each; only those of
 #       <archive name> when given.
-# gn-link and gn-objects exit 2 if a label is missing or not linkable.
+# gn-link, gn-paths and gn-objects exit 2 if a label is missing or not linkable.
 
 import glob
 import json
@@ -87,8 +93,20 @@ def closure(desc, labels):
     return sorted(seen)
 
 
+def dropped_reason(item):
+    """why a framework or library GN names is left out of the link, or None to keep it: a path in
+    the source tree ("//...") is not something the app links; Chromium's own clang runtime least of
+    all (Xcode's clang links its own compiler-rt)"""
+    if not item.startswith("//"):
+        return None
+    if os.path.basename(item).startswith("libclang_rt"):
+        return "Chromium's clang runtime; Xcode's clang links its own"
+    return "a path in ANGLE's source tree"
+
+
 def gn_link(desc, labels):
-    """the linker flags of the link closure of labels, and the closure's size"""
+    """the linker flags of the link closure of labels, the closure's size, and what was left out
+    ([(item, reason)])"""
     frameworks, weak, libs = set(), set(), set()
     labels_seen = closure(desc, labels)
     for label in labels_seen:
@@ -96,18 +114,41 @@ def gn_link(desc, labels):
         frameworks.update(target.get("frameworks", []))
         weak.update(target.get("weak_frameworks", []))
         libs.update(target.get("libs", []))
+    dropped = [(i, dropped_reason(i)) for i in sorted(frameworks | weak | libs) if dropped_reason(i)]
+    gone = set(i for i, _ in dropped)
 
     def name(f):
         return f[: -len(".framework")] if f.endswith(".framework") else f
 
-    flags = ["-framework " + name(f) for f in sorted(frameworks)]
-    flags += ["-weak_framework " + name(f) for f in sorted(weak)]
-    for lib in sorted(libs):
+    flags = ["-framework " + name(f) for f in sorted(frameworks - gone)]
+    flags += ["-weak_framework " + name(f) for f in sorted(weak - gone)]
+    for lib in sorted(libs - gone):
         if "/" in lib or lib.endswith((".a", ".dylib", ".tbd")):
             flags.append(lib)
         else:
             flags.append("-l" + lib)
-    return flags, len(labels_seen)
+    return flags, len(labels_seen), dropped
+
+
+def gn_paths(desc, labels):
+    """{label: [start label, ..., label]}: for each target of the link closure, the shortest chain
+    of deps that brings it in (breadth first, labels in sorted order)"""
+    closure(desc, labels)
+    paths = {}
+    queue = []
+    for label in sorted(labels):
+        if label not in paths:
+            paths[label] = [label]
+            queue.append(label)
+    while queue:
+        label = queue.pop(0)
+        target = desc[label]
+        for dep in sorted(target.get("deps", []) + target.get("public_deps", [])):
+            sub = desc.get(dep)
+            if sub is not None and sub.get("type") in LINKED and "(" not in dep and dep not in paths:
+                paths[dep] = paths[label] + [dep]
+                queue.append(dep)
+    return paths
 
 
 def source_path(s):
@@ -177,10 +218,17 @@ def map_members(text, archive=None):
 def main(argv):
     try:
         if len(argv) >= 3 and argv[1] == "gn-link":
-            flags, n = gn_link(load(argv[2]), argv[3:])
+            flags, n, dropped = gn_link(load(argv[2]), argv[3:])
             for flag in flags:
                 print(flag)
+            for item, reason in dropped:
+                print("dropped: %s (%s)" % (item, reason), file=sys.stderr)
             print("angle_closure: %d targets in the link closure" % n, file=sys.stderr)
+            return 0
+        if len(argv) >= 3 and argv[1] == "gn-paths":
+            paths = gn_paths(load(argv[2]), argv[3:])
+            for label in sorted(paths):
+                print("%s\t%s" % (label, " > ".join(paths[label])))
             return 0
         if len(argv) >= 4 and argv[1] == "gn-objects":
             rows, missing, n, with_objects = gn_objects(load(argv[2]), argv[4:], argv[3])
@@ -204,8 +252,8 @@ def main(argv):
         for member in map_members(text, argv[3] if len(argv) == 4 else None):
             print(member)
         return 0
-    print("usage: angle_closure.py gn-link <gn json> <label>... | gn-objects <gn json> <build dir> <label>... | "
-          "map-members <map> [<archive>]", file=sys.stderr)
+    print("usage: angle_closure.py gn-link <gn json> <label>... | gn-paths <gn json> <label>... | "
+          "gn-objects <gn json> <build dir> <label>... | map-members <map> [<archive>]", file=sys.stderr)
     return 2
 
 

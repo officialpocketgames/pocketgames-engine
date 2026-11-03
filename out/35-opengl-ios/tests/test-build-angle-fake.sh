@@ -15,7 +15,11 @@
 #   B  a kept object imports fork: FAIL naming its source; the dead-stripped program doesn't
 #   C  the probe link fails: FAIL with the linker's lines, the whole closure kept (and the loader's
 #      absolute dlopen then fails)
-#   D  the size link fails: FAIL with the linker's lines
+#   D  the size link fails: FAIL with the linker's lines; a revision with no Perfetto switch keeps
+#      Perfetto in the closure (named with its chain) but out of the archive
+# All of them: the declared switches for tracing and other back ends turned off (gn gen again),
+# Chromium's clang runtime and any source-tree path left out of LINK.txt (the fake clang, like the
+# real one, fails on a path that isn't there).
 #   E  gn gen wrote no project.json: FAIL with the helper's message
 # Needs python3 and bash. Environment: TMPDIR, KEEP (keep the work folder).
 
@@ -65,8 +69,13 @@ targets = {
                                                "//src/libANGLE/GLES1State.cpp", "//src/libANGLE/Context.h",
                                                "//src/libANGLE/renderer/metal/DisplayMtl.mm"],
                                    "deps": [q("//src/common:angle_common"), q("//src/gpu_info_util:angle_gpu_info_util_vulkan"),
-                                            q("//third_party/zlib:zlib")],
-                                   "frameworks": ["IOSurface.framework", "IOKit.framework"], "libs": ["z"]},
+                                            q("//third_party/zlib:zlib"), q("//third_party/perfetto/src/base:base")],
+                                   "frameworks": ["IOSurface.framework", "IOKit.framework"],
+                                   "libs": ["z", "//third_party/llvm-build/Release+Asserts/lib/clang/24/lib/darwin/libclang_rt.ios.a",
+                                            "//third_party/prebuilt/libfoo.a"]},
+    # tracing: gone from GN's description once angle_use_perfetto = false
+    q("//third_party/perfetto/src/base:base"): {"type": "source_set",
+                                                "sources": ["//third_party/perfetto/src/base/subprocess_posix.cc"]},
     q("//src/common:angle_common"): {"type": "source_set",
                                      "sources": ["//src/common/system_utils_posix.cpp", "//src/common/process_posix.cpp"]},
     q("//src/gpu_info_util:angle_gpu_info_util_vulkan"): {"type": "source_set",
@@ -81,6 +90,16 @@ targets = {
 }
 json.dump({"build_settings": {"build_dir": "//out/ios/", "default_toolchain": tc, "root_path": "/w/angle"},
            "targets": targets}, open(sys.argv[1], "w"), indent=1)
+EOF
+# the arguments the fake revision declares, with their defaults (args.gn turns Vulkan off; the
+# script must turn off the Perfetto and Vulkan system-info switches; tracing is off already)
+cat > "$T/fx/declared-args.txt" << 'EOF'
+angle_enable_metal = true
+angle_enable_vulkan = true
+angle_enable_vulkan_system_info = true
+angle_enable_trace = false
+angle_use_perfetto = true
+use_siso = true
 EOF
 
 # setup <dir> <variant>: a fake ANGLE checkout with its objects at out/ios, where GN puts them
@@ -118,6 +137,7 @@ setup() {
     "UNDEF _volkInitialize"
   o obj/src/third_party/volk/volk/volk.o "DEF _volkInitialize" "UNDEF _dlopen"
   o obj/third_party/zlib/zlib/inflate.o "DEF _inflate"
+  o obj/third_party/perfetto/src/base/base/subprocess_posix.o "DEF _perfetto_Spawn" "UNDEF _fork" "UNDEF _execve"
   o obj/tools/gen/gen/main.o "DEF _main" "UNDEF _system"
   o clang_x64/obj/tools/gen/gen/main.o "DEF _main" "UNDEF _fork"
 }
@@ -163,6 +183,17 @@ has "$out/LINK.txt" "-framework IOKit" "A (GN's frameworks)"
 has "$out/LINK.txt" "-lz" "A (GN's libraries)"
 has "$out/LINK.txt" "-framework UIKit" "A (the base list)"
 hasnt "$out/LINK.txt" "AppKit" "A (a build tool's framework)"
+hasnt "$out/LINK.txt" "//" "A (no source-tree path in LINK.txt)"
+has "$c" "LINK.txt: dropped: //third_party/llvm-build/Release+Asserts/lib/clang/24/lib/darwin/libclang_rt.ios.a (Chromium's clang runtime; Xcode's clang links its own)" A
+has "$c" "REVIEW: LINK.txt: dropped: //third_party/prebuilt/libfoo.a (a path in ANGLE's source tree)" A
+has "$c" "arguments turned off (declared by this revision, on by default): angle_use_perfetto angle_enable_vulkan_system_info" A
+has "$c" "  declared: angle_use_perfetto = false" A
+has "$c" "  declared: angle_enable_vulkan = false" A
+has "$out/args.gn" "angle_use_perfetto = false" "A (the final arguments)"
+has "$out/args.gn" "angle_enable_vulkan_system_info = false" "A (the final arguments)"
+hasnt "$c" "in the closure: //third_party/perfetto" "A (Perfetto gone with its switch)"
+has "$c" "in the closure: //src/third_party/volk:volk, through //:libGLESv2_static > //src/libANGLE:libANGLE > //src/gpu_info_util:angle_gpu_info_util_vulkan > //src/third_party/volk:volk" A
+has "$out/logs/closure-paths.txt" "//src/common:angle_common	//:libGLESv2_static > //src/libANGLE:libANGLE > //src/common:angle_common" A
 [ "$(grep -c 'IOSurface' "$out/LINK.txt")" = 1 ] && ok || bad "A: IOSurface twice in LINK.txt"
 has "$out/third-party.txt" "third_party/zlib: Zlib (LICENSE)" A
 has "$out/NOTICES.txt" "zlib's licence" A
@@ -192,12 +223,18 @@ has "$c" "FAIL: libangle.a imports _fork: src/common/process_posix.cpp" "C (attr
 has "$c" "FAIL: src/third_party/volk/volk.c: dlopen of an absolute path: 1:" "C (a kept loader's absolute dlopen fails)"
 has "$out/logs/probe-link.log" "symbol(s) not found" C
 
-run D FAKE_SIZE_FAIL=1
+run D FAKE_SIZE_FAIL=1 FAKE_NO_PERFETTO_ARG=1
 [ $rc -ne 0 ] && ok || bad "D: exit 0 with a failed size link"
 c="$out/checks.txt"
 has "$c" "FAIL: the size link failed; logs/size-link.log:" D
 has "$c" "  ld: symbol(s) not found for architecture arm64" D
-has "$c" "libangle.a: 7 of the closure's 11 objects" D
+# a revision with no Perfetto switch: Perfetto stays in the closure, named with its chain, and
+# out of the archive as nothing the entry points need reaches it
+has "$c" "arguments turned off (declared by this revision, on by default): angle_enable_vulkan_system_info" D
+has "$c" "in the closure: //third_party/perfetto/src/base:base, through //:libGLESv2_static > //src/libANGLE:libANGLE > //third_party/perfetto/src/base:base" D
+has "$c" "libangle.a: 7 of the closure's 12 objects" D
+has "$out/logs/left-out.txt" "obj/third_party/perfetto/src/base/base/subprocess_posix.o" D
+hasnt "$c" "imports _fork" "D (Perfetto left out)"
 
 run E FAKE_GN_FAIL=1
 [ $rc -ne 0 ] && ok || bad "E: exit 0 with no project.json"

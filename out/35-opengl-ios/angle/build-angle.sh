@@ -37,6 +37,15 @@ set -euo pipefail
 ANGLE_URL=https://chromium.googlesource.com/angle/angle
 ANGLE_COMMIT=751417514a521b2e92d6928260c62122138824d3   # head of chromium/8103 (Chromium 157), 2026-11-02
 DEPOT_TOOLS_URL=https://chromium.googlesource.com/chromium/tools/depot_tools.git
+# C1.1: switches for tracing (Perfetto, whose base library imports fork and exec) and for back
+# ends other than Metal. Each one this ANGLE revision declares and has on is turned off (args.gn
+# is the base; this list only adds to it, for names a revision may or may not have).
+ANGLE_OFF="angle_enable_trace angle_enable_trace_events angle_enable_trace_android_and_chrome
+ angle_enable_trace_android_logcat angle_use_perfetto angle_enable_perfetto angle_has_frame_capture
+ angle_has_histograms angle_enable_vulkan angle_enable_vulkan_system_info angle_use_vulkan_display
+ angle_use_vulkan_null_display angle_enable_vulkan_validation_layers angle_enable_vulkan_api_dump_layer
+ angle_enable_swiftshader angle_enable_gl angle_enable_gl_null angle_enable_null angle_enable_wgpu
+ angle_enable_d3d9 angle_enable_d3d11"
 
 [ $# -eq 3 ] || { echo "usage: $0 <work dir> <out dir> <ios|macos>" >&2; exit 2; }
 target=$3
@@ -131,6 +140,23 @@ mkdir -p "$build"
 } > "$build/args.gn"
 # --ide=json: GN also writes <build>/project.json, every target's description (C1.2 reads it)
 gn gen "$build" --ide=json
+# the arguments this revision declares, with their values: ANGLE_OFF's that are on go off, and
+# gn gen runs again
+gn args "$build" --list --short > "$work/args-list-$target.txt"
+off=""
+for a in $ANGLE_OFF; do
+    if grep -qx "$a = true" "$work/args-list-$target.txt"; then off="$off $a"; fi
+done
+if [ -n "$off" ]; then
+    {
+        echo ""
+        echo "# build-angle.sh: declared by this revision and on, turned off (tracing, back ends other than Metal)"
+        for a in $off; do echo "$a = false"; done
+    } >> "$build/args.gn"
+    gn gen "$build" --ide=json
+    gn args "$build" --list --short > "$work/args-list-$target.txt"
+fi
+echo "build-angle: turned off:${off:- nothing}"
 gn args "$build" --list --short --overrides-only > "$out/args.gn"
 echo "build-angle: args.gn"
 cat "$out/args.gn"
@@ -151,6 +177,11 @@ sdk_name=iphoneos
 if [ "$target" = ios ]; then cflags="-arch arm64 -miphoneos-version-min=17.0"; else cflags="-arch arm64 -mmacosx-version-min=13.0"; fi
 printf 'int main(void) { return 0; }\n' > "$work/size_empty.c"
 
+cp "$work/args-list-$target.txt" "$logs/gn-args-list.txt"
+note "arguments turned off (declared by this revision, on by default):${off:- none}"
+{ grep -E '^[a-z0-9_]*(trace|perfetto|vulkan|volk)[a-z0-9_]* = ' "$logs/gn-args-list.txt" || true; } \
+    | sed 's/^/  declared: /' | tee -a "$checks"
+
 # the link closure of both targets as GN describes it (project.json): every static library,
 # source set and group a program linking them links too, and their compiled sources' objects
 # (closure-*.tsv: object, source). Not ninja's graph: siso builds the out dir, and depot_tools'
@@ -164,6 +195,12 @@ if ! python3 -I "$here/angle_closure.py" gn-objects "$build/project.json" "$buil
 fi
 ncl=$(wc -l < "$work/closure-$target.tsv" | tr -d ' ')
 note "closure: $(tail -n 1 "$logs/gn-objects.log" | sed 's/^angle_closure: //')"
+# why a target is in the closure: the chain of deps from the two libraries (closure-paths.txt);
+# the ones for tracing and Vulkan are named here
+python3 -I "$here/angle_closure.py" gn-paths "$build/project.json" //:libEGL_static //:libGLESv2_static \
+    > "$logs/closure-paths.txt" 2>> "$logs/gn-objects.log" || true
+{ grep -iE 'perfetto|volk|vulkan|trace' "$logs/closure-paths.txt" || true; } | sed -n '1,12p' \
+    | while IFS="$tab" read -r l p; do note "in the closure: $l, through $p"; done
 nmiss=$({ grep -c '^no object: ' "$logs/gn-objects.log" || true; })
 [ "$nmiss" = 0 ] || note "REVIEW: compiled sources of the closure without an object (logs/gn-objects.log): $nmiss"
 
@@ -207,6 +244,13 @@ for h in EGL GLES2 GLES3 KHR; do cp -R "include/$h" "$out/include/"; done
 if python3 -I "$here/angle_closure.py" gn-link "$build/project.json" //:libEGL_static //:libGLESv2_static \
        > "$work/link-gn-$target.txt" 2> "$logs/gn-link.log"; then
     note "LINK.txt: the base list and what GN gives the link closure of libEGL_static and libGLESv2_static"
+    # left out: Chromium's clang runtime (Xcode's clang links its own), any other source-tree path
+    { grep '^dropped: ' "$logs/gn-link.log" || true; } | while read -r line; do
+        case "$line" in
+            *"clang runtime"*) note "LINK.txt: $line" ;;
+            *) note "REVIEW: LINK.txt: $line" ;;
+        esac
+    done
 else
     : > "$work/link-gn-$target.txt"
     note "REVIEW: angle_closure.py gn-link failed (logs/gn-link.log); LINK.txt is the base list"

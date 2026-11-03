@@ -56,7 +56,11 @@ PROJECT = {
         q("//src/common:angle_common"): {"type": "source_set", "weak_frameworks": ["MetalFX.framework"],
                                          "sources": ["//src/common/system_utils_posix.cpp", "//src/common/debug.h"]},
         q("//:angle_headers"): {"type": "group", "public_deps": [q("//:headers_impl")]},
-        q("//:headers_impl"): {"type": "source_set", "libs": ["/sdk/usr/lib/libz.tbd"]},
+        q("//:headers_impl"): {"type": "source_set",
+                               "libs": ["/sdk/usr/lib/libz.tbd",
+                                        "//third_party/llvm-build/Release+Asserts/lib/clang/24/lib/darwin/libclang_rt.osx.a",
+                                        "//third_party/prebuilt/libfoo.a"],
+                               "frameworks": ["//third_party/bar/Bar.framework"]},
         q("//src/gpu_info_util:gpu_info"): {"type": "static_library",
                                             "frameworks": ["Metal.framework", "CoreGraphics.framework"],
                                             "sources": ["//src/gpu_info_util/SystemInfo.cpp",
@@ -126,10 +130,17 @@ def desc():
 
 
 def test_gn_link():
-    flags, n = ac.gn_link(desc(), ["//:libEGL_static", "//:libGLESv2_static"])
+    flags, n, dropped = ac.gn_link(desc(), ["//:libEGL_static", "//:libGLESv2_static"])
     check(flags == ["-framework CoreGraphics", "-framework IOSurface", "-framework Metal",
                     "-framework QuartzCore", "-weak_framework MetalFX", "/sdk/usr/lib/libz.tbd", "-lc++"],
           "gn-link flags: %r" % flags)
+    check(dropped == [
+        ("//third_party/bar/Bar.framework", "a path in ANGLE's source tree"),
+        ("//third_party/llvm-build/Release+Asserts/lib/clang/24/lib/darwin/libclang_rt.osx.a",
+         "Chromium's clang runtime; Xcode's clang links its own"),
+        ("//third_party/prebuilt/libfoo.a", "a path in ANGLE's source tree"),
+    ], "gn-link leaves out the clang runtime and source-tree paths: %r" % dropped)
+    check(not any("//" in f for f in flags), "no source-tree path among the flags")
     check(n == 8, "closure size %d (EGL, GLESv2, libANGLE, common, gpu_info, translator, headers group and impl)" % n)
     check("-framework AppKit" not in flags and "-framework Cocoa" not in flags,
           "an action's tool and its libraries are not linked")
@@ -140,6 +151,18 @@ def test_gn_link():
             check(False, "%s refused" % bad)
         except KeyError:
             check(True, "")
+
+
+def test_gn_paths():
+    p = ac.gn_paths(desc(), ["//:libEGL_static", "//:libGLESv2_static"])
+    check(len(p) == 8, "a chain for each of the closure's 8 targets: %d" % len(p))
+    check(p["//:libGLESv2_static"] == ["//:libGLESv2_static"], "a start label is its own chain")
+    check(p["//:headers_impl"] == ["//:libGLESv2_static", "//src/libANGLE:libANGLE", "//:angle_headers", "//:headers_impl"],
+          "through a group's public deps: %r" % p["//:headers_impl"])
+    check("//tools:gen" not in p and "//tools:tool_lib" not in p, "an action's tool has no chain")
+    p = ac.gn_paths(desc(), ["//:libEGL_static"])
+    check(p["//src/common:angle_common"] == ["//:libEGL_static", "//:libGLESv2_static", "//src/libANGLE:libANGLE",
+                                             "//src/common:angle_common"], "the shortest chain from one start")
 
 
 def test_gn_objects():
@@ -231,6 +254,13 @@ def test_command_line():
         rc, out, err = run("gn-link", pj, "//:libEGL_static")
         check(rc == 0 and out.splitlines()[0] == "-framework CoreGraphics" and "8 targets" in err,
               "gn-link command: %d %r %r" % (rc, out, err))
+        check("dropped: //third_party/llvm-build/Release+Asserts/lib/clang/24/lib/darwin/libclang_rt.osx.a "
+              "(Chromium's clang runtime; Xcode's clang links its own)" in err and "//" not in out,
+              "gn-link names what it left out: %r" % err)
+        rc, out, _ = run("gn-paths", pj, "//:libEGL_static", "//:libGLESv2_static")
+        check(rc == 0 and "//src/common:angle_common\t//:libGLESv2_static > //src/libANGLE:libANGLE > "
+              "//src/common:angle_common" in out.splitlines() and len(out.splitlines()) == 8,
+              "gn-paths command: %r" % out)
         rc, out, err = run("gn-link", pj, "//:nope")
         check(rc == 2 and "//:nope" in err, "gn-link refuses an unknown label: %d %r" % (rc, err))
         rc, out, err = run("gn-objects", pj, b, "//:libEGL_static")
@@ -256,6 +286,7 @@ def test_command_line():
 
 test_load()
 test_gn_link()
+test_gn_paths()
 test_gn_objects()
 test_map_members()
 test_command_line()
