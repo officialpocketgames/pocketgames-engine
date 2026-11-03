@@ -177,9 +177,14 @@ case "$part" in
         # the app would lose opengl32.dll's tables (spec 12 clarification 8's regression).
         full=1
         run "build-angle.sh" bash "$src/angle/build-angle.sh" "$work/angle-src" "$work/angle" ios || full=0
-        for f in args.gn checks.txt third-party.txt NOTICES.txt; do
+        for f in args.gn checks.txt third-party.txt NOTICES.txt LINK.txt; do
             [ -f "$work/angle/$f" ] && cp "$work/angle/$f" "$dist/angle-$f"
         done
+        # the links' and tools' logs, the archive's members and what was left out (also on failure)
+        if [ -d "$work/angle/logs" ]; then
+            mkdir -p "$dist/angle-logs"
+            cp "$work/angle/logs/"* "$dist/angle-logs/" 2>/dev/null || true
+        fi
         run "build-gl4es.sh" bash "$src/build-gl4es.sh" "$work/gl4es" "$out/gl4es" ios || full=0
         [ -f "$out/gl4es/sources.txt" ] && cp "$out/gl4es/sources.txt" "$dist/gl4es-sources.txt"
         [ -f "$out/gl4es/LICENSE.gl4es" ] && cp "$out/gl4es/LICENSE.gl4es" "$dist/gl4es-LICENSE.txt"

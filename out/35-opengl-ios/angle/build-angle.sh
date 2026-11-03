@@ -9,17 +9,21 @@
 # or macOS arm64 (the render test, Part J3). Runs on macOS with Xcode.
 #
 # <out dir> receives:
-#   libangle.a       the objects of libEGL_static's and libGLESv2_static's whole dependency
-#                    closure in one archive (EGL and GLES entry points)
+#   libangle.a       the EGL and GLES entry points and what they need: of the objects of
+#                    libEGL_static's and libGLESv2_static's dependency closure, the ones a link
+#                    asking for every egl*/gl* function loads (C1.2; the rest is left out)
 #   include/         EGL, GLES2, GLES3, KHR
 #   args.gn          the final GN arguments (also printed)
 #   NOTICES.txt      ANGLE's licence and that of every third-party folder whose code is in the
 #                    archive; third-party.txt lists those folders and their licences
-#   LINK.txt         what linking the archive needs (frameworks, libc++)
-#   checks.txt       C1.3: imports, sources, selectors, size
+#   LINK.txt         what linking the archive needs (frameworks, libraries; GN's view added)
+#   checks.txt       C1.3: imports (with the sources that import them), sources, selectors, size
+#   logs/            the links' and tools' output, the archive's members with their sources
+#                    (archive-members.tsv), the objects left out (left-out.txt)
 # The script fails on a GPL or LGPL-3.0 folder, a forbidden import (ci/forbidden-imports.txt
-# "fail"), MAP_JIT / pthread_jit_write_protect / mprotect with PROT_EXEC / dlopen of an absolute
-# path in a compiled source, or an Objective-C selector the SDK's public headers don't declare.
+# "fail") of the archive or of a dead-stripped program linking it, MAP_JIT /
+# pthread_jit_write_protect / mprotect with PROT_EXEC / dlopen of an absolute path in a compiled
+# source, an Objective-C selector the SDK's public headers don't declare, or a failed link.
 #
 # Nothing in refs/ is read or written. The checkout and the build live in <work dir>; the
 # products in <out dir> carry a stamp of this script, args.gn and the target, and a second run
@@ -54,7 +58,7 @@ done
 mkdir -p "$1" "$2"
 work=$(cd "$1" && pwd)
 out=$(cd "$2" && pwd)
-stamp="$(cat "$0" "$here/args.gn" "$here/objc_selectors.py" | shasum -a 256 | cut -c1-16)-$target"
+stamp="$(cat "$0" "$here/args.gn" "$here/objc_selectors.py" "$here/angle_closure.py" | shasum -a 256 | cut -c1-16)-$target"
 if [ -f "$out/.stamp" ] && [ "$(cat "$out/.stamp")" = "$stamp" ] && [ -f "$out/libangle.a" ]; then
     echo "build-angle: $out already built ($stamp)"
     exit 0
@@ -132,34 +136,53 @@ cat "$out/args.gn"
 # ---------------------------------------------------------------- C1.2: build
 autoninja -C "$build" libEGL_static libGLESv2_static
 
-# the dependency closure of both targets: every object file ninja needs for them
-ninja -C "$build" -t inputs libEGL_static libGLESv2_static > "$work/inputs-$target.txt"
-grep -E '\.o$' "$work/inputs-$target.txt" | sort -u > "$work/objects-$target.txt"
-grep -E '\.(c|cc|cpp|m|mm)$' "$work/inputs-$target.txt" | sort -u > "$work/sources-$target.txt"
-nobj=$(wc -l < "$work/objects-$target.txt" | tr -d ' ')
-[ "$nobj" -gt 0 ] || { echo "build-angle: no objects found for the two targets" >&2; exit 1; }
-echo "build-angle: $nobj objects, $(wc -l < "$work/sources-$target.txt" | tr -d ' ') sources"
+logs="$out/logs"
+rm -rf "$logs"
+mkdir -p "$logs"
+checks="$out/checks.txt"
+: > "$checks"
+note() { echo "$*"; echo "$*" >> "$checks"; }
+failed=0
+tab=$(printf '\t')
+sdk_name=iphoneos
+[ "$target" = macos ] && sdk_name=macosx
+if [ "$target" = ios ]; then cflags="-arch arm64 -miphoneos-version-min=17.0"; else cflags="-arch arm64 -mmacosx-version-min=13.0"; fi
+printf 'int main(void) { return 0; }\n' > "$work/size_empty.c"
 
-# one archive; members renamed so no two share a name
+# the dependency closure of both targets: every object file ninja needs for them, in the default
+# toolchain (obj/...; a tool built for the build machine in a toolchain of its own is under
+# <toolchain>/obj/ and stays out)
+ninja -C "$build" -t inputs libEGL_static libGLESv2_static > "$work/inputs-$target.txt"
+{ grep -E '^obj/.*\.o$' "$work/inputs-$target.txt" || true; } | sort -u > "$work/closure-$target.txt"
+ncl=$(wc -l < "$work/closure-$target.txt" | tr -d ' ')
+[ "$ncl" -gt 0 ] || { echo "build-angle: no objects found for the two targets" >&2; exit 1; }
+echo "build-angle: $ncl objects in the closure"
+
+# the closure in one archive, members renamed so no two share a name (members-*.txt: member, object)
 objs="$work/objs-$target"
 rm -rf "$objs"
 mkdir -p "$objs"
+: > "$work/members-$target.txt"
 i=0
 while read -r o; do
     i=$((i + 1))
-    cp "$build/$o" "$objs/$(printf '%05d' "$i")_$(basename "$o")"
-done < "$work/objects-$target.txt"
-sdk_name=iphoneos
-[ "$target" = macos ] && sdk_name=macosx
-rm -f "$out/libangle.a"
-find "$objs" -name '*.o' | sort > "$work/filelist-$target.txt"
-xcrun -sdk "$sdk_name" libtool -static -o "$out/libangle.a" -filelist "$work/filelist-$target.txt" 2> "$work/libtool-$target.log" || {
-    cat "$work/libtool-$target.log"; exit 1; }
+    m="$(printf '%05d' "$i")_$(basename "$o")"
+    cp "$build/$o" "$objs/$m"
+    printf '%s\t%s\n' "$m" "$o" >> "$work/members-$target.txt"
+done < "$work/closure-$target.txt"
+closure="$work/libangle-closure-$target.a"
+rm -f "$closure"
+cut -f1 "$work/members-$target.txt" | sed "s|^|$objs/|" > "$work/filelist-closure-$target.txt"
+xcrun -sdk "$sdk_name" libtool -static -o "$closure" -filelist "$work/filelist-closure-$target.txt" 2> "$logs/libtool-closure.log" || {
+    cat "$logs/libtool-closure.log"; exit 1; }
 
 rm -rf "$out/include"
 mkdir -p "$out/include"
 for h in EGL GLES2 GLES3 KHR; do cp -R "include/$h" "$out/include/"; done
 
+# ---------------------------------------------------------------- C1.2: LINK.txt
+# what linking the two targets needs: the frameworks of the Metal backend, and what GN gives the
+# targets a program linking them links too (angle_closure.py gn-link)
 {
     echo "-framework Metal"
     echo "-framework QuartzCore"
@@ -170,18 +193,75 @@ for h in EGL GLES2 GLES3 KHR; do cp -R "include/$h" "$out/include/"; done
     [ "$target" = ios ] && echo "-framework UIKit"
     [ "$target" = macos ] && echo "-framework Cocoa"
     echo "-lc++"
-} > "$out/LINK.txt"
+} > "$work/link-base-$target.txt"
+if gn desc "$build" "//*" --format=json > "$work/gn-desc-$target.json" 2> "$logs/gn-desc.log" &&
+   python3 -I "$here/angle_closure.py" gn-link "$work/gn-desc-$target.json" //:libEGL_static //:libGLESv2_static \
+       > "$work/link-gn-$target.txt" 2>> "$logs/gn-desc.log"; then
+    note "LINK.txt: the base list and GN's link closure of libEGL_static and libGLESv2_static ($(tail -n 1 "$logs/gn-desc.log"))"
+else
+    : > "$work/link-gn-$target.txt"
+    note "REVIEW: gn desc or angle_closure.py gn-link failed (logs/gn-desc.log); LINK.txt is the base list"
+fi
+cat "$work/link-base-$target.txt" "$work/link-gn-$target.txt" | awk 'NF && !seen[$0]++' > "$out/LINK.txt"
+note "LINK.txt: $(tr '\n' ' ' < "$out/LINK.txt")"
+
+# ---------------------------------------------------------------- C1.2: the archive
+# libangle.a holds what the EGL and GLES entry points need. A probe program asks for every egl*
+# and gl* function the closure defines (-u) and every Objective-C class and category (-ObjC); the
+# members the linker loads (its -map) make the archive. What nothing there reaches stays out:
+# tools for the build machine, test and process helpers, code for backends that are off.
+{ nm -gU "$closure" 2>/dev/null || true; } | awk '{ print $NF }' | { grep -E '^_(egl|gl)[A-Z]' || true; } \
+    | sort -u > "$work/entry-$target.txt"
+nent=$(wc -l < "$work/entry-$target.txt" | tr -d ' ')
+note "entry points (egl*, gl*) the closure defines: $nent"
+sed 's/^/-Wl,-u,/' "$work/entry-$target.txt" > "$work/probe-u-$target.rsp"
+# shellcheck disable=SC2086,SC2046
+if [ "$nent" -gt 0 ] &&
+   xcrun -sdk "$sdk_name" clang $cflags -o "$work/probe-$target" "$work/size_empty.c" @"$work/probe-u-$target.rsp" \
+       -ObjC -Wl,-map,"$work/probe-$target.map" "$closure" $(cat "$out/LINK.txt") > "$logs/probe-link.log" 2>&1; then
+    python3 -I "$here/angle_closure.py" map-members "$work/probe-$target.map" "$(basename "$closure")" \
+        > "$work/kept-members-$target.txt"
+else
+    note "FAIL: the probe link (every entry point of the closure) failed; libangle.a is the whole closure. logs/probe-link.log:"
+    { grep -E 'error|Undefined|duplicate|ld:|warning: ignoring' "$logs/probe-link.log" || head -n 20 "$logs/probe-link.log"; } \
+        | sed -n '1,40p' | sed 's/^/  /' | tee -a "$checks"
+    failed=1
+    cut -f1 "$work/members-$target.txt" > "$work/kept-members-$target.txt"
+fi
+awk -F "$tab" 'NR == FNR { keep[$1] = 1; next } ($1 in keep)' "$work/kept-members-$target.txt" "$work/members-$target.txt" \
+    > "$work/kept-$target.txt"
+awk -F "$tab" 'NR == FNR { keep[$1] = 1; next } !($1 in keep) { print $2 }' "$work/kept-members-$target.txt" \
+    "$work/members-$target.txt" > "$logs/left-out.txt"
+nkept=$(wc -l < "$work/kept-$target.txt" | tr -d ' ')
+[ "$nkept" -gt 0 ] || { echo "build-angle: the probe link loaded no member of the closure" >&2; exit 1; }
+note "libangle.a: $nkept of the closure's $ncl objects (left out: logs/left-out.txt, by folder:"
+sed -E 's|^obj/||; s|/[^/]*$||' "$logs/left-out.txt" | sort | uniq -c | sort -rn | sed -n '1,25p' | sed 's/^/  /' | tee -a "$checks"
+note "  )"
+cut -f2 "$work/kept-$target.txt" > "$work/kept-objects-$target.txt"
+cut -f1 "$work/kept-$target.txt" | sed "s|^|$objs/|" > "$work/filelist-$target.txt"
+rm -f "$out/libangle.a"
+xcrun -sdk "$sdk_name" libtool -static -o "$out/libangle.a" -filelist "$work/filelist-$target.txt" 2> "$logs/libtool.log" || {
+    cat "$logs/libtool.log"; exit 1; }
+
+# each member's source (ninja's compile commands): logs/archive-members.tsv is member, object, source
+ninja -C "$build" -t compdb > "$work/compdb-$target.json" 2> "$logs/compdb.log" || true
+python3 -I "$here/angle_closure.py" sources "$work/compdb-$target.json" "$work/kept-objects-$target.txt" \
+    > "$work/kept-sources-$target.tsv" 2>> "$logs/compdb.log" || : > "$work/kept-sources-$target.tsv"
+awk -F "$tab" -v OFS="$tab" 'NR == FNR { src[$1] = $2; next } { print $1, $2, (($2 in src) ? src[$2] : "?") }' \
+    "$work/kept-sources-$target.tsv" "$work/kept-$target.txt" > "$logs/archive-members.tsv"
+{ cut -f3 "$logs/archive-members.tsv" | grep -v '^?$' || true; } | sort -u > "$work/sources-$target.txt"
+nsrc=$(wc -l < "$work/sources-$target.txt" | tr -d ' ')
+if [ "$nsrc" -eq 0 ]; then
+    { grep -E '\.(c|cc|cpp|m|mm)$' "$work/inputs-$target.txt" || true; } | sort -u > "$work/sources-$target.txt"
+    note "REVIEW: no member's source found in ninja's compile commands (logs/compdb.log); the source checks read all $(wc -l < "$work/sources-$target.txt" | tr -d ' ') sources of the closure"
+else
+    note "sources of the archive's members: $nsrc"
+fi
 
 # ---------------------------------------------------------------- spec 35 A1: licences
-checks="$out/checks.txt"
-: > "$checks"
-note() { echo "$*"; echo "$*" >> "$checks"; }
-failed=0
-
 # the third-party folders whose objects are in the archive: obj/<source dir>/... mirrors the
 # source tree; the folder is the nearest one with a README.chromium
-: > "$work/tp-$target.txt"
-sed -n 's|^obj/||p' "$work/objects-$target.txt" | while read -r o; do
+sed -n 's|^obj/||p' "$work/kept-objects-$target.txt" | while read -r o; do
     d=$(dirname "$o")
     while [ "$d" != . ] && [ "$d" != / ]; do
         case "$d" in third_party/*) ;; *) break ;; esac
@@ -218,18 +298,38 @@ done < "$work/tp-$target.txt"
 note "third-party folders in the archive: $(wc -l < "$work/tp-$target.txt" | tr -d ' ') (third-party.txt)"
 
 # ---------------------------------------------------------------- C1.3: imports
-nm -u "$out/libangle.a" 2>/dev/null | grep -E '^_' | sort -u > "$work/imports-$target.txt"
-while read -r sym verdict; do
-    case "$sym" in ''|'#'*) continue ;; esac
-    pat=$sym
-    case "$pat" in *'*') prefix=${pat%'*'}; hits=$(grep -E "^${prefix}" "$work/imports-$target.txt" || true) ;;
-                   *) hits=$(grep -xF "$pat" "$work/imports-$target.txt" || true) ;; esac
-    [ -n "$hits" ] || continue
-    if [ "$verdict" = fail ]; then note "FAIL: import $hits"; failed=1
-    else note "REVIEW: import $hits"; fi
-done < "$repo/ci/forbidden-imports.txt"
+# who imports what (symbol, object, source), to name the source of a hit
+: > "$work/member-imports-$target.tsv"
+while IFS="$tab" read -r m o s; do
+    { nm -u "$objs/$m" 2>/dev/null || true; } | awk -v o="$o" -v s="$s" -v OFS="$tab" 'NF { print $1, o, s }' \
+        >> "$work/member-imports-$target.tsv"
+done < "$logs/archive-members.tsv"
+importers() {
+    awk -F "$tab" -v h="$1" '$1 == h { print $3 " (" $2 ")" }' "$work/member-imports-$target.tsv" | sort -u | sed -n '1,6p' \
+        | paste -s -d ';' -
+}
+
+# forbidden <imports file> <what>: ci/forbidden-imports.txt against a list of imports; a "fail"
+# entry fails the build, any other is listed for review; a hit of the archive names its sources
+forbidden() {
+    while read -r sym verdict; do
+        verdict=${verdict%$'\r'}   # a checkout with CRLF line ends
+        case "$sym" in ''|'#'*) continue ;; esac
+        case "$sym" in *'*') hits=$(grep -E "^${sym%'*'}" "$1" || true) ;;
+                       *) hits=$(grep -xF "$sym" "$1" || true) ;; esac
+        for h in $hits; do
+            where=""
+            [ "$2" = libangle.a ] && where=": $(importers "$h")"
+            if [ "$verdict" = fail ]; then note "FAIL: $2 imports $h$where"; failed=1
+            else note "REVIEW: $2 imports $h$where"; fi
+        done
+    done < "$repo/ci/forbidden-imports.txt"
+}
+
+{ nm -u "$out/libangle.a" 2>/dev/null || true; } | { grep -E '^_' || true; } | sort -u > "$work/imports-$target.txt"
+forbidden "$work/imports-$target.txt" libangle.a
 if grep -qx '_dlopen' "$work/imports-$target.txt"; then
-    note "REVIEW: _dlopen is imported (the sources that call it are listed below)"
+    note "REVIEW: _dlopen is imported by: $(importers _dlopen)"
 fi
 
 # ---------------------------------------------------------------- C1.3: compiled sources
@@ -257,11 +357,11 @@ note "selectors declared in the SDK's Metal/QuartzCore/Foundation/IOSurface/Core
 ot="$work/otool-$target"
 rm -rf "$ot"
 mkdir -p "$ot"
-for o in "$objs"/*.o; do
-    n=$(basename "$o" .o)
-    otool -v -s __TEXT __objc_methname "$o" > "$ot/$n.methname" 2>/dev/null || true
-    otool -ov "$o" > "$ot/$n.ov" 2>/dev/null || true
-done
+while IFS="$tab" read -r m o s; do
+    n=${m%.o}
+    otool -v -s __TEXT __objc_methname "$objs/$m" > "$ot/$n.methname" 2>/dev/null || true
+    otool -ov "$objs/$m" > "$ot/$n.ov" 2>/dev/null || true
+done < "$logs/archive-members.tsv"
 if python3 -I "$here/objc_selectors.py" check "$work/sdk-selectors-$target.txt" "$ot" > "$work/unknown-selectors-$target.txt"; then
     note "selectors: every selector the archive uses is declared in the SDK's public headers"
 else
@@ -270,9 +370,8 @@ else
     failed=1
 fi
 
-# ---------------------------------------------------------------- C1.3: size
+# ---------------------------------------------------------------- C1.3: size, and the linked program
 note "libangle.a: $(ls -l "$out/libangle.a" | awk '{print $5}') bytes"
-if [ "$target" = ios ]; then cflags="-arch arm64 -miphoneos-version-min=17.0"; else cflags="-arch arm64 -mmacosx-version-min=13.0"; fi
 cat > "$work/size_main.c" <<'EOF'
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
@@ -283,19 +382,29 @@ int main( int argc, char **argv )
     return argc > 99 ? (int)(long)keep[argc % 3] : 0;
 }
 EOF
-printf 'int main(void) { return 0; }\n' > "$work/size_empty.c"
+# dead-stripped, as the app is linked
 # shellcheck disable=SC2086,SC2046
-if xcrun -sdk "$sdk_name" clang $cflags -I"$out/include" -o "$work/size_with" "$work/size_main.c" "$out/libangle.a" $(cat "$out/LINK.txt") 2> "$work/size-link-$target.log" &&
-   xcrun -sdk "$sdk_name" clang $cflags -o "$work/size_without" "$work/size_empty.c"; then
+if xcrun -sdk "$sdk_name" clang $cflags -Wl,-dead_strip -I"$out/include" -o "$work/size_with" "$work/size_main.c" \
+       "$out/libangle.a" $(cat "$out/LINK.txt") > "$logs/size-link.log" 2>&1 &&
+   xcrun -sdk "$sdk_name" clang $cflags -Wl,-dead_strip -o "$work/size_without" "$work/size_empty.c" >> "$logs/size-link.log" 2>&1; then
     with=$(stat -f %z "$work/size_with")
     without=$(stat -f %z "$work/size_without")
-    note "the app binary grows by about $(( (with - without) / 1024 )) KB when it links ANGLE (an executable that uses EGL and GLES)"
+    note "the app binary grows by about $(( (with - without) / 1024 )) KB when it links ANGLE (an executable that uses EGL and GLES, dead-stripped)"
+    { nm -u "$work/size_with" 2>/dev/null || true; } | { grep -E '^_' || true; } | sort -u > "$work/linked-imports-$target.txt"
+    before=$failed
+    failed=0
+    forbidden "$work/linked-imports-$target.txt" "the linked program"
+    [ $failed -eq 0 ] && note "the linked program imports nothing ci/forbidden-imports.txt fails"
+    [ "$before" -ne 0 ] && failed=1
 else
-    note "REVIEW: the size link failed: $(grep -m 1 error "$work/size-link-$target.log" || true)"
+    note "FAIL: the size link failed; logs/size-link.log:"
+    { grep -E 'error|Undefined|duplicate|ld:|warning: ignoring' "$logs/size-link.log" || head -n 20 "$logs/size-link.log"; } \
+        | sed -n '1,40p' | sed 's/^/  /' | tee -a "$checks"
+    failed=1
 fi
 
 if [ $failed -ne 0 ]; then
-    echo "build-angle: checks failed (see $checks)" >&2
+    echo "build-angle: checks failed (see $checks; logs in $logs)" >&2
     exit 1
 fi
 echo "$stamp" > "$out/.stamp"

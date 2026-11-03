@@ -421,15 +421,24 @@ jobs:
         run: bash out/35-opengl-ios/build-gl4es.sh "$RUNNER_TEMP/work/gl4es" "$RUNNER_TEMP/work/gl4es-macos" macos
       - name: Render test
         run: sh out/35-opengl-ios/tests/macos/run-render-test.sh "$RUNNER_TEMP/work/angle-macos" "$RUNNER_TEMP/work/gl4es-macos" "$RUNNER_TEMP/work/render"
+      - name: Collect ANGLE's and gl4es's checks and logs (also on failure)
+        if: always()
+        run: |
+          c="$GITHUB_WORKSPACE/opengl-macos-checks"
+          mkdir -p "$c"
+          a="$RUNNER_TEMP/work/angle-macos"
+          ls -la "$a" "$a/logs" || true
+          cp "$a"/*.txt "$a/args.gn" "$c/" 2>/dev/null || true
+          [ -d "$a/logs" ] && cp -R "$a/logs" "$c/angle-logs"
+          cp "$RUNNER_TEMP/work/gl4es-macos/sources.txt" "$c/gl4es-sources.txt" 2>/dev/null || true
+          [ -f "$a/checks.txt" ] && { echo "== checks.txt"; cat "$a/checks.txt"; }
+          ls -la "$c"
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: opengl-macos-checks
-          path: |
-            ${{ runner.temp }}/work/angle-macos/*.txt
-            ${{ runner.temp }}/work/angle-macos/args.gn
-            ${{ runner.temp }}/work/gl4es-macos/sources.txt
-          if-no-files-found: ignore
+          path: opengl-macos-checks
+          if-no-files-found: warn
 
   # 7. spec 35 J4: the Windows OpenGL test programs, i686 and x86-64, with spec 19's pinned
   #    llvm-mingw (Linux asset). Built only: they run on the device, in a test build.

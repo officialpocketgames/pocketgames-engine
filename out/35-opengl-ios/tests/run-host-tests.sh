@@ -10,6 +10,8 @@
 #   4. the generator's type classification (G1), with Perl            test-wow-classify.pl
 #      and its buffer-offset table against the registry (GL_REGISTRY)   test-offset-table.pl
 #   5. ANGLE's selector check, with Python 3 (C1.3)                    test_selectors.py
+#      what goes into libangle.a and LINK.txt (C1.2)                   test_angle_closure.py
+#      build-angle.sh end to end with fake Apple and GN tools (C1)     test-build-angle-fake.sh
 #   6. with WINE_BUILD (a host Wine build dir, ci/wine-host-build.sh): -fsyntax-only of the
 #      Wine-dependent files (opengl32's unix_wgl.c, the generated unix_thunks.c and
 #      opengl_ios*.c; win32u's opengl_ios.c through out/12-win32u-ios/tests/syntax-check-patched.sh)
@@ -83,8 +85,12 @@ fi
 if command -v python3 >/dev/null 2>&1; then
   if python3 -I -B "$HERE/test_selectors.py"; then echo "PASS test_selectors"
   else echo "FAIL test_selectors"; exit 1; fi
+  if python3 -I -B "$HERE/test_angle_closure.py"; then echo "PASS test_angle_closure"
+  else echo "FAIL test_angle_closure"; exit 1; fi
+  if TMPDIR="$OUT" sh "$HERE/test-build-angle-fake.sh"; then echo "PASS test-build-angle-fake"
+  else echo "FAIL test-build-angle-fake"; exit 1; fi
 else
-  echo "SKIPPED test_selectors (no python3)"
+  echo "SKIPPED test_selectors, test_angle_closure, test-build-angle-fake (no python3)"
 fi
 
 # 6
