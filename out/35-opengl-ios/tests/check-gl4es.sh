@@ -9,8 +9,9 @@
 # compiles every source of the C2 build (src/CMakeLists.txt's GL_SRC and glx/hardext.c) with
 # build-gl4es.sh's options and -fsyntax-only. It proves that the changes compile and that the
 # printf redirection of gl4es_ios_config.h goes into every file; the iOS build itself (and its
-# export, exit and print checks) runs in the CI. Linux is not Darwin: the __APPLE__ branches
-# are not taken here. Environment: CC (default cc).
+# export, exit and print checks) runs in the CI. Linux is not Darwin: with clang, a second pass
+# for a Darwin target (the __APPLE__ branches, and what Darwin rejects) uses the host's C headers,
+# so it proves no more than that. Environment: CC (default cc).
 
 set -eu
 [ $# -eq 2 ] || { echo "usage: $0 <gl4es source> <work dir>" >&2; exit 2; }
@@ -48,6 +49,33 @@ for f in $files; do
   fi
 done
 
+# Darwin rejects some constructs whatever the SDK (C2: __attribute__((alias)), "aliases are not
+# supported on darwin"). With clang, every source again for a Darwin target of the host's
+# architecture, against the host's C headers; only errors in gl4es's own files count (glibc's
+# headers aren't made for a Darwin target: its nullability macros clash, __float128 fails).
+darwin=""
+if $CC --version 2>/dev/null | grep -qi clang; then
+  arch=$(uname -m)
+  case "$arch" in aarch64) darch=arm64 ;; *) darch=$arch ;; esac
+  res=$($CC -print-resource-dir)/include
+  for f in $files; do
+    $CC --target="$darch-apple-macos13" -U__nonnull -U__nullable -nostdinc -isystem "$res" \
+        -isystem "/usr/include/$arch-linux-gnu" -isystem /usr/include \
+        -std=gnu11 -fsyntax-only -w -DGL4ES_IOS -include "$work/src/gl/gl4es_ios_config.h" \
+        -DNOX11 -DNOEGL -DNO_LOADER -DNO_GBM -DSTATICLIB -DNO_INIT_CONSTRUCTOR -DDEFAULT_ES=2 -DNDEBUG \
+        -I"$work/include" -I"$work/src/util" -I"$work/src/glx" -I"$work/src/gl" \
+        "$work/src/$f" > "$work/darwin.log" 2>&1 || true
+    if grep -E "^$work/.*error" "$work/darwin.log" > "$work/darwin-errors.txt"; then
+      head -n 5 "$work/darwin-errors.txt"
+      echo "FAIL check-gl4es: src/$f doesn't compile for a Darwin target"
+      exit 1
+    fi
+  done
+  darwin="; for $darch-apple-macos13 too"
+else
+  echo "SKIPPED check-gl4es Darwin pass (needs clang; CC=$CC)"
+fi
+
 # the redirection reaches every file: no gl4es source may print once preprocessed (printf,
 # fprintf to stdout/stderr, puts, vprintf)
 for f in $files; do
@@ -64,4 +92,4 @@ for f in $files; do
     exit 1
   fi
 done
-echo "PASS check-gl4es ($n sources compile with the C3 changes; none prints)"
+echo "PASS check-gl4es ($n sources compile with the C3 changes$darwin; none prints)"

@@ -330,9 +330,13 @@ typedef void (*PFN_vkVoidFunction)( void );
 extern PFN_vkVoidFunction vkGetInstanceProcAddr( void *instance, const char *name );
 int main( void ) { return vkGetInstanceProcAddr( 0, "vkCreateInstance" ) ? 0 : 1; }
 EOF
-if ! xcrun --sdk iphoneos clang++ -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 -Wl,-dead_strip \
-        "$work/size-test.c" "$out/libmoltenvk.a" -framework Metal -framework QuartzCore -framework IOSurface \
-        -framework Foundation -framework CoreGraphics -framework UIKit -lc++ -o "$work/size-test" > "$logs/size-test.log" 2>&1; then
+# compiled as C (clang++ would treat the .c as C++ and mangle the call), linked by clang++ for
+# MoltenVK's C++ runtime
+if ! { xcrun --sdk iphoneos clang -x c -std=c11 -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 \
+          -c "$work/size-test.c" -o "$work/size-test.o" &&
+       xcrun --sdk iphoneos clang++ -arch arm64 -isysroot "$SDK" -miphoneos-version-min=17.0 -Wl,-dead_strip \
+          "$work/size-test.o" "$out/libmoltenvk.a" -framework Metal -framework QuartzCore -framework IOSurface \
+          -framework Foundation -framework CoreGraphics -framework UIKit -lc++ -o "$work/size-test"; } > "$logs/size-test.log" 2>&1; then
     cat "$logs/size-test.log"
     die "the size test link failed"
 fi

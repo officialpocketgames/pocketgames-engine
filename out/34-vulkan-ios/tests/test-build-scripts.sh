@@ -3,7 +3,8 @@
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # Spec 34 Part M5 on the host: what of the iOS build can be checked without a Mac.
-#   1. every script of the part, ci/ios-part.sh and ci/link-check.sh pass `sh -n`
+#   1. every script of the part, ci/ios-part.sh and ci/link-check.sh pass `sh -n`; no .c file is
+#      given to clang++ (it would be compiled as C++)
 #   2. fetch-moltenvk.sh --print gives the pins (UTM's forks, clarification 1); build-moltenvk.sh
 #      --dry-run on fake MoltenVK and SPIRV-Cross trees prints the build with arm64, iOS 17.0,
 #      MVK_USE_METAL_PRIVATE_API=0, the patch series and the mesh-path check, and refuses a tree at
@@ -33,6 +34,20 @@ for s in "$PART"/*.sh "$PART"/layer/*.sh "$PART"/winevulkan-unix/*.sh "$PART"/te
          "$PART"/tests/common/*.sh "$PART"/tests/macos/*.sh "$REPO/ci/ios-part.sh" "$REPO/ci/link-check.sh"; do
     sh -n "$s" || bad "sh -n $s"
 done
+# a C source given to clang++ is compiled as C++ (its calls mangled: the first CI run's size test
+# couldn't find vkGetInstanceProcAddr); C goes through clang, clang++ only links or compiles .mm
+c_to_cxx() {
+    # each command with its continuation lines joined, comments left out
+    awk '/^[[:space:]]*#/ { next }
+         { if (sub(/\\$/, "")) { cmd = cmd $0; next } print cmd $0; cmd = "" }' "$1" |
+        grep 'clang++' | grep -E '\.c("|[[:space:]]|$)' || true
+}
+for s in "$PART"/*.sh "$PART"/tests/macos/*.sh "$REPO/ci/link-check.sh"; do
+    [ -z "$(c_to_cxx "$s")" ] || bad "$(basename "$s"): a .c file given to clang++: $(c_to_cxx "$s" | head -n 1)"
+done
+# the guard itself, on the first CI run's size test
+printf '%s\n' 'if ! xcrun --sdk iphoneos clang++ -arch arm64 -Wl,-dead_strip \' '        "$work/size-test.c" -lc++ -o x; then' > "$T/cxx.sh"
+[ -n "$(c_to_cxx "$T/cxx.sh")" ] || bad "the .c-through-clang++ guard misses a .c on a continuation line"
 
 # ---- 2
 pin=$(sh "$PART/fetch-moltenvk.sh" --print)

@@ -69,6 +69,23 @@ fi
 export PATH="$depot:$PATH"
 export DEPOT_TOOLS_UPDATE=0
 echo "build-angle: depot_tools $(git -C "$depot" rev-parse HEAD)"
+# depot_tools bootstraps itself (its Python, CIPD's tools, python3_bin_reldir.txt) in the update
+# step its wrappers run first, which DEPOT_TOOLS_UPDATE=0 skips, and ANGLE's DEPS hook
+# update_depot_tools_toggle --disable turns off. Bootstrap the clone once without updating it:
+# the toggle first (so nothing pulls), then ensure_bootstrap; gclient's hooks then all run (the
+# siso configuration needs that Python, lastchange, the flex/bison download, the toolchain check).
+if [ ! -f "$depot/python3_bin_reldir.txt" ]; then
+    [ -f "$depot/update_depot_tools_toggle.py" ] && python3 "$depot/update_depot_tools_toggle.py" --disable
+    if [ -x "$depot/ensure_bootstrap" ]; then
+        "$depot/ensure_bootstrap"
+    else
+        # older layout: the update step bootstraps; the toggle above keeps it from pulling
+        DEPOT_TOOLS_UPDATE=1 "$depot/update_depot_tools"
+    fi
+fi
+[ -f "$depot/python3_bin_reldir.txt" ] || {
+    echo "build-angle: depot_tools at $depot isn't bootstrapped (no python3_bin_reldir.txt)" >&2; exit 1; }
+echo "build-angle: depot_tools bootstrapped (python $(cat "$depot/python3_bin_reldir.txt"))"
 
 src="$work/angle"
 if [ ! -d "$src/.git" ]; then
