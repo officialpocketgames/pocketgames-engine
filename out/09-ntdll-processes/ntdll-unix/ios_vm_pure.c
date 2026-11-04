@@ -493,14 +493,127 @@ int ios_alloc_log_kind( uint32_t type, int base_given, uint32_t status )
     return IOS_ALLOC_LOG_NONE;
 }
 
-int ios_alloc_log_take( unsigned int *counter )
+/* clarification 14 B: lines are counted when written; the 513th is the suppression line */
+static void alloc_log_write( struct ios_alloc_log *log, ios_alloc_line_fn out, void *ctx, const char *line )
 {
-    unsigned int n;
+    char buf[96];
 
-    if (__atomic_load_n( counter, __ATOMIC_RELAXED ) > IOS_ALLOC_LOG_CAP) return IOS_ALLOC_LINE_QUIET;
-    n = __atomic_fetch_add( counter, 1, __ATOMIC_RELAXED );
-    if (n < IOS_ALLOC_LOG_CAP) return IOS_ALLOC_LINE_LOG;
-    return n == IOS_ALLOC_LOG_CAP ? IOS_ALLOC_LINE_SUPPRESS : IOS_ALLOC_LINE_QUIET;
+    if (log->lines < IOS_ALLOC_LOG_CAP) out( ctx, line );
+    else if (log->lines == IOS_ALLOC_LOG_CAP)
+    {
+        snprintf( buf, sizeof(buf), "alloc: further allocation lines suppressed (%u so far)", log->lines );
+        out( ctx, buf );
+    }
+    else return;
+    log->lines++;
+}
+
+void ios_alloc_log_flush( struct ios_alloc_log *log, ios_alloc_line_fn out, void *ctx )
+{
+    const struct ios_alloc_event *ev = &log->first;
+    char line[256], range[64] = "";
+    uint64_t step;
+
+    if (!log->count) return;
+    if (log->count == 1)
+    {
+        if (ev->has_range) snprintf( range, sizeof(range), " range %#llx-%#llx",
+                                     (unsigned long long)ev->range_low, (unsigned long long)ev->range_high );
+        snprintf( line, sizeof(line),
+                  "alloc failed: base %#llx size %#llx type %#x prot %#x zero_bits %llu status %#x%s",
+                  (unsigned long long)ev->base, (unsigned long long)ev->size, ev->type, ev->prot,
+                  (unsigned long long)ev->zero_bits, ev->status, range );
+    }
+    else
+    {
+        step = log->step < 0 ? (uint64_t)0 - (uint64_t)log->step : (uint64_t)log->step;
+        snprintf( line, sizeof(line),
+                  "alloc failed x%u: bases %#llx..%#llx step %s%#llx size %#llx type %#x prot %#x status %#x",
+                  log->count, (unsigned long long)ev->base, (unsigned long long)log->last,
+                  log->step < 0 ? "-" : "", (unsigned long long)step, (unsigned long long)ev->size,
+                  ev->type, ev->prot, ev->status );
+    }
+    log->count = 0;
+    alloc_log_write( log, out, ctx, line );
+}
+
+/* whether ev continues the pending run */
+static int alloc_run_continues( const struct ios_alloc_log *log, const struct ios_alloc_event *ev )
+{
+    const struct ios_alloc_event *first = &log->first;
+    int64_t step = (int64_t)(ev->base - log->last);
+
+    if (!log->count) return 0;
+    if (ev->size != first->size || ev->type != first->type || ev->prot != first->prot ||
+        ev->status != first->status) return 0;
+    return log->count == 1 || step == log->step;
+}
+
+void ios_alloc_log_event( struct ios_alloc_log *log, int kind, const struct ios_alloc_event *ev,
+                          ios_alloc_line_fn out, void *ctx )
+{
+    char line[256];
+
+    if (kind == IOS_ALLOC_LOG_FAILED && alloc_run_continues( log, ev ))
+    {
+        if (log->count == 1) log->step = (int64_t)(ev->base - log->last);
+        log->last = ev->base;
+        if (++log->count >= IOS_ALLOC_RUN_MAX) ios_alloc_log_flush( log, out, ctx );
+        return;
+    }
+    ios_alloc_log_flush( log, out, ctx );   /* this call doesn't continue the run: it ends */
+    if (kind == IOS_ALLOC_LOG_FAILED)
+    {
+        log->first = *ev;
+        log->last = ev->base;
+        log->step = 0;
+        log->count = 1;
+    }
+    else if (kind == IOS_ALLOC_LOG_FIXED)
+    {
+        snprintf( line, sizeof(line), "alloc at %#llx size %#llx type %#x prot %#x: status %#x, got %#llx size %#llx",
+                  (unsigned long long)ev->base, (unsigned long long)ev->size, ev->type, ev->prot,
+                  ev->status, (unsigned long long)ev->got, (unsigned long long)ev->got_size );
+        alloc_log_write( log, out, ctx, line );
+    }
+}
+
+/* ---------- clarification 14 A: memory outside Wine's views ---------- */
+
+#define IOS_64K 0x10000ull
+
+int ios_free_region_answer( uint64_t base, uint64_t gap_end, int wine_reserved, int host_found,
+                            uint64_t host_start, uint64_t host_end, uint64_t *alloc_base,
+                            uint64_t *region_end )
+{
+    uint64_t block = base & ~(IOS_64K - 1), free_end, end;
+
+    *alloc_base = 0;
+    *region_end = gap_end;
+    if (wine_reserved) return IOS_FREE_UPSTREAM;
+
+    if (host_found && host_start <= base && base < host_end)
+    {
+        end = (host_end + IOS_64K - 1) & ~(IOS_64K - 1);
+        *alloc_base = host_start & ~(IOS_64K - 1);
+        *region_end = end < gap_end ? end : gap_end;
+        return IOS_FREE_RESERVED;
+    }
+
+    free_end = host_found ? host_start & ~(IOS_64K - 1) : gap_end;
+    if (free_end > gap_end) free_end = gap_end;
+    if (free_end >= block + IOS_64K && free_end > base)
+    {
+        *region_end = free_end;
+        return IOS_FREE_FREE;
+    }
+
+    /* less than one 64 KB block left: in use */
+    end = host_found ? (host_end + IOS_64K - 1) & ~(IOS_64K - 1) : gap_end;
+    if (end < block + IOS_64K) end = block + IOS_64K;
+    *alloc_base = block;
+    *region_end = end < gap_end ? end : gap_end;
+    return IOS_FREE_RESERVED;
 }
 
 /* ---------- Part E4: what a window holds ---------- */

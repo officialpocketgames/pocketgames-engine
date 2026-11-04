@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
-// Spec 07 clarification 3: the call-statistics switch, the one counter table,
-// the period clock and the report line (see d3d9_call_stats.hpp).
+// Spec 07 clarifications 3 and 4: the call-statistics switch, the one counter table,
+// the period clock and the report lines (see d3d9_call_stats.hpp).
 
 #include "d3d9_call_stats.hpp"
 
@@ -15,6 +15,7 @@
 #include <atomic>
 #include <chrono>
 #include <string>
+#include <vector>
 
 namespace dxmt::d9cs {
 
@@ -62,12 +63,13 @@ NotePresent(unsigned id) {
   const uint64_t now = NowNs();
   g_table.startIfIdle(now);
   if (g_table.reportDue(now) && !g_reporting.exchange(true, std::memory_order_acquire)) {
-    std::string line;
+    std::vector<std::string> lines;
     // Checked again: another thread's Present may have reported meanwhile.
     if (g_table.reportDue(now))
-      line = g_table.takeReport(now);
+      lines = g_table.takeReport(now);
     g_reporting.store(false, std::memory_order_release);
-    if (!line.empty())
+    // Clarification 4: a summary line and short "top" lines, one message each.
+    for (const auto &line : lines)
       Logger::info(line);
   }
   g_table.countPresent();

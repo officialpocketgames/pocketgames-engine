@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
-// Spec 07 clarification 3 (call statistics): the counter table and its report
-// line, free of Windows, Metal and device types so the host test
+// Spec 07 clarifications 3 and 4 (call statistics): the counter table and its report
+// lines, free of Windows, Metal and device types so the host test
 // (tests/test_d3d9_call_stats.cpp) builds it as it is. d3d9_call_stats.{hpp,cpp}
 // own the one table the frontend counts into, the switch, the clock and the log.
 
@@ -41,16 +41,22 @@ inline const char *const kD9CallNames[kD9CallCount] = {
 constexpr uint64_t kReportPeriodNs = 10ull * 1000 * 1000 * 1000;
 /* The report lists this many of the busiest pairs. */
 constexpr size_t kReportTop = 16;
+/* Clarification 4: at most this many pairs per report line, so every line
+   stays far under Wine's debug buffer. */
+constexpr size_t kReportPairsPerLine = 4;
 
-/* The report line for one period of `elapsed_ns`:
-     d3d9 calls: <total>/s, <n>/s from other threads, <calls per Present> per
-     Present (<Presents>/s); top: <Interface>::<Method> <n>/s (<m>/Present), ...
-   `counts` and `names` have `n` entries. The list holds the `top` busiest pairs
-   that were called at all, busiest first, ties in name order. Per-second
-   figures are rounded to whole numbers, per-Present ones to one decimal place.
-   A period without a Present says "no Present" once, in place of the header's
-   per-Present figures, and the pairs carry no per-Present figure. */
-inline std::string
+/* The report lines for one period of `elapsed_ns` (spec 07 clarifications 3
+   and 4):
+     d3d9 calls: <total>/s, <n>/s from other threads, <calls per Present> per Present (<Presents>/s)
+     d3d9 calls, top <a>-<b>: <Interface>::<Method> <n>/s (<m>/Present), ...
+   one summary line, then the `top` busiest pairs that were called at all,
+   busiest first, ties in name order, at most kReportPairsPerLine per line
+   (<a>-<b> are their ranks, from 1; no such line when nothing was called).
+   `counts` and `names` have `n` entries. Per-second figures are rounded to
+   whole numbers, per-Present ones to one decimal place. A period without a
+   Present says "no Present" in place of the summary's per-Present figures, and
+   the pairs carry no per-Present figure. */
+inline std::vector<std::string>
 FormatCallReport(
     const uint32_t *counts, const char *const *names, size_t n, uint64_t other_thread, uint64_t presents,
     uint64_t elapsed_ns, size_t top = kReportTop
@@ -81,23 +87,29 @@ FormatCallReport(
     return std::strcmp(names[a], names[b]) < 0;
   });
 
-  std::string line = "d3d9 calls: " + per_second(total) + "/s, " + per_second(other_thread) + "/s from other threads, ";
+  std::vector<std::string> lines;
+  std::string summary =
+      "d3d9 calls: " + per_second(total) + "/s, " + per_second(other_thread) + "/s from other threads, ";
   if (presents)
-    line += per_present(total) + " per Present (" + per_second(presents) + "/s)";
+    summary += per_present(total) + " per Present (" + per_second(presents) + "/s)";
   else
-    line += "no Present";
-  line += "; top:";
-  for (size_t k = 0; k < shown; k++) {
-    const uint32_t id = used[k];
-    line += k ? ", " : " ";
-    line += names[id];
-    line += " " + per_second(counts[id]) + "/s";
-    if (presents)
-      line += " (" + per_present(counts[id]) + "/Present)";
+    summary += "no Present";
+  lines.push_back(std::move(summary));
+
+  for (size_t first = 0; first < shown; first += kReportPairsPerLine) {
+    const size_t last = std::min(first + kReportPairsPerLine, shown); // exclusive
+    std::string line = "d3d9 calls, top " + std::to_string(first + 1) + "-" + std::to_string(last) + ":";
+    for (size_t k = first; k < last; k++) {
+      const uint32_t id = used[k];
+      line += k > first ? ", " : " ";
+      line += names[id];
+      line += " " + per_second(counts[id]) + "/s";
+      if (presents)
+        line += " (" + per_present(counts[id]) + "/Present)";
+    }
+    lines.push_back(std::move(line));
   }
-  if (!shown)
-    line += " none";
-  return line;
+  return lines;
 }
 
 /* The counters of the current period. count() is the hot path: a plain,
@@ -140,10 +152,10 @@ public:
     return start != 0 && now_ns >= start && now_ns - start >= kReportPeriodNs;
   }
 
-  /* Ends the period at `now_ns`: returns its report line, resets every counter
+  /* Ends the period at `now_ns`: returns its report lines, resets every counter
      and starts the next period at `now_ns`. One thread at a time (the caller
      serialises reports). */
-  std::string
+  std::vector<std::string>
   takeReport(uint64_t now_ns, size_t top = kReportTop) {
     uint32_t counts[kD9CallCount];
     std::memcpy(counts, counts_, sizeof(counts));

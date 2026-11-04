@@ -1,3 +1,4 @@
+// Changed for MYIOSDECK (spec 07 clarification 4: every message capped, log_cap.hpp). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 /*
  * This file is part of DXMT, Copyright (c) 2023 Feifan He
  *
@@ -12,6 +13,7 @@
 #include <utility>
 
 #include "log.hpp"
+#include "log_cap.hpp"
 
 #include "../util_env.hpp"
 #include "util_string.hpp"
@@ -74,10 +76,9 @@ void Logger::emitMsg(LogLevel level, const std::string &message) {
     std::string line;
 
     while (std::getline(stream, line, '\n')) {
-      std::stringstream outstream;
-      outstream << prefix << line << std::endl;
-
-      std::string adjusted = outstream.str();
+      // MYIOSDECK spec 07 clarification 4: at most kLogMessageMaxBytes per
+      // message to Wine's debug output (cut at a UTF-8 boundary, ending "…").
+      std::string adjusted = FormatLogLine(prefix, line);
 
       if (!adjusted.empty()) {
         if (m_wineLogOutput)

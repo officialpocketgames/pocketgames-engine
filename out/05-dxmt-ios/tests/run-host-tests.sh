@@ -31,6 +31,7 @@ $cxx $flags -I"$src/d3d9" -o "$build/test_d3d9_policy" "$here/test_d3d9_policy.c
 # Spec 07 clarification 3: the call-statistics table and report, and the lists checked
 # against d3d9.h's vtables (C, so d3d9.h declares each vtable as a struct).
 $cxx $flags -I"$src/d3d9" -o "$build/test_d3d9_call_stats" "$here/test_d3d9_call_stats.cpp"
+$cxx $flags -I"$src/util/log" -o "$build/test_log_cap" "$here/test_log_cap.cpp"
 $cc -std=c11 -O1 -Wall -Wextra -Werror -I"$native/windows" -I"$native/directx" -I"$src/d3d9" \
   -o "$build/test_d3d9_call_list" "$here/test_d3d9_call_list.c"
 $cxx $flags -I"$src/d3d11" -o "$build/test_swap_effect" "$here/test_swap_effect.cpp"
@@ -66,6 +67,7 @@ status=0
 "$build/test_dxso_args32" || status=1
 "$build/test_d3d9_policy" || status=1
 "$build/test_d3d9_call_stats" || status=1
+"$build/test_log_cap" || status=1
 "$build/test_d3d9_call_list" || status=1
 sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_swap_effect" || status=1

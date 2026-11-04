@@ -638,7 +638,6 @@ static void test_native_copy(void)
 static void test_alloc_log(void)
 {
     const unsigned int commit = 0x1000, reserve = 0x2000, top_down = 0x100000;
-    unsigned int counter = 0, i, logged = 0, suppress = 0, quiet = 0;
 
     /* a failed call: logged, whatever it asked for */
     CHECK( ios_alloc_log_kind( commit, 1, 0xc0000018 /* conflicting addresses */ ) == IOS_ALLOC_LOG_FAILED );
@@ -654,21 +653,170 @@ static void test_alloc_log(void)
     CHECK( ios_alloc_log_kind( reserve, 0, 0 ) == IOS_ALLOC_LOG_NONE );
     CHECK( ios_alloc_log_kind( reserve | commit, 0, 0 ) == IOS_ALLOC_LOG_NONE );
 
-    /* the cap: 256 lines, the 257th is the suppression line, nothing follows it */
-    for (i = 0; i < 1000; i++)
-    {
-        int line = ios_alloc_log_take( &counter );
+}
 
-        if (line == IOS_ALLOC_LINE_LOG) { CHECK( !suppress ); logged++; }
-        else if (line == IOS_ALLOC_LINE_SUPPRESS) { CHECK( i == 256 ); suppress++; }
-        else { CHECK( suppress == 1 ); quiet++; }
+/* ---------- clarification 14 B: the log folds runs ---------- */
+
+static char alloc_lines[600][256];
+static unsigned int alloc_line_count;
+
+static void collect_line( void *ctx, const char *line )
+{
+    (void)ctx;
+    if (alloc_line_count < sizeof(alloc_lines) / sizeof(alloc_lines[0]))
+        snprintf( alloc_lines[alloc_line_count], sizeof(alloc_lines[0]), "%s", line );
+    alloc_line_count++;
+}
+
+static struct ios_alloc_event failure( uint64_t base, uint32_t status )
+{
+    struct ios_alloc_event ev;
+
+    memset( &ev, 0, sizeof(ev) );
+    ev.base = base;
+    ev.size = 0x10000;
+    ev.type = 0x3000;   /* MEM_COMMIT | MEM_RESERVE */
+    ev.prot = 0x40;     /* PAGE_EXECUTE_READWRITE */
+    ev.status = status;
+    ev.got = base;
+    ev.got_size = 0x10000;
+    return ev;
+}
+
+static void log_event( struct ios_alloc_log *log, const struct ios_alloc_event *ev )
+{
+    ios_alloc_log_event( log, ios_alloc_log_kind( ev->type, ev->base != 0, ev->status ), ev,
+                         collect_line, NULL );
+}
+
+static void test_alloc_fold(void)
+{
+    struct ios_alloc_log log;
+    struct ios_alloc_event ev;
+    unsigned int i;
+
+    /* the device run: 300 failures walking down from 0x123b10000 in 64 KB steps: one line,
+     * written when the run ends (here at the next call, a successful commit) */
+    memset( &log, 0, sizeof(log) );
+    alloc_line_count = 0;
+    for (i = 0; i < 300; i++)
+    {
+        ev = failure( 0x123b10000ull - (uint64_t)i * 0x10000, 0xc0000018 );
+        log_event( &log, &ev );
     }
-    CHECK( logged == 256 );
-    CHECK( suppress == 1 );
-    CHECK( quiet == 1000 - 257 );
-    /* each process has its own counter */
-    counter = 0;
-    CHECK( ios_alloc_log_take( &counter ) == IOS_ALLOC_LINE_LOG );
+    CHECK( alloc_line_count == 0 );   /* the run isn't over yet */
+    ev = failure( 0x200000000ull, 0 );
+    ev.type = 0x1000;
+    log_event( &log, &ev );
+    CHECK( alloc_line_count == 1 );
+    CHECK_STR( alloc_lines[0], "alloc failed x300: bases 0x123b10000..0x122860000 step -0x10000 "
+                               "size 0x10000 type 0x3000 prot 0x40 status 0xc0000018" );
+
+    /* a failure with another status breaks the run; a run of one is clarification 13's line */
+    memset( &log, 0, sizeof(log) );
+    alloc_line_count = 0;
+    for (i = 0; i < 3; i++)
+    {
+        ev = failure( 0x150000000ull + (uint64_t)i * 0x20000, 0xc0000018 );
+        log_event( &log, &ev );
+    }
+    ev = failure( 0x150060000ull, 0xc0000017 );
+    log_event( &log, &ev );
+    CHECK( alloc_line_count == 1 );
+    CHECK_STR( alloc_lines[0], "alloc failed x3: bases 0x150000000..0x150040000 step 0x20000 "
+                               "size 0x10000 type 0x3000 prot 0x40 status 0xc0000018" );
+    ios_alloc_log_flush( &log, collect_line, NULL );
+    CHECK( alloc_line_count == 2 );
+    CHECK_STR( alloc_lines[1], "alloc failed: base 0x150060000 size 0x10000 type 0x3000 prot 0x40 "
+                               "zero_bits 0 status 0xc0000017" );
+    ios_alloc_log_flush( &log, collect_line, NULL );   /* nothing left */
+    CHECK( alloc_line_count == 2 );
+
+    /* a different step breaks the run too */
+    memset( &log, 0, sizeof(log) );
+    alloc_line_count = 0;
+    ev = failure( 0x160000000ull, 0xc0000018 ); log_event( &log, &ev );
+    ev = failure( 0x160010000ull, 0xc0000018 ); log_event( &log, &ev );
+    ev = failure( 0x160030000ull, 0xc0000018 ); log_event( &log, &ev );
+    CHECK( alloc_line_count == 1 );
+    CHECK( !strncmp( alloc_lines[0], "alloc failed x2: bases 0x160000000..0x160010000 step 0x10000 ", 61 ) );
+
+    /* after a folded run, a reservation at a given base still gets its line */
+    memset( &log, 0, sizeof(log) );
+    alloc_line_count = 0;
+    for (i = 0; i < 10; i++)
+    {
+        ev = failure( 0x170000000ull - (uint64_t)i * 0x10000, 0xc0000018 );
+        log_event( &log, &ev );
+    }
+    ev = failure( 0x180000000ull, 0 );
+    ev.type = 0x2000;
+    log_event( &log, &ev );
+    CHECK( alloc_line_count == 2 );
+    CHECK( !strncmp( alloc_lines[0], "alloc failed x10: ", 18 ) );
+    CHECK_STR( alloc_lines[1], "alloc at 0x180000000 size 0x10000 type 0x2000 prot 0x40: status 0, "
+                               "got 0x180000000 size 0x10000" );
+
+    /* a run is written at 4096 events */
+    memset( &log, 0, sizeof(log) );
+    alloc_line_count = 0;
+    for (i = 0; i < 4097; i++)
+    {
+        ev = failure( 0x400000000ull + (uint64_t)i * 0x10000, 0xc0000018 );
+        log_event( &log, &ev );
+    }
+    CHECK( alloc_line_count == 1 );
+    CHECK( !strncmp( alloc_lines[0], "alloc failed x4096: ", 20 ) );
+    CHECK( log.count == 1 );   /* the 4097th starts a new run */
+
+    /* the cap counts written lines: 512, then the 513th is the suppression line, then nothing */
+    memset( &log, 0, sizeof(log) );
+    alloc_line_count = 0;
+    for (i = 0; i < 600; i++)
+    {
+        ev = failure( 0x190000000ull + (uint64_t)i * 0x10000, 0 );
+        ev.type = 0x2000;
+        log_event( &log, &ev );
+    }
+    CHECK( alloc_line_count == 513 );
+    CHECK( !strncmp( alloc_lines[511], "alloc at ", 9 ) );
+    CHECK_STR( alloc_lines[512], "alloc: further allocation lines suppressed (512 so far)" );
+}
+
+/* ---------- clarification 14 A: memory outside Wine's views ---------- */
+
+static void test_free_region(void)
+{
+    uint64_t ab, end;
+
+    /* an address inside a host region: reserved, with 64 KB bounds, clipped to the next view */
+    CHECK( ios_free_region_answer( 0x123b10000ull, 0x140000000ull, 0, 1, 0x123a04000ull, 0x123b24000ull,
+                                   &ab, &end ) == IOS_FREE_RESERVED );
+    CHECK( ab == 0x123a00000ull && end == 0x123b30000ull );
+    CHECK( ios_free_region_answer( 0x123b10000ull, 0x123b20000ull, 0, 1, 0x123a04000ull, 0x123b24000ull,
+                                   &ab, &end ) == IOS_FREE_RESERVED );
+    CHECK( end == 0x123b20000ull );
+    /* an address below a host region: free up to the region's start rounded down */
+    CHECK( ios_free_region_answer( 0x120000000ull, 0x140000000ull, 0, 1, 0x120234000ull, 0x120300000ull,
+                                   &ab, &end ) == IOS_FREE_FREE );
+    CHECK( end == 0x120230000ull );
+    /* the next view comes first: free up to it */
+    CHECK( ios_free_region_answer( 0x120000000ull, 0x120100000ull, 0, 1, 0x120234000ull, 0x120300000ull,
+                                   &ab, &end ) == IOS_FREE_FREE );
+    CHECK( end == 0x120100000ull );
+    /* a free gap shorter than 64 KB: the block is in use, reserved */
+    CHECK( ios_free_region_answer( 0x120004000ull, 0x140000000ull, 0, 1, 0x12000c000ull, 0x120020000ull,
+                                   &ab, &end ) == IOS_FREE_RESERVED );
+    CHECK( ab == 0x120000000ull && end == 0x120020000ull );
+    CHECK( ios_free_region_answer( 0x120004000ull, 0x120008000ull, 0, 0, 0, 0, &ab, &end ) == IOS_FREE_RESERVED );
+    CHECK( ab == 0x120000000ull && end == 0x120008000ull );
+    /* an address inside the exe window (or another range Wine keeps): upstream's answer */
+    CHECK( ios_free_region_answer( 0x150000000ull, 0x160000000ull, 1, 1, 0x140000000ull, 0x160000000ull,
+                                   &ab, &end ) == IOS_FREE_UPSTREAM );
+    CHECK( ab == 0 && end == 0x160000000ull );
+    /* no host region at all: free up to the next view */
+    CHECK( ios_free_region_answer( 0x300000000ull, 0x380000000ull, 0, 0, 0, 0, &ab, &end ) == IOS_FREE_FREE );
+    CHECK( end == 0x380000000ull );
 }
 
 static void test_loaded_again(void)
@@ -955,6 +1103,8 @@ int main(void)
     test_native_copy();
     test_loaded_again();
     test_alloc_log();
+    test_alloc_fold();
+    test_free_region();
     test_image_machine();
     test_window_requests();
     test_module_match();

@@ -312,6 +312,7 @@ static void ios_log_native_copy( const UNICODE_STRING *nt_name );
 static struct file_view *ios_vm_own_dylib_view( const UNICODE_STRING *nt_name, USHORT machine );
 static NTSTATUS ios_vm_reuse_view( struct file_view *view, const UNICODE_STRING *nt_name,
                                    void **addr_ptr, SIZE_T *size_ptr );
+static void ios_vm_free_answer( char *base, char **alloc_base, char **alloc_end, BOOL *reserved );
 #endif
 
 static inline BOOL is_beyond_limit( const void *addr, size_t size, const void *limit )
@@ -5539,40 +5540,52 @@ static NTSTATUS allocate_virtual_memory( void **ret, SIZE_T *size_ptr, ULONG typ
 /***********************************************************************
  *             ios_log_alloc
  *
- * MYIOSDECK (spec 10 clarification 13): a line for a failed allocation of the process's own, or
- * for a reservation at a given base, at most 256 per process, then one suppression line.
- * base and size are what the caller asked for; got and got_size what it has after the call.
+ * MYIOSDECK (spec 10 clarifications 13 and 14 B): every allocation call of the process's own
+ * goes to its log (ios_alloc_log_event): failures fold into runs, a reservation at a given base
+ * gets its line, any other call ends a pending run; at most 512 written lines per process, then
+ * one suppression line. base and size are what the caller asked for; got and got_size what it
+ * has after the call. The log is the process's, its calls serialised by alloc_log_mutex.
  */
+static pthread_mutex_t alloc_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void alloc_log_line( void *ctx, const char *line )
+{
+    ios_log( "%s\n", line );
+}
+
 static void ios_log_alloc( void *base, SIZE_T size, ULONG type, ULONG protect, ULONG_PTR zero_bits,
                            BOOL has_range, ULONG_PTR range_low, ULONG_PTR range_high,
                            NTSTATUS status, void *got, SIZE_T got_size )
 {
     struct ios_proc *proc = ios_proc_current();
-    char range[64] = "";
+    struct ios_alloc_event ev;
     int kind = ios_alloc_log_kind( type, base != NULL, status );
 
-    if (kind == IOS_ALLOC_LOG_NONE || !proc) return;
-    switch (ios_alloc_log_take( &proc->alloc_lines ))
-    {
-    case IOS_ALLOC_LINE_SUPPRESS:
-        ios_log( "alloc: further allocation lines suppressed (%u so far)\n", (unsigned int)IOS_ALLOC_LOG_CAP );
-        return;
-    case IOS_ALLOC_LINE_QUIET:
-        return;
-    }
-    if (kind == IOS_ALLOC_LOG_FAILED)
-    {
-        if (has_range) snprintf( range, sizeof(range), " range %#lx-%#lx",
-                                 (unsigned long)range_low, (unsigned long)range_high );
-        ios_log( "alloc failed: base %#lx size %#lx type %#x prot %#x zero_bits %lu status %#x%s\n",
-                 (unsigned long)(ULONG_PTR)base, (unsigned long)size, (unsigned int)type,
-                 (unsigned int)protect, (unsigned long)zero_bits, (unsigned int)status, range );
-    }
-    else
-        ios_log( "alloc at %#lx size %#lx type %#x prot %#x: status %#x, got %#lx size %#lx\n",
-                 (unsigned long)(ULONG_PTR)base, (unsigned long)size, (unsigned int)type,
-                 (unsigned int)protect, (unsigned int)status, (unsigned long)(ULONG_PTR)got,
-                 (unsigned long)got_size );
+    if (!proc) return;
+    if (kind == IOS_ALLOC_LOG_NONE && !__atomic_load_n( &proc->alloc_log.count, __ATOMIC_RELAXED ))
+        return;   /* nothing to write and no run to end: the common case stays cheap */
+    ev.base = (ULONG_PTR)base;
+    ev.size = size;
+    ev.type = type;
+    ev.prot = protect;
+    ev.status = status;
+    ev.zero_bits = zero_bits;
+    ev.has_range = has_range;
+    ev.range_low = range_low;
+    ev.range_high = range_high;
+    ev.got = (ULONG_PTR)got;
+    ev.got_size = got_size;
+    pthread_mutex_lock( &alloc_log_mutex );
+    ios_alloc_log_event( &proc->alloc_log, kind, &ev, alloc_log_line, NULL );
+    pthread_mutex_unlock( &alloc_log_mutex );
+}
+
+/* clarification 14 B: a process's pending run is written when the process ends */
+static void ios_log_alloc_end( struct ios_proc *proc )
+{
+    pthread_mutex_lock( &alloc_log_mutex );
+    ios_alloc_log_flush( &proc->alloc_log, alloc_log_line, NULL );
+    pthread_mutex_unlock( &alloc_log_mutex );
 }
 
 
@@ -5760,15 +5773,18 @@ NTSTATUS WINAPI NtAllocateVirtualMemoryEx( HANDLE process, PVOID *ret, SIZE_T *s
     NTSTATUS status = nt_allocate_virtual_memory_ex( process, ret, size_ptr, type, protect,
                                                      parameters, count );
 
-    if (process == NtCurrentProcess() &&
-        ios_alloc_log_kind( type, base != NULL, status ) != IOS_ALLOC_LOG_NONE)
+    if (process == NtCurrentProcess())
     {
         ULONG_PTR low = 0, high = 0, align = 0;
         ULONG attributes = 0;
         USHORT machine = 0;
-        BOOL has_range = !get_extended_params( parameters, count, &low, &high, &align,
-                                               &attributes, &machine ) && (low || high);
+        BOOL has_range = FALSE;
 
+        /* the range only for a line that may show it; every call still reaches the log, which
+         * ends a pending run on a call that doesn't continue it (clarification 14 B) */
+        if (ios_alloc_log_kind( type, base != NULL, status ) != IOS_ALLOC_LOG_NONE)
+            has_range = !get_extended_params( parameters, count, &low, &high, &align,
+                                              &attributes, &machine ) && (low || high);
         ios_log_alloc( base, size, type, protect, 0, has_range, low, high, status, *ret, *size_ptr );
     }
     return status;
@@ -6106,6 +6122,12 @@ static unsigned int fill_basic_memory_info( const void *addr, MEMORY_BASIC_INFOR
 
     server_enter_uninterrupted_section( &virtual_mutex, &sigset );
     view = get_memory_region_size( base, &alloc_base, &alloc_end, &fake_reserved );
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 10 clarification 14 A): outside the views the host owns most of the low
+     * address space; a 64-bit process hears free only where the host has nothing */
+    if (!view && !fake_reserved && !ios_wow_base())
+        ios_vm_free_answer( base, &alloc_base, &alloc_end, &fake_reserved );
+#endif
 
     /* Fill the info structure */
 
@@ -8194,6 +8216,50 @@ static BOOL ios_vm_area_for_others( void *start, void *end, ULONG_PTR limit_low,
 
 
 /***********************************************************************
+ *           ios_vm_free_answer
+ *
+ * Clarification 14 A: what a query at base, outside every view, reports in a 64-bit process
+ * (virtual_mutex held). Ranges Wine keeps for itself (the exe window, its reserved areas other
+ * than the 32-bit processes' guest windows, which this process can't allocate in) keep
+ * upstream's free answer; elsewhere the host's region at or above base decides
+ * (ios_free_region_answer). *reserved set: report MEM_RESERVE from *alloc_base to *alloc_end.
+ */
+static void ios_vm_free_answer( char *base, char **alloc_base, char **alloc_end, BOOL *reserved )
+{
+    struct reserved_area *area;
+    uint64_t host = (ULONG_PTR)base, host_size = 0, answer_base, answer_end;
+    BOOL wine_keeps = FALSE;
+    int prot, i, found;
+
+    if (exe_window.size && (ULONG_PTR)base >= exe_window.base &&
+        (ULONG_PTR)base < exe_window.base + exe_window.size)
+        wine_keeps = TRUE;
+    LIST_FOR_EACH_ENTRY( area, &reserved_areas, struct reserved_area, entry )
+        if (base >= (char *)area->base && base < (char *)area->base + area->size) wine_keeps = TRUE;
+    for (i = 0; wine_keeps && i < IOS_WIN_SLOTS; i++)
+    {
+        char *wbase = (char *)win_table.slot[i].base;
+        if (wbase && base >= wbase && base < wbase + IOS_WINDOW_SIZE) wine_keeps = FALSE;
+    }
+    if (wine_keeps) return;   /* upstream's answer */
+
+    found = !exe_window_region( NULL, &host, &host_size, &prot );
+    switch (ios_free_region_answer( (ULONG_PTR)base, (ULONG_PTR)*alloc_end, FALSE, found, host,
+                                    host + host_size, &answer_base, &answer_end ))
+    {
+    case IOS_FREE_RESERVED:
+        *reserved = TRUE;
+        *alloc_base = (char *)(ULONG_PTR)answer_base;
+        *alloc_end = (char *)(ULONG_PTR)answer_end;
+        break;
+    case IOS_FREE_FREE:
+        *alloc_end = (char *)(ULONG_PTR)answer_end;
+        break;
+    }
+}
+
+
+/***********************************************************************
  *           ios_vm_set_owner
  *
  * Part F: a view belongs to the pseudo-process that makes it.
@@ -8746,6 +8812,7 @@ void ios_mem_release_process( struct ios_proc *proc, BOOL threads_left )
      * are gone */
     if (proc->wow_base && !threads_left && winemetal_release_window)
         winemetal_release_window( proc->wow_base );
+    ios_log_alloc_end( proc );   /* spec 10 clarification 14 B: a run still pending */
     if (!ios_quiet) ios_log( "process %u: memory handed back (%zu views)%s\n", proc->serial, count,
                              threads_left ? ", not its views: threads are left" : "" );
 }

@@ -240,13 +240,66 @@ int ios_dylib_view_reusable( int starts_at_image, int is_dylib_view, const void 
 #define IOS_ALLOC_LOG_FIXED  2
 int ios_alloc_log_kind( uint32_t type, int base_given, uint32_t status );
 
-/* The per-process cap: lines 1-256 are logged (LINE), the 257th becomes the suppression line
- * (SUPPRESS), nothing after it (QUIET). counter is the process's own, taken atomically. */
-#define IOS_ALLOC_LOG_CAP      256
-#define IOS_ALLOC_LINE_QUIET    0
-#define IOS_ALLOC_LINE_LOG      1
-#define IOS_ALLOC_LINE_SUPPRESS 2
-int ios_alloc_log_take( unsigned int *counter );
+/* Clarification 14 B: one allocation call as the log sees it (what the caller asked for; the
+ * range only for the Ex call's address requirements) */
+struct ios_alloc_event
+{
+    uint64_t base, size;
+    uint32_t type, prot, status;
+    uint64_t zero_bits;
+    int      has_range;
+    uint64_t range_low, range_high;
+    uint64_t got, got_size;      /* what the caller has after the call */
+};
+
+/* A process's allocation log: the run of failures not written yet, and the lines written. A run
+ * is consecutive failures with the same size, type, protection and status whose bases step by
+ * the same amount (count 1: just `first`). Lines are counted when written: 512, then the 513th
+ * is the suppression line, then nothing. The caller serialises calls on one log. */
+#define IOS_ALLOC_LOG_CAP      512
+#define IOS_ALLOC_RUN_MAX      4096
+struct ios_alloc_log
+{
+    unsigned int           lines;
+    unsigned int           count;   /* events in the run, 0: none */
+    struct ios_alloc_event first;
+    uint64_t               last;    /* the run's last base */
+    int64_t                step;    /* base step, known once count >= 2 */
+};
+
+/* writes one line (no newline) */
+typedef void (*ios_alloc_line_fn)( void *ctx, const char *line );
+
+/* One allocation call of the process's own, of the kind ios_alloc_log_kind gave (every call,
+ * NONE included: any call that doesn't continue the run ends it). A failure joins or starts the
+ * run (written at IOS_ALLOC_RUN_MAX events); FIXED writes the run, then its `alloc at` line. */
+void ios_alloc_log_event( struct ios_alloc_log *log, int kind, const struct ios_alloc_event *ev,
+                          ios_alloc_line_fn out, void *ctx );
+
+/* Writes the pending run, if any: clarification 13's line for a run of one, else
+ * `alloc failed x<n>: bases <first>..<last> step <signed step> size .. type .. prot .. status ..` */
+void ios_alloc_log_flush( struct ios_alloc_log *log, ios_alloc_line_fn out, void *ctx );
+
+/* ---------- clarification 14 A: memory outside Wine's views ----------
+ * For a 64-bit process, the answer to a query at base (page-aligned) that no view contains;
+ * gap_end is where upstream's free answer ends (the next view, or the address-space limit).
+ * wine_reserved: base lies in a range Wine reserved itself (its reserved areas, the exe window):
+ * upstream's answer. Otherwise the host's region (vm_region_64 at base: the region holding it or
+ * the next one above; host_found 0 when there is none):
+ * - a host region holds base: reserved, from its start rounded down to 64 KB to its end rounded
+ *   up, clipped to gap_end;
+ * - else free up to the next host region's start rounded down to 64 KB, or gap_end if lower;
+ *   when that leaves less than one 64 KB block from base rounded down, that block is in use:
+ *   reserved from base rounded down to the host region's end rounded up (or to gap_end without
+ *   one), clipped to gap_end.
+ * Returns IOS_FREE_UPSTREAM, IOS_FREE_FREE or IOS_FREE_RESERVED, with alloc_base (reserved only)
+ * and region_end. */
+#define IOS_FREE_UPSTREAM 0
+#define IOS_FREE_FREE     1
+#define IOS_FREE_RESERVED 2
+int ios_free_region_answer( uint64_t base, uint64_t gap_end, int wine_reserved, int host_found,
+                            uint64_t host_start, uint64_t host_end, uint64_t *alloc_base,
+                            uint64_t *region_end );
 
 /* ---------- Part E4: what a 32-bit process's own window holds ----------
  * Only memory the guest asked for. A guest request reaches map_view with its range translated

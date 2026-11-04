@@ -31,6 +31,7 @@
 
 #include <pthread.h>
 #include "ios_pure.h"
+#include "ios_vm_pure.h"   /* struct ios_alloc_log (spec 10 clarification 14) */
 
 #define IOS_FD_CACHE_ENTRIES          128   /* = FD_CACHE_ENTRIES in server.c */
 #define IOS_INPROC_SYNC_CACHE_ENTRIES 128   /* = INPROC_SYNC_CACHE_ENTRIES in sync.c */
@@ -139,7 +140,7 @@ struct ios_proc
     unsigned int               native_count;
     unsigned int               reused_images[16];  /* spec 10 cl. 10: second mappings already logged */
     unsigned int               reused_count;
-    unsigned int               alloc_lines;   /* spec 10 cl. 13: allocation lines so far (capped) */
+    struct ios_alloc_log       alloc_log;     /* spec 10 cl. 13-14: allocation lines, the pending run */
     USHORT                     machine;       /* main image machine known before boot (children) */
     BOOL                       il_only_64;    /* IL-only .NET image without 32BITREQUIRED */
     pthread_t                  boot_thread;   /* children: the thread that boots it (detached) */
