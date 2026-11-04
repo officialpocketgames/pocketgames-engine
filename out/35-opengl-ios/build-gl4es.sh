@@ -97,6 +97,10 @@ echo "build-gl4es: gl4es's archive: $lib ($(ar t "$lib" | wc -l | tr -d ' ') mem
 # the allowed functions global: every other symbol becomes local to it.
 sdk=iphoneos
 [ "$target" = macos ] && sdk=macosx
+# the pre-linked object's minimum OS, as CMake compiled the objects (without it ld -r marks it
+# for the SDK's own version, and a link for 13.0 warned that libgl4es.a was built for 26.0)
+minos="-miphoneos-version-min=17.0"
+[ "$target" = macos ] && minos="-mmacosx-version-min=13.0"
 pre="$work/prelink-$target"
 rm -rf "$pre"
 mkdir -p "$pre/objs"
@@ -121,7 +125,8 @@ while read -r s; do
 done < "$pre/exports.txt"
 [ $bad -eq 0 ] || { echo "build-gl4es: the export list ($(wc -l < "$pre/exports.txt" | tr -d ' ') names) can't be exported" >&2; exit 1; }
 echo "build-gl4es: all $(wc -l < "$pre/exports.txt" | tr -d ' ') names of the export list are defined and visible"
-xcrun -sdk "$sdk" clang -arch arm64 -r -nostdlib -Wl,-exported_symbols_list,"$pre/exports.txt" \
+# shellcheck disable=SC2086
+xcrun -sdk "$sdk" clang -arch arm64 $minos -r -nostdlib -Wl,-exported_symbols_list,"$pre/exports.txt" \
     -o "$pre/gl4es.o" "$pre"/objs/*.o
 rm -f "$out/libgl4es.a"
 xcrun -sdk "$sdk" ar rcs "$out/libgl4es.a" "$pre/gl4es.o"

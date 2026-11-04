@@ -25,6 +25,7 @@
 #include <time.h>
 
 #include "pgl_internal.h"
+#include "gl4esinit.h"
 #include "gl4es_ios.h"
 
 #define WINEMETAL_API   /* declarations only: nothing of winemetal's PE half is called */
@@ -364,6 +365,20 @@ static void wait_slot( struct pgl_present *p, unsigned int i )
     }
 }
 
+/* gl4es holds immediate-mode drawing back (glBegin/glEnd blocks it merges, glRect, glBitmap) and
+ * draws it at its next state change or flush. The copy below reads the framebuffer through ANGLE,
+ * past gl4es, so gl4es's own glFlush runs first: it draws what is pending, then flushes GLES. A
+ * frame that ends with glEnd() was otherwise copied without its last drawing (the render test's
+ * orientation and immediate-mode scenes read black). */
+static void (*gl4es_flush)( void );
+static pthread_once_t gl4es_flush_once = PTHREAD_ONCE_INIT;
+
+static void load_gl4es_flush( void )
+{
+    gl4es_flush = (void (*)( void ))gl4es_GetProcAddress( "glFlush" );
+    if (!gl4es_flush) pgl_log( "[opengl] pgl: gl4es has no glFlush; immediate-mode drawing may miss a frame" );
+}
+
 /* D5.3.2 and D5.3.3: copy the colour attachment into texture i and signal value n */
 static void copy_and_signal( pgl_drawable *d, struct pgl_present *p, unsigned int i, uint64_t n )
 {
@@ -372,6 +387,8 @@ static void copy_and_signal( pgl_drawable *d, struct pgl_present *p, unsigned in
     EGLAttrib attribs[7];
     EGLSync sync;
 
+    pthread_once( &gl4es_flush_once, load_gl4es_flush );
+    if (gl4es_flush) gl4es_flush();
     save_gles( &saved );
     glBindFramebuffer( GL_READ_FRAMEBUFFER_ANGLE, src );
     glBindFramebuffer( GL_DRAW_FRAMEBUFFER_ANGLE, p->fbo[i] );

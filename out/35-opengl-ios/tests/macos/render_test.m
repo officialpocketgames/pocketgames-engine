@@ -8,7 +8,9 @@
 // signal and compared with the expected pixels (+-2). Scenes: the orientation of the present
 // texture, an immediate-mode triangle with fixed-function colour, a DXT1-textured quad, a display
 // list drawn twice, vertex arrays from client memory, a GLSL 1.20 program, an
-// ARB_fragment_program; then two contexts sharing a texture on two threads.
+// ARB_fragment_program; then two contexts sharing a texture on two threads. The first two scenes
+// end with immediate-mode drawing right before the swap, which gl4es still holds back then: they
+// check that the swap has gl4es draw it first (pgl_present.m's copy_and_signal).
 //
 // Prints PASS/FAIL per check and SKIP when the machine has no Metal device. Exit status 1 on any
 // FAIL. Only the CI's macOS runner runs it (never a GPU test on the owner's PC, Part J).
@@ -27,6 +29,8 @@
 
 /* ---- what DXMT's unix half gives pgl in the app: stand-ins with no window layer ---- */
 
+/* every winemetal entry answers "no layer", so pgl logs "[opengl] pgl: no Metal layer for window
+ * 0x1" once and does D5.3's copy without the layer pass: that copy is what the scenes read */
 static int32_t no_layer( void *params ) { (void)params; return 0; }
 const void *dxmt_winemetal_unix_call_funcs[256] = { [0 ... 255] = (const void *)no_layer };
 static uint64_t presents;
