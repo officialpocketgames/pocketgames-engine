@@ -141,6 +141,7 @@ struct ios_proc
     unsigned int               reused_images[16];  /* spec 10 cl. 10: second mappings already logged */
     unsigned int               reused_count;
     struct ios_alloc_log       alloc_log;     /* spec 10 cl. 13-14: allocation lines, the pending run */
+    unsigned int               mem_lines;     /* spec 10 cl. 15: `mem:` lines written */
     USHORT                     machine;       /* main image machine known before boot (children) */
     BOOL                       il_only_64;    /* IL-only .NET image without 32BITREQUIRED */
     pthread_t                  boot_thread;   /* children: the thread that boots it (detached) */

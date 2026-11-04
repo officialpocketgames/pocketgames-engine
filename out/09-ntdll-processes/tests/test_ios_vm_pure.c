@@ -819,6 +819,37 @@ static void test_free_region(void)
     CHECK( end == 0x380000000ull );
 }
 
+/* ---------- clarification 15: large memory events ---------- */
+
+static void test_mem_events(void)
+{
+    unsigned int lines = 0, i, written = 0, suppressed = 0, none = 0;
+
+    /* 1 MB or more: logged; 1 MB minus 64 KB: not */
+    CHECK( ios_mem_event_wanted( IOS_MEM_ALLOC, 0x100000 ) );
+    CHECK( ios_mem_event_wanted( IOS_MEM_FREE, 0x100000 ) );
+    CHECK( ios_mem_event_wanted( IOS_MEM_MAP, 0x1904000 ) );
+    CHECK( ios_mem_event_wanted( IOS_MEM_UNMAP, 0x100000 ) );
+    CHECK( !ios_mem_event_wanted( IOS_MEM_ALLOC, 0xf0000 ) );
+    CHECK( !ios_mem_event_wanted( IOS_MEM_FREE, 0xf0000 ) );
+    CHECK( !ios_mem_event_wanted( IOS_MEM_MAP, 0xf0000 ) );
+    CHECK( !ios_mem_event_wanted( IOS_MEM_UNMAP, 0xf0000 ) );
+    /* an image of 64 KB: logged */
+    CHECK( ios_mem_event_wanted( IOS_MEM_IMAGE, 0x10000 ) );
+    CHECK( !ios_mem_event_wanted( 0, 0x10000000 ) );
+    /* 256 lines, then the suppression line once, then nothing */
+    for (i = 0; i < 300; i++)
+    {
+        switch (ios_mem_event_take( &lines ))
+        {
+        case IOS_MEM_LINE_WRITE:    CHECK( !suppressed ); written++; break;
+        case IOS_MEM_LINE_SUPPRESS: suppressed++; break;
+        default:                    CHECK( suppressed == 1 ); none++; break;
+        }
+    }
+    CHECK( written == 256 && suppressed == 1 && none == 43 );
+}
+
 static void test_loaded_again(void)
 {
     static const char *const advapi_names[] =
@@ -1105,6 +1136,7 @@ int main(void)
     test_alloc_log();
     test_alloc_fold();
     test_free_region();
+    test_mem_events();
     test_image_machine();
     test_window_requests();
     test_module_match();

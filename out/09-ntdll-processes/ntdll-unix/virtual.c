@@ -313,6 +313,8 @@ static struct file_view *ios_vm_own_dylib_view( const UNICODE_STRING *nt_name, U
 static NTSTATUS ios_vm_reuse_view( struct file_view *view, const UNICODE_STRING *nt_name,
                                    void **addr_ptr, SIZE_T *size_ptr );
 static void ios_vm_free_answer( char *base, char **alloc_base, char **alloc_end, BOOL *reserved );
+static void ios_log_mem( int op, const void *base, SIZE_T size, ULONG type, ULONG prot,
+                         const UNICODE_STRING *nt_name, ULONG64 preferred );
 #endif
 
 static inline BOOL is_beyond_limit( const void *addr, size_t size, const void *limit )
@@ -3614,7 +3616,7 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
     sigset_t sigset;
 #ifdef WINE_IOS
     ULONG64 preferred_base;
-    BOOL from_dylib = FALSE;
+    BOOL from_dylib = FALSE, from_file = FALSE;
 #endif
 
     if (offset >= size)
@@ -3686,6 +3688,9 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
     {
     status = map_image_view( &view, image_info, size, limit_low, limit_high, alloc_type );
     if (status) goto done;
+#ifdef WINE_IOS
+    from_file = TRUE;   /* spec 10 clarification 15: its `mem: image` line once mapped */
+#endif
 
     status = map_image_into_view( view, nt_name, unix_fd, image_info, machine, shared_fd, needs_close );
     }
@@ -3728,6 +3733,10 @@ done:
     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
     if (needs_close) close( unix_fd );
     if (shared_needs_close) close( shared_fd );
+#ifdef WINE_IOS
+    if (NT_SUCCESS(status) && from_file)
+        ios_log_mem( IOS_MEM_IMAGE, *addr_ptr, *size_ptr, 0, 0, nt_name, preferred_base );
+#endif
     return status;
 }
 
@@ -3868,6 +3877,10 @@ static unsigned int virtual_map_section( HANDLE handle, PVOID *addr_ptr, ULONG_P
 done:
     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
     if (needs_close) close( unix_handle );
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 10 clarification 15) */
+    if (NT_SUCCESS(res)) ios_log_mem( IOS_MEM_MAP, *addr_ptr, *size_ptr, 0, protect, NULL, 0 );
+#endif
     return res;
 }
 
@@ -5562,6 +5575,9 @@ static void ios_log_alloc( void *base, SIZE_T size, ULONG type, ULONG protect, U
     int kind = ios_alloc_log_kind( type, base != NULL, status );
 
     if (!proc) return;
+    /* clarification 15: a reservation anywhere (its line writes a pending run first) */
+    if (!status && !base && (type & MEM_RESERVE))
+        ios_log_mem( IOS_MEM_ALLOC, got, got_size, type, protect, NULL, 0 );
     if (kind == IOS_ALLOC_LOG_NONE && !__atomic_load_n( &proc->alloc_log.count, __ATOMIC_RELAXED ))
         return;   /* nothing to write and no run to end: the common case stays cheap */
     ev.base = (ULONG_PTR)base;
@@ -5585,6 +5601,57 @@ static void ios_log_alloc_end( struct ios_proc *proc )
 {
     pthread_mutex_lock( &alloc_log_mutex );
     ios_alloc_log_flush( &proc->alloc_log, alloc_log_line, NULL );
+    pthread_mutex_unlock( &alloc_log_mutex );
+}
+
+/***********************************************************************
+ *             ios_log_mem
+ *
+ * MYIOSDECK (spec 10 clarification 15): the `mem:` line of a successful call of the process's
+ * own, when ios_mem_event_wanted says so: base and size are the range the call gives back,
+ * nt_name and preferred an image's. Never called under virtual_mutex. The pending run of
+ * clarification 14 B goes first, so the log keeps the calls' order; at most 256 lines per
+ * process, then one suppression line.
+ */
+static void ios_log_mem( int op, const void *base, SIZE_T size, ULONG type, ULONG prot,
+                         const UNICODE_STRING *nt_name, ULONG64 preferred )
+{
+    struct ios_proc *proc = ios_proc_current();
+    unsigned long long start = (ULONG_PTR)base, end = start + size;
+    char line[MAX_PATH * 3 + 96], name[MAX_PATH * 3];
+    int len;
+
+    if (!proc || !ios_mem_event_wanted( op, size )) return;
+    switch (op)
+    {
+    case IOS_MEM_ALLOC:
+        snprintf( line, sizeof(line), "mem: alloc %#llx-%#llx type %#x prot %#x", start, end, (unsigned int)type, (unsigned int)prot );
+        break;
+    case IOS_MEM_FREE:
+        snprintf( line, sizeof(line), "mem: free %#llx-%#llx", start, end );
+        break;
+    case IOS_MEM_MAP:
+        snprintf( line, sizeof(line), "mem: map %#llx-%#llx prot %#x", start, end, (unsigned int)prot );
+        break;
+    case IOS_MEM_IMAGE:
+        len = (nt_name && nt_name->Buffer)
+            ? ntdll_wcstoumbs( nt_name->Buffer, nt_name->Length / sizeof(WCHAR), name, sizeof(name) - 1, FALSE ) : 0;
+        name[len > 0 ? len : 0] = 0;
+        snprintf( line, sizeof(line), "mem: image %s %#llx-%#llx (preferred %#llx)",
+                  *ios_file_part( name ) ? ios_file_part( name ) : "(image)", start, end,
+                  (unsigned long long)preferred );
+        break;
+    default:
+        snprintf( line, sizeof(line), "mem: unmap %#llx-%#llx", start, end );
+        break;
+    }
+    pthread_mutex_lock( &alloc_log_mutex );
+    ios_alloc_log_flush( &proc->alloc_log, alloc_log_line, NULL );
+    switch (ios_mem_event_take( &proc->mem_lines ))
+    {
+    case IOS_MEM_LINE_WRITE:    ios_log( "%s\n", line ); break;
+    case IOS_MEM_LINE_SUPPRESS: ios_log( "mem: further lines suppressed\n" ); break;
+    }
     pthread_mutex_unlock( &alloc_log_mutex );
 }
 
@@ -5946,6 +6013,10 @@ NTSTATUS WINAPI NtFreeVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T *si
         *size_ptr = size;
     }
     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 10 clarification 15) */
+    if (status == STATUS_SUCCESS && (type & MEM_RELEASE)) ios_log_mem( IOS_MEM_FREE, base, size, 0, 0, NULL, 0 );
+#endif
     return status;
 }
 
@@ -6932,6 +7003,10 @@ static NTSTATUS unmap_view_of_section( HANDLE process, PVOID addr, ULONG flags )
     struct file_view *view;
     unsigned int status = STATUS_NOT_MAPPED_VIEW;
     sigset_t sigset;
+#ifdef WINE_IOS
+    void *unmapped = NULL;   /* spec 10 clarification 15: the view gone, for its line */
+    SIZE_T unmapped_size = 0;
+#endif
 
     if (process != NtCurrentProcess())
     {
@@ -6980,6 +7055,10 @@ static NTSTATUS unmap_view_of_section( HANDLE process, PVOID addr, ULONG flags )
     SERVER_END_REQ;
     if (!status)
     {
+#ifdef WINE_IOS
+        unmapped = view->base;
+        unmapped_size = view->size;
+#endif
         if (view->protect & SEC_IMAGE) release_builtin_module( view->base );
         if (flags & MEM_PRESERVE_PLACEHOLDER) free_pages_preserve_placeholder( view, view->base, view->size );
         else delete_view( view );
@@ -6987,6 +7066,9 @@ static NTSTATUS unmap_view_of_section( HANDLE process, PVOID addr, ULONG flags )
     else FIXME( "failed to unmap %p %x\n", view->base, status );
 done:
     server_leave_uninterrupted_section( &virtual_mutex, &sigset );
+#ifdef WINE_IOS
+    if (unmapped) ios_log_mem( IOS_MEM_UNMAP, unmapped, unmapped_size, 0, 0, NULL, 0 );
+#endif
     return status;
 }
 

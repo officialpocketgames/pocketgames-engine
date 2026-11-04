@@ -578,6 +578,27 @@ void ios_alloc_log_event( struct ios_alloc_log *log, int kind, const struct ios_
     }
 }
 
+/* ---------- clarification 15: large memory events ---------- */
+
+int ios_mem_event_wanted( int op, uint64_t size )
+{
+    switch (op)
+    {
+    case IOS_MEM_IMAGE: return 1;
+    case IOS_MEM_ALLOC:
+    case IOS_MEM_FREE:
+    case IOS_MEM_MAP:
+    case IOS_MEM_UNMAP: return size >= IOS_MEM_EVENT_MIN;
+    default:            return 0;
+    }
+}
+
+int ios_mem_event_take( unsigned int *lines )
+{
+    if (*lines > IOS_MEM_EVENT_CAP) return IOS_MEM_LINE_NONE;
+    return (*lines)++ < IOS_MEM_EVENT_CAP ? IOS_MEM_LINE_WRITE : IOS_MEM_LINE_SUPPRESS;
+}
+
 /* ---------- clarification 14 A: memory outside Wine's views ---------- */
 
 #define IOS_64K 0x10000ull

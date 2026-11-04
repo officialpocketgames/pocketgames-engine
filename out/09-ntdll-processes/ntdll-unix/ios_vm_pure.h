@@ -301,6 +301,28 @@ int ios_free_region_answer( uint64_t base, uint64_t gap_end, int wine_reserved, 
                             uint64_t host_start, uint64_t host_end, uint64_t *alloc_base,
                             uint64_t *region_end );
 
+/* ---------- clarification 15: large memory events ----------
+ * Whether a successful call of the process's own gets a `mem:` line. op: IOS_MEM_ALLOC (a
+ * MEM_RESERVE with a base of 0), IOS_MEM_FREE (a MEM_RELEASE), IOS_MEM_MAP (a view of a section
+ * that isn't an image), IOS_MEM_IMAGE (an image view mapped from its file), IOS_MEM_UNMAP (any
+ * view); size is the range the call gives back. Images always, the others from 1 MB. */
+#define IOS_MEM_ALLOC 1
+#define IOS_MEM_FREE  2
+#define IOS_MEM_MAP   3
+#define IOS_MEM_IMAGE 4
+#define IOS_MEM_UNMAP 5
+#define IOS_MEM_EVENT_MIN 0x100000
+int ios_mem_event_wanted( int op, uint64_t size );
+
+/* The per-process line counter (zero at the start): IOS_MEM_LINE_WRITE for the first 256 lines,
+ * IOS_MEM_LINE_SUPPRESS once (write `mem: further lines suppressed` instead), then
+ * IOS_MEM_LINE_NONE. The caller serialises calls on one counter. */
+#define IOS_MEM_EVENT_CAP     256
+#define IOS_MEM_LINE_NONE     0
+#define IOS_MEM_LINE_WRITE    1
+#define IOS_MEM_LINE_SUPPRESS 2
+int ios_mem_event_take( unsigned int *lines );
+
 /* ---------- Part E4: what a 32-bit process's own window holds ----------
  * Only memory the guest asked for. A guest request reaches map_view with its range translated
  * into the window, [B + low, B + high]; a unix-side request with no guest limit (the shared data
