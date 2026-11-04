@@ -11,6 +11,8 @@
 // unchanged (none of the compiled sources has one on iOS: the PSA cache file is never opened).
 //
 // C3.1: GL4ES_IOS_TLS marks gl4es's per-thread scratch (fixed-size buffers a function returns).
+//
+// C2.1: the functions the archive exports are declared visible here (end of the file).
 #ifndef GL4ES_IOS_CONFIG_H
 #define GL4ES_IOS_CONFIG_H
 
@@ -32,5 +34,17 @@ int gl4es_ios_fflush( FILE *fp );
 #define puts(s)           gl4es_ios_fputs(s, NULL)
 #define fputs(s, p)       gl4es_ios_fputs(s, p)
 #define fflush(p)         gl4es_ios_fflush(p)
+
+// C2.1: build-gl4es.sh compiles with -fvisibility=hidden, gl4es's EXPORT is empty on Apple
+// targets, and the pre-link (ld -r with an export list) can't export a hidden symbol. So the
+// functions it keeps global, gl4esinit.h's four and gl4es_ios.h's, are declared here, before any
+// of gl4es's code, with default visibility; their definitions inherit it. gl4es_ios.h marks its
+// own (GL4ES_IOS_EXPORT).
+#include "../../include/gl4esinit.h"
+#include "../../include/gl4es_ios.h"
+__attribute__((visibility("default"))) void initialize_gl4es(void);
+__attribute__((visibility("default"))) void set_getprocaddress(void *(APIENTRY_GL4ES *new_proc_address)(const char *));
+__attribute__((visibility("default"))) void set_getmainfbsize(void (APIENTRY_GL4ES *new_getMainFBSize)(int *width, int *height));
+__attribute__((visibility("default"))) void *APIENTRY_GL4ES gl4es_GetProcAddress(const char *name);
 
 #endif /* GL4ES_IOS_CONFIG_H */

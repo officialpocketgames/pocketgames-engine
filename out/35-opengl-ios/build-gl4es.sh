@@ -106,6 +106,21 @@ mkdir -p "$pre/objs"
 ios_funcs=$(grep -oE 'gl4es_ios_[A-Za-z0-9_]+ *\(' "$here/gl4es/include/gl4es_ios.h" | tr -d ' (' | sort -u)
 { printf '%s\n' _initialize_gl4es _set_getprocaddress _set_getmainfbsize _gl4es_GetProcAddress
   for f in $ios_funcs; do echo "_$f"; done; } > "$pre/exports.txt"
+# every one of them must be defined in the archive and not hidden (ld -r stops on the first
+# hidden one; this names them all at once): "(__TEXT,__text) external _f", not "private external"
+nm -m "$lib" 2>/dev/null > "$pre/archive-symbols.txt" || true
+bad=0
+while read -r s; do
+    if grep -qE "\(__[A-Z]+,[^)]*\) external $s\$" "$pre/archive-symbols.txt"; then
+        :
+    elif grep -qE "\(__[A-Z]+,[^)]*\) private external $s\$" "$pre/archive-symbols.txt"; then
+        echo "build-gl4es: FAIL: $s is hidden; the pre-link can't export it (C2.1)"; bad=1
+    else
+        echo "build-gl4es: FAIL: $s is not defined in gl4es's archive (C2.1)"; bad=1
+    fi
+done < "$pre/exports.txt"
+[ $bad -eq 0 ] || { echo "build-gl4es: the export list ($(wc -l < "$pre/exports.txt" | tr -d ' ') names) can't be exported" >&2; exit 1; }
+echo "build-gl4es: all $(wc -l < "$pre/exports.txt" | tr -d ' ') names of the export list are defined and visible"
 xcrun -sdk "$sdk" clang -arch arm64 -r -nostdlib -Wl,-exported_symbols_list,"$pre/exports.txt" \
     -o "$pre/gl4es.o" "$pre"/objs/*.o
 rm -f "$out/libgl4es.a"

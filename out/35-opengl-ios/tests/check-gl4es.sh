@@ -49,6 +49,43 @@ for f in $files; do
   fi
 done
 
+# C2.1: the functions the pre-link keeps global (gl4esinit.h's four, gl4es_ios.h's) are defined
+# once and not hidden, compiled as build-gl4es.sh compiles them (-fvisibility=hidden); all of
+# them checked before failing, as ld -r on macOS stops at the first hidden one
+exports="initialize_gl4es set_getprocaddress set_getmainfbsize gl4es_GetProcAddress
+$(grep -oE 'gl4es_ios_[A-Za-z0-9_]+ *\(' "$PART/gl4es/include/gl4es_ios.h" | tr -d ' (' | sort -u)"
+if command -v readelf > /dev/null 2>&1; then
+  mkdir -p "$work/objs"
+  for f in $files; do
+    if ! $CC -std=gnu11 -c -O0 -w -fvisibility=hidden -DGL4ES_IOS -include "$work/src/gl/gl4es_ios_config.h" \
+        -DNOX11 -DNOEGL -DNO_LOADER -DNO_GBM -DSTATICLIB -DNO_INIT_CONSTRUCTOR -DDEFAULT_ES=2 -DNDEBUG \
+        -I"$work/include" -I"$work/src/util" -I"$work/src/glx" -I"$work/src/gl" \
+        -o "$work/objs/$(echo "$f" | tr '/' '_').o" "$work/src/$f" 2> "$work/compile.log"; then
+      cat "$work/compile.log"
+      echo "FAIL check-gl4es: src/$f doesn't compile to an object"
+      exit 1
+    fi
+  done
+  bad=0
+  nexp=0
+  for s in $exports; do
+    nexp=$((nexp + 1))
+    vis=$(for o in "$work"/objs/*.o; do readelf -sW "$o" | awk -v s="$s" '$8 == s && $7 != "UND" { print $6 }'; done)
+    case "$vis" in
+      DEFAULT) ;;
+      "") echo "FAIL check-gl4es: $s is not defined (C2.1)"; bad=1 ;;
+      *"
+"*) echo "FAIL check-gl4es: $s is defined more than once (C2.1)"; bad=1 ;;
+      *) echo "FAIL check-gl4es: $s is $vis; the pre-link can't export it (C2.1)"; bad=1 ;;
+    esac
+  done
+  [ $bad -eq 0 ] || exit 1
+  exported="; the $nexp exported functions visible"
+else
+  exported=""
+  echo "SKIPPED check-gl4es export visibility (no readelf)"
+fi
+
 # Darwin rejects some constructs whatever the SDK (C2: __attribute__((alias)), "aliases are not
 # supported on darwin"). With clang, every source again for a Darwin target of the host's
 # architecture, against the host's C headers; only errors in gl4es's own files count (glibc's
@@ -104,4 +141,4 @@ for f in $files; do
     exit 1
   fi
 done
-echo "PASS check-gl4es ($n sources compile with the C3 changes$darwin; none prints)"
+echo "PASS check-gl4es ($n sources compile with the C3 changes$darwin$exported; none prints)"

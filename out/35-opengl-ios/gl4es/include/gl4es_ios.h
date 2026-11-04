@@ -19,24 +19,28 @@
 extern "C" {
 #endif
 
+/* C2.1: gl4es is compiled with hidden visibility, and the pre-link exports only what is visible,
+ * so each function here is marked (as gl4esinit.h's four are, in gl4es_ios_config.h) */
+#define GL4ES_IOS_EXPORT __attribute__((visibility("default")))
+
 /* ---- C3.1: states ---- */
 
 /* A new state. With share non-NULL it shares display lists, textures, buffers, shaders and
  * programs with share (as gl4es's own GLX/EGL layers share them). The GLES context the state
  * will be used with must be current on the calling thread. Returns NULL on failure. */
-void *gl4es_ios_state_create( void *share );
+GL4ES_IOS_EXPORT void *gl4es_ios_state_create( void *share );
 
 /* Makes state the calling thread's current state; NULL leaves the thread with none. Only the
  * calling thread is affected (the current state pointer is thread-local). */
-void gl4es_ios_state_activate( void *state );
+GL4ES_IOS_EXPORT void gl4es_ios_state_activate( void *state );
 
 /* The calling thread's current state, or NULL. */
-void *gl4es_ios_state_current( void );
+GL4ES_IOS_EXPORT void *gl4es_ios_state_current( void );
 
 /* Frees a state and everything it alone holds. Its GLES context must be current on the calling
  * thread; the state must not be current on any other thread. When it is the calling thread's
  * current state, the thread is left with none. */
-void gl4es_ios_state_destroy( void *state );
+GL4ES_IOS_EXPORT void gl4es_ios_state_destroy( void *state );
 
 /* ---- C3.2: initialisation, once per app ---- */
 
@@ -44,32 +48,32 @@ void gl4es_ios_state_destroy( void *state );
  * gamma, stack trace or X11 refresh) and then runs upstream's initialize_gl4es, whose hardware
  * probe needs the bootstrap GLES context current. gl4es's LIBGL_* variables keep their
  * meaning. set_getprocaddress must have been called first. */
-void gl4es_ios_initialize( void );
+GL4ES_IOS_EXPORT void gl4es_ios_initialize( void );
 
 /* ---- C3.3: logging ---- */
 
 /* Every message gl4es would print goes to log as one line without its trailing newline; with
  * log NULL, messages are dropped. Nothing is printed to stdout or stderr. */
-void gl4es_ios_set_log( void (*log)( const char *line ) );
+GL4ES_IOS_EXPORT void gl4es_ios_set_log( void (*log)( const char *line ) );
 
 /* ---- C3.4: strings ---- */
 
 /* The GL_RENDERER string (the Metal device's name). GL_VENDOR is "Apple", GL_VERSION "2.1.0",
  * GL_SHADING_LANGUAGE_VERSION "1.20"; no string names a library, and the extension string
  * stays under 4,000 bytes. renderer is copied. */
-void gl4es_ios_set_renderer( const char *renderer );
+GL4ES_IOS_EXPORT void gl4es_ios_set_renderer( const char *renderer );
 
 /* ---- C3.5: buffer-data allocation ---- */
 
 /* The functions that allocate and free the CPU copy of every buffer object's data of state
  * (default malloc and free). Part G2 uses them for 32-bit programs; NULL restores the default. */
-void gl4es_ios_state_set_buffer_alloc( void *state, void *(*alloc_fn)( size_t size ), void (*free_fn)( void *ptr ) );
+GL4ES_IOS_EXPORT void gl4es_ios_state_set_buffer_alloc( void *state, void *(*alloc_fn)( size_t size ), void (*free_fn)( void *ptr ) );
 
 /* ---- D5.3: names ---- */
 
 /* The GLES name of the framebuffer gl4es knows as name (the same number when gl4es uses GLES
  * names as its own, D5.3.2), with the state's context current. 0 for 0 or an unknown name. */
-unsigned int gl4es_ios_gles_framebuffer( unsigned int name );
+GL4ES_IOS_EXPORT unsigned int gl4es_ios_gles_framebuffer( unsigned int name );
 
 #ifdef __cplusplus
 }
