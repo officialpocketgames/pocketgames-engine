@@ -372,4 +372,13 @@ unsigned int ios_lowwin_note_service( int slot );
 /* Forgets everything (tests). */
 void ios_lowwin_reset(void);
 
+/* ---------- clarification 16: the address an image view's caller asked for ----------
+ * ios_image_asked_base: the address NtMapViewOfSection of an image tries first, the caller's
+ * rounded down to 64 KB (0: none asked). ios_image_asked_note: what the `mem: image` line adds for
+ * a view not at its preferred base (", asked any" or ", asked 0x...", then ", limit 0x..." when
+ * the call limited the address); an empty string for a view at its preferred base. Returns buf. */
+uint64_t ios_image_asked_base( uint64_t asked );
+char *ios_image_asked_note( char *buf, size_t len, uint64_t asked, uint64_t limit, uint64_t got,
+                            uint64_t preferred );
+
 #endif /* MYIOSDECK_IOS_VM_PURE_H */

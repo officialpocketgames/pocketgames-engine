@@ -850,6 +850,30 @@ static void test_mem_events(void)
     CHECK( written == 256 && suppressed == 1 && none == 43 );
 }
 
+/* clarification 16: the address an image view's caller asked for */
+static void test_image_asked(void)
+{
+    char buf[96], tiny[12];
+
+    CHECK( ios_image_asked_base( 0 ) == 0 );
+    CHECK( ios_image_asked_base( 0x7000012345ull ) == 0x7000010000ull );
+    CHECK( ios_image_asked_base( 0x150000000ull ) == 0x150000000ull );
+    CHECK( ios_image_asked_base( 0xffffull ) == 0 );
+    /* at its preferred base: nothing added */
+    CHECK_STR( ios_image_asked_note( buf, sizeof(buf), 0x150000000ull, 0, 0x140000000ull, 0x140000000ull ), "" );
+    CHECK_STR( ios_image_asked_note( buf, sizeof(buf), 0, 0, 0x7096400000ull, 0x140000000ull ), ", asked any" );
+    CHECK_STR( ios_image_asked_note( buf, sizeof(buf), 0x150000000ull, 0, 0x7096400000ull, 0x140000000ull ),
+               ", asked 0x150000000" );
+    CHECK_STR( ios_image_asked_note( buf, sizeof(buf), 0, 0x7fffffffull, 0x7096400000ull, 0x140000000ull ),
+               ", asked any, limit 0x7fffffff" );
+    CHECK_STR( ios_image_asked_note( buf, sizeof(buf), 0x60000000ull, 0xffffffffull, 0x7096400000ull, 0x140000000ull ),
+               ", asked 0x60000000, limit 0xffffffff" );
+    /* a short buffer stays terminated */
+    ios_image_asked_note( tiny, sizeof(tiny), 0x150000000ull, 0x7fffffffull, 0x7096400000ull, 0x140000000ull );
+    CHECK( strlen( tiny ) == sizeof(tiny) - 1 );
+    CHECK( ios_image_asked_note( buf, 0, 0, 0, 1, 2 ) == buf );
+}
+
 static void test_loaded_again(void)
 {
     static const char *const advapi_names[] =
@@ -1137,6 +1161,7 @@ int main(void)
     test_alloc_fold();
     test_free_region();
     test_mem_events();
+    test_image_asked();
     test_image_machine();
     test_window_requests();
     test_module_match();

@@ -815,3 +815,25 @@ void ios_lowwin_reset(void)
         atomic_store( &w->state, LW_FREE );
     }
 }
+
+/* ---------- clarification 16: the address an image view's caller asked for ---------- */
+
+uint64_t ios_image_asked_base( uint64_t asked )
+{
+    return asked & ~0xffffull;
+}
+
+char *ios_image_asked_note( char *buf, size_t len, uint64_t asked, uint64_t limit, uint64_t got,
+                            uint64_t preferred )
+{
+    int n;
+
+    if (!len) return buf;
+    buf[0] = 0;
+    if (got == preferred) return buf;
+    n = asked ? snprintf( buf, len, ", asked %#llx", (unsigned long long)asked )
+              : snprintf( buf, len, ", asked any" );
+    if (limit && n > 0 && (size_t)n < len)
+        snprintf( buf + n, len - (size_t)n, ", limit %#llx", (unsigned long long)limit );
+    return buf;
+}

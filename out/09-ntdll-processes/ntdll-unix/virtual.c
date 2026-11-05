@@ -3526,6 +3526,11 @@ static unsigned int get_mapping_info( HANDLE handle, ACCESS_MASK access, unsigne
  *
  * Map a view for a PE image at an appropriate address.
  */
+#ifdef WINE_IOS
+/* MYIOSDECK (spec 10 clarification 16): the base and the address limit a process's own
+ * NtMapViewOfSection(Ex) of an image asked for, while virtual_map_section maps it (0: none) */
+static __thread ULONG_PTR ios_image_asked, ios_image_limit;
+#endif
 static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_info *image_info, SIZE_T size,
                                 ULONG_PTR limit_low, ULONG_PTR limit_high, ULONG alloc_type )
 {
@@ -3538,6 +3543,14 @@ static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_inf
 
     limit_low = max( limit_low, (ULONG_PTR)address_space_start );  /* make sure the DOS area remains free */
     if (!limit_high) limit_high = (ULONG_PTR)user_space_limit;
+
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 10 clarification 16): the address the caller asked for comes first, as on
+     * Windows; when it isn't free, the search below goes on as before */
+    if (ios_image_asked && (base = (void *)(ULONG_PTR)ios_image_asked_base( ios_image_asked )) &&
+        !map_view( view_ret, base, size, alloc_type, vprot, limit_low, limit_high, 0 ))
+        return STATUS_SUCCESS;
+#endif
 
     /* first try the specified base */
 
@@ -3808,8 +3821,18 @@ static unsigned int virtual_map_section( HANDLE handle, PVOID *addr_ptr, ULONG_P
         res = load_builtin( image_info, &nt_name, &exp_name, machine, &info,
                             addr_ptr, size_ptr, limit_low, limit_high, offset.QuadPart );
         if (res == STATUS_IMAGE_ALREADY_LOADED)
+        {
+#ifdef WINE_IOS
+            /* MYIOSDECK (spec 10 clarification 16) */
+            ios_image_asked = (ULONG_PTR)*addr_ptr;
+            ios_image_limit = limit_high;
+#endif
             res = virtual_map_image( handle, addr_ptr, size_ptr, shared_file, limit_low, limit_high,
                                      alloc_type, machine, image_info, &nt_name, FALSE, offset.QuadPart );
+#ifdef WINE_IOS
+            ios_image_asked = ios_image_limit = 0;
+#endif
+        }
         if (shared_file) NtClose( shared_file );
         free( image_info );
         if (NtCurrentTeb64()) NtCurrentTeb64()->Tib.ArbitraryUserPointer = prev;
@@ -5618,7 +5641,7 @@ static void ios_log_mem( int op, const void *base, SIZE_T size, ULONG type, ULON
 {
     struct ios_proc *proc = ios_proc_current();
     unsigned long long start = (ULONG_PTR)base, end = start + size;
-    char line[MAX_PATH * 3 + 96], name[MAX_PATH * 3];
+    char line[MAX_PATH * 3 + 192], name[MAX_PATH * 3], note[96];
     int len;
 
     if (!proc || !ios_mem_event_wanted( op, size )) return;
@@ -5637,9 +5660,11 @@ static void ios_log_mem( int op, const void *base, SIZE_T size, ULONG type, ULON
         len = (nt_name && nt_name->Buffer)
             ? ntdll_wcstoumbs( nt_name->Buffer, nt_name->Length / sizeof(WCHAR), name, sizeof(name) - 1, FALSE ) : 0;
         name[len > 0 ? len : 0] = 0;
-        snprintf( line, sizeof(line), "mem: image %s %#llx-%#llx (preferred %#llx)",
+        /* clarification 16: a view away from its preferred base says what the call asked for */
+        ios_image_asked_note( note, sizeof(note), ios_image_asked, ios_image_limit, start, preferred );
+        snprintf( line, sizeof(line), "mem: image %s %#llx-%#llx (preferred %#llx%s)",
                   *ios_file_part( name ) ? ios_file_part( name ) : "(image)", start, end,
-                  (unsigned long long)preferred );
+                  (unsigned long long)preferred, note );
         break;
     default:
         snprintf( line, sizeof(line), "mem: unmap %#llx-%#llx", start, end );
