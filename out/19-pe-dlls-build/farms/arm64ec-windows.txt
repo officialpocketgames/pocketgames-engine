@@ -8,6 +8,7 @@
 advapi32.dll
 apisetschema.dll
 authz.dll
+avifil32.dll    # Video for Windows: a 64-bit game exe imports it (clarification 1)
 avrt.dll
 bcrypt.dll
 bcryptprimitives.dll
@@ -63,6 +64,7 @@ mmdevapi.dll
 mpr.dll
 msacm32.dll
 msasn1.dll
+mscms.dll       # colour management: Qt 6 programs import it (clarification 1)
 mscoree.dll
 msctf.dll
 msdmo.dll
@@ -79,6 +81,7 @@ msvcp_win.dll   # imported by Microsoft's own x64 D3DCompiler_47.dll that games 
 msvcr110.dll
 msvcr120.dll
 msvcrt.dll
+msvfw32.dll     # Video for Windows, imported by avifil32 (clarification 1)
 mswsock.dll
 msxml3.dll
 msxml6.dll
