@@ -407,6 +407,14 @@ static void test_rects( void )
     CHECK( w32ios_dialog_candidate( 0, 0, 32, 32, 1024, 768 ) );
     CHECK( w32ios_dialog_candidate( 100, 100, 400, 300, 1024, 768 ) );
     CHECK( !w32ios_dialog_candidate( 0, 0, 1024, 768, 1024, 768 ) );
+    /* clarification 13: the game's own window marks its thread too */
+    CHECK( w32ios_wait_candidate( 0, 0, 1024, 768 ) );
+    CHECK( w32ios_wait_candidate( -8, -31, 1288, 728 ) );
+    CHECK( w32ios_wait_candidate( 100, 100, 400, 300 ) );
+    CHECK( w32ios_wait_candidate( 0, 0, 32, 32 ) );
+    CHECK( !w32ios_wait_candidate( 0, 0, 31, 100 ) );
+    CHECK( !w32ios_wait_candidate( 0, 0, 100, 31 ) );
+    CHECK( !w32ios_wait_candidate( 0, 0, 0, 0 ) );
 }
 
 /* ---------------------------------------------------------------- Part B */

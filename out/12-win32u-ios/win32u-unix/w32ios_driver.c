@@ -409,20 +409,20 @@ static BOOL ios_WindowPosChanging( HWND hwnd, UINT swp_flags, BOOL shaped, const
     return TRUE;
 }
 
-/* E5: the thread's own visible top-level dialog-sized window got a surface */
-static void mark_dialog_thread( HWND hwnd, const RECT *visible )
+/* E5: the thread's own visible top-level window got a surface, or (clarification 13) was refused
+ * one because it covers the screen: the game's own window, whose thread may wait for messages
+ * while another thread runs the game, so nothing would poll the app's input */
+static void mark_wait_thread( HWND hwnd, const RECT *visible )
 {
     static LONG marked;
     struct thread_state *state = get_thread_state();
-    struct w32ios_size screen = w32ios_display_current();
     LONG n;
 
     if (state->slices || !game_input_wake()) return;
     if (NtUserGetWindowThread( hwnd, NULL ) != GetCurrentThreadId()) return;
     if (!is_toplevel( hwnd )) return;
     if (!(get_window_long( hwnd, GWL_STYLE ) & WS_VISIBLE) && !(state->pending_swp & SWP_SHOWWINDOW)) return;
-    if (!w32ios_dialog_candidate( visible->left, visible->top, visible->right, visible->bottom, screen.w, screen.h ))
-        return;
+    if (!w32ios_wait_candidate( visible->left, visible->top, visible->right, visible->bottom )) return;
     state->slices = TRUE;
     n = InterlockedIncrement( &marked );
     if (n <= 8)
@@ -446,6 +446,7 @@ static BOOL ios_CreateWindowSurface( HWND hwnd, BOOL layered, const RECT *surfac
     {
         if (previous) window_surface_release( previous );
         *surface = NULL;
+        mark_wait_thread( hwnd, visible );   /* clarification 13 */
         return TRUE;
     }
 
@@ -455,7 +456,7 @@ static BOOL ios_CreateWindowSurface( HWND hwnd, BOOL layered, const RECT *surfac
 
     if (previous) window_surface_release( previous );
     *surface = ios_surface_create( hwnd, surface_rect );
-    if (*surface && !w32ios_desktop_mode() && known) mark_dialog_thread( hwnd, visible );
+    if (*surface && !w32ios_desktop_mode() && known) mark_wait_thread( hwnd, visible );
     return TRUE;
 }
 

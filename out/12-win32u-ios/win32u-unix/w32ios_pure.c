@@ -511,8 +511,13 @@ int w32ios_covers_screen( int l, int t, int r, int b, int screen_w, int screen_h
 
 int w32ios_dialog_candidate( int l, int t, int r, int b, int screen_w, int screen_h )
 {
-    if (r - l < 32 || b - t < 32) return 0;
+    if (!w32ios_wait_candidate( l, t, r, b )) return 0;
     return !w32ios_covers_screen( l, t, r, b, screen_w, screen_h );
+}
+
+int w32ios_wait_candidate( int l, int t, int r, int b )
+{
+    return r - l >= 32 && b - t >= 32;
 }
 
 /* ===================== Part F ===================== */

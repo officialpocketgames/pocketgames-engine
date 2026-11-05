@@ -209,6 +209,8 @@ int w32ios_poll_skip_request( int pure, uint32_t now_ms, uint32_t last_ms );
 /* E4/E5: rectangle tests (left, top, right, bottom). */
 int w32ios_covers_screen( int l, int t, int r, int b, int screen_w, int screen_h );
 int w32ios_dialog_candidate( int l, int t, int r, int b, int screen_w, int screen_h );
+/* E5 with clarification 13: a window whose thread's message waits slice, covering the screen or not */
+int w32ios_wait_candidate( int l, int t, int r, int b );
 
 /* ===================== Part F: XInput ===================== */
 
