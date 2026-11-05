@@ -111,16 +111,18 @@ static void *gdi_view_for_process( PEB *peb, void *table, SIZE_T size )
         return view ? view : table;
     }
     /* reserve room below the caller's ceiling (spec 10 places it in the guest window), then
-     * put a second mapping of the same pages over it: one table, two addresses */
+     * put a second mapping of the same pages over it: one table, two addresses. Committed, so
+     * ntdll's records match the pages: a re-protection from them (force-exec when a module
+     * without NX_COMPAT loads) would otherwise leave the view unreadable (clarification 12) */
     if (NtAllocateVirtualMemory( GetCurrentProcess(), &view, w32ios_zero_bits(), &size,
-                                 MEM_RESERVE, PAGE_READWRITE ) ||
+                                 MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE ) ||
         !w32ios_vm_alias( table, size, &view, 1 ))
     {
         w32ios_log( "no GDI handle table inside the guest window of process %04x: publishing %p",
                     (unsigned int)pid, table );
         view = NULL;
     }
-    else w32ios_log_verbose( "GDI handle table for 32-bit process %04x at %p", (unsigned int)pid, view );
+    else w32ios_log( "GDI handle table for 32-bit process %04x at %p", (unsigned int)pid, view );
     w32ios_s17_views_put( &gdi_views, pid, peb, view );
     pthread_mutex_unlock( &gdi_views_lock );
     return view ? view : table;
