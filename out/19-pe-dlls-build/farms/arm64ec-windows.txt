@@ -43,6 +43,7 @@ dwmapi.dll
 dwrite.dll
 esent.dll
 fontsub.dll
+gameux.dll      # Game Explorer: 64-bit games create its COM objects (clarification 2)
 gdi32.dll
 gdiplus.dll
 glu32.dll
