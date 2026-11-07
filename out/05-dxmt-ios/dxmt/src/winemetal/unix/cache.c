@@ -1,7 +1,12 @@
-/* Changed for MYIOSDECK (spec 05 H3). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
+/* Changed for MYIOSDECK (spec 05 H3, clarification 12). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>
+#include <errno.h>
+#include <pthread.h>
+#include <string.h>
+#include <sys/stat.h>
 #include "sqlite3.h"
+#include "cache_log.h"
 #define WINEMETAL_API
 #include "../winemetal_thunks.h"
 
@@ -24,15 +29,22 @@
 #if defined(DXMT_IOS)
 /* Spec 05 H3: on iOS a relative cache path resolves under the app's
    NSCachesDirectory. The directory (the parent of a file path) is created with
-   intermediate directories; nil if it can't be resolved or created. */
+   intermediate directories; nil if it can't be resolved or created, and then
+   `reason` (when not NULL) says why (spec 05 clarification 12). */
 static inline NSString *
-resolve_cache_dir(NSString *path, bool path_is_file) {
-  if (!path)
+resolve_cache_dir(NSString *path, bool path_is_file, NSString **reason) {
+  if (!path) {
+    if (reason)
+      *reason = @"no path";
     return nil;
+  }
   if (![path hasPrefix:@"/"]) {
     NSArray *dirs = NSSearchPathForDirectoriesInDomains(NSCachesDirectory, NSUserDomainMask, YES);
-    if (dirs.count == 0)
+    if (dirs.count == 0) {
+      if (reason)
+        *reason = @"no Caches directory";
       return nil;
+    }
     path = [dirs[0] stringByAppendingPathComponent:path];
   }
   NSString *dir = path_is_file ? [path stringByDeletingLastPathComponent] : path;
@@ -40,18 +52,23 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
   if (![[NSFileManager defaultManager] createDirectoryAtPath:dir
                                  withIntermediateDirectories:YES
                                                   attributes:nil
-                                                       error:&error])
+                                                       error:&error]) {
+    if (reason)
+      *reason = [NSString stringWithFormat:@"can't create %@: %@", dir, error ? error.localizedDescription : @"?"];
     return nil;
+  }
   return path;
 }
 #else
 static inline NSString *
-resolve_cache_dir(NSString *path, bool path_is_file) {
+resolve_cache_dir(NSString *path, bool path_is_file, NSString **reason) {
   if (![path hasPrefix:@"/"]) {
     char buf[PATH_MAX];
     size_t len = confstr(_CS_DARWIN_USER_CACHE_DIR, buf, sizeof(buf));
 
     if (!len) {
+      if (reason)
+        *reason = @"no user cache directory";
       return nil;
     }
 
@@ -66,19 +83,106 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
 }
 #endif
 
+/* ---- MYIOSDECK spec 05 clarification 12: one device-log line per cache database ----
+   When the reader of a database opens (the writer of the same database opens just before
+   it), log what it holds or why it's unavailable, once per database per process, keyed by
+   the path the Windows half asked for. The writer's failures are kept for that line. */
+
+static pthread_mutex_t g_cache_log_mutex = PTHREAD_MUTEX_INITIALIZER;
+static NSMutableSet *g_cache_logged;                /* paths whose line was logged */
+static NSMutableDictionary *g_cache_writer_failure; /* path -> why its writer failed */
+
+static void
+cache_note_writer_failure(NSString *path, NSString *reason) {
+  pthread_mutex_lock(&g_cache_log_mutex);
+  if (!g_cache_writer_failure)
+    g_cache_writer_failure = [[NSMutableDictionary alloc] init];
+  if (path && ![g_cache_writer_failure objectForKey:path])
+    [g_cache_writer_failure setObject:(reason ? reason : @"unknown") forKey:path];
+  pthread_mutex_unlock(&g_cache_log_mutex);
+}
+
+/* nil if the writer of `path` opened; the dictionary keeps the string */
+static NSString *
+cache_writer_failure(NSString *path) {
+  pthread_mutex_lock(&g_cache_log_mutex);
+  NSString *reason = path ? [g_cache_writer_failure objectForKey:path] : nil;
+  pthread_mutex_unlock(&g_cache_log_mutex);
+  return reason;
+}
+
+static void
+cache_log_once(NSString *path, const char *line) {
+  bool first;
+  pthread_mutex_lock(&g_cache_log_mutex);
+  if (!g_cache_logged)
+    g_cache_logged = [[NSMutableSet alloc] init];
+  first = path && ![g_cache_logged containsObject:path];
+  if (first)
+    [g_cache_logged addObject:path];
+  pthread_mutex_unlock(&g_cache_log_mutex);
+  if (first)
+    fprintf(stderr, "%s\n", line);
+}
+
+static void
+cache_log_unavailable(NSString *path, NSString *shown_path, NSString *reason) {
+  char line[1024];
+  dxmt_cache_unavailable_line(
+      line, sizeof(line), shown_path ? shown_path.UTF8String : "(none)", reason ? reason.UTF8String : "unknown"
+  );
+  cache_log_once(path, line);
+}
+
+/* the database file and its write-ahead log */
+static uint64_t
+cache_file_bytes(NSString *db_path) {
+  struct stat st;
+  uint64_t bytes = 0;
+  if (stat([db_path fileSystemRepresentation], &st) == 0)
+    bytes += (uint64_t)st.st_size;
+  if (stat([[db_path stringByAppendingString:@"-wal"] fileSystemRepresentation], &st) == 0)
+    bytes += (uint64_t)st.st_size;
+  return bytes;
+}
+
+static void
+cache_log_opened(NSString *path, NSString *db_path, sqlite3 *db, uint64_t version) {
+  struct dxmt_cache_contents contents;
+  char line[1024];
+  NSString *writer_failure = cache_writer_failure(path);
+  dxmt_cache_read_contents(db, version, &contents);
+  dxmt_cache_open_line(
+      line, sizeof(line), db_path.UTF8String, &contents, cache_file_bytes(db_path), version,
+      writer_failure ? writer_failure.UTF8String : NULL
+  );
+  cache_log_once(path, line);
+}
+
+/* ---- end of spec 05 clarification 12 helpers ---- */
+
 @implementation CacheReader
 
 - (instancetype)initWithPath:(NSString *)path version:(uint64_t)version {
   if ((self = [super init])) {
-    NSString *dbPath = resolve_cache_dir(path, true);
+    NSString *reason = nil;
+    NSString *dbPath = resolve_cache_dir(path, true, &reason);
     if (!dbPath) {
       NSLog(@"[CacheReader] Failed to resolve cache path");
+      cache_log_unavailable(path, path, reason); /* spec 05 clarification 12 */
       return nil;
     }
     NSString *tableName = [NSString stringWithFormat:@"cache_%llu", version];
     if (sqlite3_open_v2([dbPath fileSystemRepresentation], &_db, SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL) !=
         SQLITE_OK) {
       NSLog(@"[CacheReader] Failed to open DB: %s", sqlite3_errmsg(_db));
+      /* spec 05 clarification 12: the writer's failure, when it had one, says more */
+      NSString *writer_failure = cache_writer_failure(path);
+      cache_log_unavailable(
+          path, dbPath,
+          writer_failure ? writer_failure
+                         : [NSString stringWithFormat:@"the database can't be opened: %s", sqlite3_errmsg(_db)]
+      );
       sqlite3_close(_db);
       return nil;
     }
@@ -86,9 +190,11 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
     NSString *sqlGet = [NSString stringWithFormat:@"SELECT value FROM %@ WHERE key = ?;", tableName];
     if (sqlite3_prepare_v2(_db, sqlGet.UTF8String, -1, &_stmt, NULL) != SQLITE_OK) {
       NSLog(@"[CacheReader] Failed to prepare SELECT: %s", sqlite3_errmsg(_db));
+      cache_log_opened(path, dbPath, _db, version); /* spec 05 clarification 12: no table for this version */
       sqlite3_close(_db);
       return nil;
     }
+    cache_log_opened(path, dbPath, _db, version); /* spec 05 clarification 12 */
   }
   return self;
 }
@@ -128,16 +234,21 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
 
 - (instancetype)initWithPath:(NSString *)path version:(uint64_t)version {
   if ((self = [super init])) {
-    NSString *dbPath = resolve_cache_dir(path, true);
+    /* spec 05 clarification 12: each failure is kept for the reader's log line */
+    NSString *reason = nil;
+    NSString *dbPath = resolve_cache_dir(path, true, &reason);
     if (!dbPath) {
       NSLog(@"[CacheReader] Failed to resolve cache path");
+      cache_note_writer_failure(path, reason);
       return nil;
     }
 
     NSString *lockPath = [dbPath stringByAppendingString:@"-lock"];
     int fd = open([lockPath fileSystemRepresentation], O_RDWR | O_CREAT, 0666);
     if (fd < 0) {
+      int open_errno = errno; /* before NSLog can change it */
       NSLog(@"[CacheWriter] Failed to open file for locking %@", lockPath);
+      cache_note_writer_failure(path, [NSString stringWithFormat:@"can't open %@: %s", lockPath, strerror(open_errno)]);
       return nil;
     }
     flock(fd, LOCK_EX);
@@ -147,6 +258,9 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
             SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE | SQLITE_OPEN_NOMUTEX, NULL
         ) != SQLITE_OK) {
       NSLog(@"[CacheWriter] Failed to open DB: %s", sqlite3_errmsg(_db));
+      cache_note_writer_failure(
+          path, [NSString stringWithFormat:@"can't be opened for writing: %s", sqlite3_errmsg(_db)]
+      );
       flock(fd, LOCK_UN);
       close(fd);
       return nil;
@@ -164,6 +278,9 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
     char *errMsg = NULL;
     if (sqlite3_exec(_db, sqlCreate.UTF8String, NULL, NULL, &errMsg) != SQLITE_OK) {
       NSLog(@"[CacheWriter] Failed to create table: %s", errMsg);
+      cache_note_writer_failure(
+          path, [NSString stringWithFormat:@"can't create its table: %s", errMsg ? errMsg : "?"]
+      );
       sqlite3_free(errMsg);
     }
 
@@ -173,6 +290,9 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
     NSString *sqlSet = [NSString stringWithFormat:@"INSERT OR REPLACE INTO %@ (key, value) VALUES (?, ?);", tableName];
     if (sqlite3_prepare_v2(_db, sqlSet.UTF8String, -1, &_stmt, NULL) != SQLITE_OK) {
       NSLog(@"[CacheWriter] Failed to prepare INSERT: %s", sqlite3_errmsg(_db));
+      cache_note_writer_failure(
+          path, [NSString stringWithFormat:@"can't prepare writes: %s", sqlite3_errmsg(_db)]
+      );
       sqlite3_close(_db);
       return nil;
     }
@@ -211,9 +331,13 @@ resolve_cache_dir(NSString *path, bool path_is_file) {
 int
 _CacheReader_alloc_init(void *obj) {
   struct unixcall_cache_alloc_init *params = obj;
-  NSString *path = [[NSString alloc] initWithCString:params->path.ptr encoding:NSUTF8StringEncoding];
-  params->ret_cache = (obj_handle_t)[[CacheReader alloc] initWithPath:path version:params->version];
-  [path release];
+  /* spec 05 clarification 12: the reasons and lines are autoreleased; this thread may
+     have no pool */
+  @autoreleasepool {
+    NSString *path = [[NSString alloc] initWithCString:params->path.ptr encoding:NSUTF8StringEncoding];
+    params->ret_cache = (obj_handle_t)[[CacheReader alloc] initWithPath:path version:params->version];
+    [path release];
+  }
   return 0;
 }
 
@@ -231,9 +355,11 @@ _CacheReader_get(void *obj) {
 int
 _CacheWriter_alloc_init(void *obj) {
   struct unixcall_cache_alloc_init *params = obj;
-  NSString *path = [[NSString alloc] initWithCString:params->path.ptr encoding:NSUTF8StringEncoding];
-  params->ret_cache = (obj_handle_t)[[CacheWriter alloc] initWithPath:path version:params->version];
-  [path release];
+  @autoreleasepool { /* spec 05 clarification 12, as the reader */
+    NSString *path = [[NSString alloc] initWithCString:params->path.ptr encoding:NSUTF8StringEncoding];
+    params->ret_cache = (obj_handle_t)[[CacheWriter alloc] initWithPath:path version:params->version];
+    [path release];
+  }
   return 0;
 }
 
@@ -262,7 +388,7 @@ _WMTSetMetalShaderCachePath(void *obj) {
   if (!set_path)
     return 0;
   NSString *path = [[NSString alloc] initWithCString:params->path.ptr encoding:NSUTF8StringEncoding];
-  NSString *resolved_path = resolve_cache_dir(path, false);
+  NSString *resolved_path = resolve_cache_dir(path, false, NULL);
   if (resolved_path) {
     set_path(resolved_path);
     params->ret_success = get_path ? [get_path() isEqualToString:resolved_path] : 1;
@@ -280,7 +406,7 @@ int
 _WMTSetMetalShaderCachePath(void *obj) {
   struct unixcall_setmetalcachepath *params = obj;
   NSString *path = [[NSString alloc] initWithCString:params->path.ptr encoding:NSUTF8StringEncoding];
-  NSString *resolved_path = resolve_cache_dir(path, false);
+  NSString *resolved_path = resolve_cache_dir(path, false, NULL);
   MTLSetShaderCachePath(resolved_path);
   params->ret_success = [MTLGetShaderCachePath() isEqualToString:resolved_path];
   [path release];

@@ -3,9 +3,11 @@
 // commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
 // Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
+// Changed for MYIOSDECK (spec 05 clarification 12): the shader cache's last summary at detach.
 #include "d3d9.h"
 #include "d3d9_call_stats.hpp" // MYIOSDECK spec 07 clarification 3
 #include "d3d9_interface.hpp"
+#include "dxmt_shader_cache.hpp" // MYIOSDECK spec 05 clarification 12
 #include "log/log.hpp"
 
 #include <atomic>
@@ -19,6 +21,8 @@ extern "C" BOOL WINAPI
 DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
   if (reason == DLL_PROCESS_ATTACH)
     DisableThreadLibraryCalls(instance);
+  else if (reason == DLL_PROCESS_DETACH)
+    dxmt::ShaderCacheLogAtDetach(); // MYIOSDECK spec 05 clarification 12: the last summary
   return TRUE;
 }
 #endif

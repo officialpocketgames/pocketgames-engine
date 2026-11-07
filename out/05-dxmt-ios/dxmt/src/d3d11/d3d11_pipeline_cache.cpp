@@ -1,4 +1,4 @@
-// Changed for MYIOSDECK (spec 05 F3; spec 05 clarification 10: an LGPL-2.1-or-later block from
+// Changed for MYIOSDECK (spec 05 F3, clarification 12; spec 05 clarification 10: an LGPL-2.1-or-later block from
 // steamac's DXMT patch 0010, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "d3d11_pipeline_cache.hpp"
 #include "airconv_public.h"
@@ -154,15 +154,22 @@ class PipelineCache : public MTLD3D11PipelineCacheBase {
 #endif
 
     virtual WMT::Reference<WMT::DispatchData> find_cached_variant(Sha1Digest &variant_digest) final {
-      auto reader = cache->scache_.getReader();
-      if (reader)
-        return reader->get(std::make_pair(sha1_, variant_digest));
-      return {};
+      WMT::Reference<WMT::DispatchData> data;
+      {
+        auto reader = cache->scache_.getReader();
+        if (reader)
+          data = reader->get(std::make_pair(sha1_, variant_digest));
+      }
+      // spec 05 clarification 12: a miss (also with no cache) means the shader is converted
+      ShaderCacheNoteLookup(data != nullptr);
+      return data;
     };
     virtual void update_cached_variant(Sha1Digest &variant_digest, WMT::DispatchData data) final {
       auto writer = cache->scache_.getWriter();
-      if (writer)
+      if (writer) {
         writer->set(std::make_pair(sha1_, variant_digest), data);
+        ShaderCacheNoteStore(); // spec 05 clarification 12
+      }
     }
   };
 

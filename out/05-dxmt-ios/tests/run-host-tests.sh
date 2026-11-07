@@ -6,7 +6,8 @@
 # decoder, mip-clamp policy, 32-bit pointer/chain/record helpers, atomic wait,
 # the DXSO 32-bit argument chain, the Direct3D 9 iOS rules, the Direct3D 9 call
 # statistics and their call-site coverage; spec 05 clarification 10: the fixes adopted
-# from steamac's DXMT patches) with any C++20 compiler.
+# from steamac's DXMT patches; clarification 12: the shader cache's log lines) with any
+# C++20 compiler.
 # Usage: run-host-tests.sh [build-dir]
 # CXX selects the C++ compiler (default c++), CC the C compiler (default cc).
 
@@ -58,6 +59,21 @@ $cxx $flags $native_flags -I"$src/winemetal" -o "$build/test_metal_reference" "$
 $cxx $flags -I"$src/d3d11" -I"$src/airconv" -o "$build/test_shader_bitcode" "$here/test_shader_bitcode.cpp"
 $cxx $flags -pthread $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
   -o "$build/test_core_fixes" "$here/test_core_fixes.cpp" "$src/dxmt/dxmt_allocation.cpp"
+# Spec 05 clarification 12: when the shader cache's lookups are logged, and what a cache
+# database holds (on small SQLite databases; the system's libsqlite3 with the declarations in
+# tests/sqlite3-api, so no SQLite development package is needed; skipped without the library).
+$cxx $flags -I"$src/dxmt" -o "$build/test_shader_cache_log" "$here/test_shader_cache_log.cpp"
+sqlite_lib=
+for candidate in -lsqlite3 -l:libsqlite3.so.0; do
+  if echo 'int main(void) { return 0; }' | $cc -x c - -o "$build/sqlite_probe" $candidate 2>/dev/null; then
+    sqlite_lib=$candidate
+    break
+  fi
+done
+if [ -n "$sqlite_lib" ]; then
+  $cc -std=c11 -O1 -Wall -Wextra -Werror -I"$here/sqlite3-api" -I"$src/winemetal/unix" \
+    -o "$build/test_cache_contents" "$here/test_cache_contents.c" $sqlite_lib
+fi
 
 status=0
 "$build/test_bc_decode" || status=1
@@ -78,4 +94,10 @@ sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_metal_reference" || status=1
 "$build/test_shader_bitcode" || status=1
 "$build/test_core_fixes" || status=1
+"$build/test_shader_cache_log" || status=1
+if [ -n "$sqlite_lib" ]; then
+  "$build/test_cache_contents" "$build" || status=1
+else
+  echo "test_cache_contents: skipped (no libsqlite3 on this host)"
+fi
 exit $status

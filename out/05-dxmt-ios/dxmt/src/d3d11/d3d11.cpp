@@ -1,3 +1,4 @@
+// Changed for MYIOSDECK (spec 05 B4, B5, clarification 12). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "dxmt_names.hpp"
 #include "com/com_object.hpp"
 #include "com/com_pointer.hpp"
@@ -5,6 +6,7 @@
 #include "log/log.hpp"
 #include "util_string.hpp"
 #include "dxmt_capture.hpp"
+#include "dxmt_shader_cache.hpp" // MYIOSDECK spec 05 clarification 12
 #include <exception>
 #ifdef DXMT_IOS
 #include <atomic>
@@ -263,7 +265,10 @@ extern "C" HRESULT __stdcall D3D11On12CreateDevice(
 
 #ifndef DXMT_NATIVE
 
-BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {  
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID reserved) {
+  // MYIOSDECK spec 05 clarification 12: the shader cache's last summary
+  if (reason == DLL_PROCESS_DETACH)
+    dxmt::ShaderCacheLogAtDetach();
   if (reason != DLL_PROCESS_ATTACH)
     return TRUE;
 

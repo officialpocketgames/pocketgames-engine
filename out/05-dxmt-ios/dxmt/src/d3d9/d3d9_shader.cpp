@@ -3,6 +3,7 @@
 // commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
 // Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
+// Changed for MYIOSDECK (spec 05 clarification 12): the cache lookups and stores are counted.
 #include "d3d9_shader.hpp"
 
 #include "airconv_public.h"
@@ -334,18 +335,22 @@ d9_shader_cache() {
 static WMT::Reference<WMT::Function>
 d9_cache_lookup(MTLD3D9Device *device, const std::pair<Sha1Digest, Sha1Digest> &key) {
   WMT::Reference<WMT::Function> function;
-  auto reader = d9_shader_cache().getReader();
-  if (!reader)
-    return function;
-  auto data = reader->get(key);
-  if (data == nullptr)
-    return function;
-  auto pool = WMT::MakeAutoreleasePool();
-  WMT::Reference<WMT::Error> error;
-  auto library = device->metalDevice().newLibrary(data, error);
-  if (!library)
-    return function;
-  function = library.newFunction("shader_main");
+  WMT::Reference<WMT::DispatchData> data;
+  {
+    auto reader = d9_shader_cache().getReader();
+    if (reader)
+      data = reader->get(key);
+  }
+  if (data != nullptr) {
+    auto pool = WMT::MakeAutoreleasePool();
+    WMT::Reference<WMT::Error> error;
+    auto library = device->metalDevice().newLibrary(data, error);
+    if (library)
+      function = library.newFunction("shader_main");
+  }
+  // MYIOSDECK spec 05 clarification 12: a hit is a function from the cache; anything else
+  // (no cache, not in it, or a stored entry that doesn't load) is converted by the caller
+  ShaderCacheNoteLookup(function != nullptr);
   return function;
 }
 
@@ -355,8 +360,10 @@ d9_cache_store(const std::pair<Sha1Digest, Sha1Digest> &key, uint64_t native_ptr
   if (!writer)
     return;
   auto data = WMT::MakeDispatchData(native_ptr, size);
-  if (data != nullptr)
+  if (data != nullptr) {
     writer->set(key, data);
+    ShaderCacheNoteStore(); // MYIOSDECK spec 05 clarification 12
+  }
 }
 
 static WMT::Reference<WMT::Function>

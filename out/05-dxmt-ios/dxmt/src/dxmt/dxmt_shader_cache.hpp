@@ -1,5 +1,5 @@
 #pragma once
-// Changed for MYIOSDECK (spec 05 F2, H3, H4, clarification 10). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 F2, H3, H4, clarifications 10 and 12). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "Metal.hpp"
 #include "thread.hpp"
 
@@ -16,6 +16,15 @@ constexpr int kDXMTShaderCacheVersion = 18;
    "dxmt/<exe name>/". A relative path is resolved by the unix half (on iOS,
    under the app's caches directory). */
 std::string ShaderCacheDirectory();
+
+/* Spec 05 clarification 12: per-process counters of the converted-shader cache, for the
+   device log (rule: dxmt_shader_cache_log.hpp). The Direct3D 11 path (find_cached_variant /
+   update_cached_variant) and the Direct3D 9 path (d9_cache_lookup / d9_cache_store) report
+   each lookup (hit, or a miss that is then converted) and each entry stored. */
+void ShaderCacheNoteLookup(bool hit);
+void ShaderCacheNoteStore();
+/* DLL_PROCESS_DETACH: the last summary, when it differs from the last one logged. */
+void ShaderCacheLogAtDetach();
 
 class ShaderCache {
 public:
