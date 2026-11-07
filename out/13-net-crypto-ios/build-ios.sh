@@ -122,6 +122,7 @@ compile nsi_ip6scope     "$HERE/nsi/nsi_ip6scope.c"          $FIRST $CFG_NSI $NS
 compile nsi_ndis         "$HERE/nsi/ndis.c"                  $FIRST $CFG_NSI $NSI_INC
 compile nsi_ip           "$WINE/dlls/nsiproxy.sys/ip.c"      $FIRST -DIOS_NSI_IP_C $CFG_NSI $NSI_INC
 compile ios_nsi_pure     "$HERE/common/ios_nsi_pure.c"
+compile ios_hostname     "$HERE/common/ios_hostname.c"
 }
 
 if [ -n "$failed" ]; then

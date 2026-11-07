@@ -34,6 +34,11 @@
 #include <errno.h>
 #include <pthread.h>
 #include <stdarg.h>
+#ifdef WINE_IOS
+#include <stdio.h>    /* MYIOSDECK (spec 13 clarification 17): the computer name's log line */
+#include <stdlib.h>
+#include <string.h>
+#endif
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -1046,13 +1051,56 @@ static NTSTATUS unix_gethostbyname( void *args )
 #endif
 
 
+#ifdef WINE_IOS
+#include "ios_hostname.h"
+
+/* MYIOSDECK (spec 13 clarification 17): the prefix's own host name, read or made once per app
+ * run and logged then; iOS's host name (it can carry the device's name) is never used */
+static uint32_t hostname_random(void)
+{
+    return arc4random();
+}
+
+static const char *ios_machine_name(void)
+{
+    static const char *const how[] =
+    {
+        "from the prefix", "new, stored in the prefix", "new, replaced an unusable file",
+        "new, not stored: it changes at the next start"
+    };
+    static pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+    static char name[IOS_HOSTNAME_LEN + 1];
+    char dir[4096];
+    int ret;
+
+    pthread_mutex_lock( &mutex );
+    if (!name[0])
+    {
+        ret = ios_hostname_load( ios_hostname_prefix_dir( getenv( "WINEPREFIX" ), getenv( "HOME" ),
+                                                          dir, sizeof(dir) ) ? NULL : dir,
+                                 name, hostname_random );
+        fprintf( stderr, "[ws2_32-ios] computer name %s (%s)\n", name, how[ret] );
+    }
+    pthread_mutex_unlock( &mutex );
+    return name;
+}
+#endif
+
 static NTSTATUS unix_gethostname( void *args )
 {
     struct gethostname_params *params = args;
+#ifdef WINE_IOS
+    const char *name = ios_machine_name();
+
+    if (strlen( name ) >= params->size) return errno_from_unix( ENAMETOOLONG );
+    strcpy( params->name, name );
+    return 0;
+#else
 
     if (!gethostname( params->name, params->size ))
         return 0;
     return errno_from_unix( errno );
+#endif
 }
 
 

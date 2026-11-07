@@ -44,6 +44,11 @@ unsigned long ios_s17_section_limit( int per_process, unsigned long wow_base,
  * byte; 0 or 0xffffffff becomes the stored value; no stored value (0): 0 */
 uint32_t ios_s17_volume_serial( uint32_t stored, unsigned char letter );
 
+/* clarification 3: whether a caller whose mount manager query failed gets the prefix's serial.
+ * C1 gave it to 32-bit callers only; now every caller, 32-bit or 64-bit, gets the same serial
+ * (a machine fingerprint must not depend on the caller's bitness). */
+int ios_s17_stored_serial_due( int is_wow64 );
+
 /* the stored value from the file's first bytes (at most 15 are read), hex; 0 if none */
 uint32_t ios_s17_parse_serial( const char *buf, size_t len );
 

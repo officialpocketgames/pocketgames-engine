@@ -47,6 +47,7 @@ run_c test_rootenum "$HERE/test_rootenum.c" "$TOP/common/ios_rootenum.c"
 run_c test_afd "-I$TOP/ntdll-unix" "$HERE/test_afd.c"
 run_c test_resolv "-DIOS_RESOLV_TEST" "$HERE/test_resolv.c" "$TOP/common/ios_resolv.c"
 run_c test_nsi "$HERE/test_nsi.c" "$TOP/common/ios_nsi_pure.c"
+run_c test_hostname "$HERE/test_hostname.c" "$TOP/common/ios_hostname.c"   # clarification 17
 
 # dnsapi end to end: needs the Wine headers and a configured build dir (for config.h)
 if [ $# -ge 2 ]; then

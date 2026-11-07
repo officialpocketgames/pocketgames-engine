@@ -352,14 +352,24 @@ static void test_wow_volume_serial(void)
     char buf[64];
     ULONG first;
 
+    /* clarification 3: 32-bit and 64-bit callers alike get the stored serial (C1 gave 64-bit
+     * callers upstream's STATUS_NOT_IMPLEMENTED and serial 0) */
+    CHECK( ios_s17_stored_serial_due( 1 ) );
+    CHECK( ios_s17_stored_serial_due( 0 ) );
+
     /* the cached value: computed from the prefix's file, then the same for the app run */
     write_file( IOS_S17_SERIAL_FILE, "12345678\n", 9 );
+    log_lines = 0;
     first = ios_s17_wow_volume_serial( dir, 'c' );
     CHECK_EQ( first, 0x1d5b1f12 );
+    /* clarification 3: one line per app run, with the prefix value and drive C:'s serial */
+    CHECK_EQ( log_lines, 1 );
+    CHECK( strstr( last_log, "volume serial: prefix value 12345678, drive C: 1d5b1f12" ) != NULL );
     CHECK_EQ( ios_s17_wow_volume_serial( dir, 0 ), 0xbc5a865f );
     write_file( IOS_S17_SERIAL_FILE, "deadbeef\n", 9 );   /* not re-read during the run */
     CHECK_EQ( ios_s17_wow_volume_serial( dir, 'c' ), first );
     CHECK_EQ( read_file( IOS_S17_SERIAL_FILE, buf, sizeof(buf) ), 9 );
+    CHECK_EQ( log_lines, 1 );
 }
 
 /* ---------------------------------------------------------------- Part C2 */

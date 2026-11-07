@@ -49,6 +49,7 @@ static uint32_t draw_random(void)
 
 ULONG ios_s17_wow_volume_serial( const char *config_dir, unsigned char letter )
 {
+    static int logged;
     uint32_t stored = __atomic_load_n( &stored_serial, __ATOMIC_RELAXED );
 
     if (!stored)
@@ -56,6 +57,10 @@ ULONG ios_s17_wow_volume_serial( const char *config_dir, unsigned char letter )
         /* racers end with the same file content, so any of them may store it */
         if (!(stored = ios_s17_load_serial( config_dir, draw_random ))) return 0;
         __atomic_store_n( &stored_serial, stored, __ATOMIC_RELAXED );
+        /* clarification 3: one line per app run, for the device check that it never changes */
+        if (!__atomic_exchange_n( &logged, 1, __ATOMIC_RELAXED ))
+            ios_log( "volume serial: prefix value %08x, drive C: %08x\n", (unsigned int)stored,
+                     (unsigned int)ios_s17_volume_serial( stored, 'c' ) );
     }
     return ios_s17_volume_serial( stored, letter );
 }

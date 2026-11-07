@@ -5269,9 +5269,9 @@ NTSTATUS WINAPI NtQueryInformationFile( HANDLE handle, IO_STATUS_BLOCK *io,
             if (!get_mountmgr_fs_info( handle, fd, &drive, sizeof(drive) ))
                 info->VolumeSerialNumber = drive.serial;
 #ifdef WINE_IOS
-            /* MYIOSDECK (spec 17 C1): no mount manager; a 32-bit caller gets the prefix's serial
-             * for the drive letter the query left */
-            else if (NtCurrentTeb()->WowTebOffset)
+            /* MYIOSDECK (spec 17 C1, clarification 3): no mount manager; every caller, 32-bit or
+             * 64-bit, gets the prefix's serial for the drive letter the query left */
+            else if (ios_s17_stored_serial_due( NtCurrentTeb()->WowTebOffset != 0 ))
                 info->VolumeSerialNumber = ios_s17_wow_volume_serial( config_dir, drive.letter );
 #endif
             memset( &info->FileId, 0, sizeof(info->FileId) );
@@ -7702,8 +7702,9 @@ NTSTATUS WINAPI NtQueryVolumeInformationFile( HANDLE handle, IO_STATUS_BLOCK *io
         if (get_mountmgr_fs_info( handle, fd, drive, sizeof(data) ))
         {
 #ifdef WINE_IOS
-            /* MYIOSDECK (spec 17 C1): a 32-bit caller gets the prefix's serial, no label */
-            if (NtCurrentTeb()->WowTebOffset)
+            /* MYIOSDECK (spec 17 C1, clarification 3): every caller gets the prefix's serial, no
+             * label */
+            if (ios_s17_stored_serial_due( NtCurrentTeb()->WowTebOffset != 0 ))
             {
                 status = ios_s17_volume_info( info, ios_s17_wow_volume_serial( config_dir, drive->letter ),
                                               &io->Information );

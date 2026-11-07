@@ -63,6 +63,12 @@ unsigned long ios_s17_section_limit( int per_process, unsigned long wow_base,
 
 /* ---------------------------------------------------------------- Part C1 */
 
+int ios_s17_stored_serial_due( int is_wow64 )
+{
+    (void)is_wow64;   /* clarification 3: 64-bit callers too */
+    return 1;
+}
+
 uint32_t ios_s17_volume_serial( uint32_t stored, unsigned char letter )
 {
     uint32_t hash = 2166136261u;

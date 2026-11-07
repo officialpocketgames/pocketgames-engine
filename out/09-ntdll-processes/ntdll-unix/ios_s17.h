@@ -28,10 +28,11 @@ static inline int ios_s17_switch( int bit )
 
 /* ---- Part C ---- */
 
-/* C1: the serial of a 32-bit caller's volume (the stored value of the prefix, cached for the
- * app run, hashed with the drive letter the mount query left); 0 if there is no stored value */
+/* C1: the serial of a caller's volume (the stored value of the prefix, cached for the app run,
+ * hashed with the drive letter the mount query left); 0 if there is no stored value. The name
+ * is C1's: since clarification 3 64-bit callers get it too. Logs the value once per app run. */
 extern ULONG ios_s17_wow_volume_serial( const char *config_dir, unsigned char letter );
-/* C1: FileFsVolumeInformation for a 32-bit caller when the mount manager failed; buffer holds at
+/* C1: FileFsVolumeInformation for a caller when the mount manager failed; buffer holds at
  * least sizeof(FILE_FS_VOLUME_INFORMATION). STATUS_NOT_IMPLEMENTED for a zero serial. */
 extern NTSTATUS ios_s17_volume_info( void *buffer, ULONG serial, ULONG_PTR *information );
 /* C2: log a failed NtCreateFile or NtOpenFile (api names it) within its budget */
