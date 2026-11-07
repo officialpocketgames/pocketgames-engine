@@ -8495,8 +8495,18 @@ static NTSTATUS ios_vm_map_dylib_image( struct file_view **view_ret, struct pe_i
         update_arm64ec_ranges( view, nt, dir, &image_info->entry_point );
 #endif
 
-    ios_dylib_trace( "%s (machine %04x) at %p-%p, data from %p\n", img->name, image_info->machine,
-                     img->image, img->image + size, img->data );
+    /* clarification 17: whether the image is on the 64 KB granularity, and whether this first
+     * use took an instance in place of dyld's unaligned mapping */
+    if (img->dyld_image)
+        ios_dylib_trace( "%s (machine %04x) at %p-%p, data from %p%s, instance (dyld's mapping at %p "
+                         "is not 64 KB aligned)\n", img->name, image_info->machine, img->image,
+                         img->image + size, img->data,
+                         ios_image_granular( img->image ) ? ", 64 KB" : ", not 64 KB aligned",
+                         img->dyld_image );
+    else
+        ios_dylib_trace( "%s (machine %04x) at %p-%p, data from %p%s\n", img->name, image_info->machine,
+                         img->image, img->image + size, img->data,
+                         ios_image_granular( img->image ) ? ", 64 KB" : ", not 64 KB aligned" );
     *view_ret = view;
     return STATUS_SUCCESS;
 }

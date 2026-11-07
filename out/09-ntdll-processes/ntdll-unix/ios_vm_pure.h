@@ -179,6 +179,19 @@ const char *ios_dylib_dir( unsigned short machine, const char *pe_dir, const cha
  * separators). Returns 0, or -1 if it doesn't fit or the name is empty. */
 int ios_dylib_path( const char *dir, const char *dll_path, char *buf, size_t size );
 
+/* Clarification 17: whether an image starts on Windows' 64 KB allocation granularity (a
+ * program finding a DLL's base by stepping down 64 KB at a time to `MZ` relies on it) */
+int ios_image_granular( const void *image );
+
+/* Clarification 17: which image a mapping of a dylib's DLL registers. first_has_view: dyld's
+ * mapping already has a view (C4: another process maps the DLL); first_no_own_view: dyld's
+ * mapping isn't 64 KB aligned, so it never gets a view (set at first use). Returns
+ * IOS_DYLIB_TAKE_FIRST (register dyld's mapping) or IOS_DYLIB_TAKE_INSTANCE (a fresh instance
+ * from the app, which places it 64 KB aligned). */
+#define IOS_DYLIB_TAKE_FIRST    0
+#define IOS_DYLIB_TAKE_INSTANCE 1
+int ios_dylib_take( int first_has_view, int first_no_own_view );
+
 /* Clarification 4 (spec 18 Part B1): the address of the export `name` of the PE image mapped at
  * image (size bytes, headers included), or NULL. Everything is bounds-checked; forwarders give
  * NULL. Used for ntdll's `ios_teb_tsd_offset`. */

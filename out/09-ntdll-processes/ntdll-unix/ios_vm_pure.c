@@ -346,6 +346,17 @@ const char *ios_dylib_dir( unsigned short machine, const char *pe_dir, const cha
     return (dir && *dir) ? dir : NULL;
 }
 
+/* clarification 17: 64 KB-aligned images */
+int ios_image_granular( const void *image )
+{
+    return !((uintptr_t)image & 0xffff);
+}
+
+int ios_dylib_take( int first_has_view, int first_no_own_view )
+{
+    return (first_has_view || first_no_own_view) ? IOS_DYLIB_TAKE_INSTANCE : IOS_DYLIB_TAKE_FIRST;
+}
+
 int ios_dylib_path( const char *dir, const char *dll_path, char *buf, size_t size )
 {
     const char *p, *name = dll_path;

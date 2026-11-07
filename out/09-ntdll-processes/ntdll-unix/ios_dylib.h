@@ -30,6 +30,10 @@ struct ios_dylib_image
     char         *end;            /* end of the image */
     uint64_t     *teb_offset;
     int           has_view;       /* a view was registered over it */
+    int           no_own_view;    /* clarification 17: dyld's mapping isn't 64 KB aligned, so it is
+                                   * never registered; every process gets an instance */
+    char         *dyld_image;     /* clarification 17: an instance taken at first use in place of
+                                   * dyld's mapping at this address (for the C8 line), else NULL */
 };
 
 extern int ios_teb_tls_slot_offset;

@@ -874,6 +874,33 @@ static void test_image_asked(void)
     CHECK( ios_image_asked_note( buf, 0, 0, 0, 1, 2 ) == buf );
 }
 
+/* ---------- clarification 17: DLL images on the 64 KB granularity ---------- */
+
+static void test_image_granular(void)
+{
+    /* the spec's values: an app instance and the exe window are aligned; dyld's placement
+     * (uxtheme.dll at 0x17290c000) and an old instance (0x16c78c000) aren't */
+    CHECK( ios_image_granular( (const void *)(uintptr_t)0x16c790000ull ) );
+    CHECK( ios_image_granular( (const void *)(uintptr_t)0x140000000ull ) );
+    CHECK( !ios_image_granular( (const void *)(uintptr_t)0x16c78c000ull ) );
+    CHECK( !ios_image_granular( (const void *)(uintptr_t)0x17290c000ull ) );
+    /* a 16 KB host page or a 4 KB step off a 64 KB boundary isn't enough */
+    CHECK( !ios_image_granular( (const void *)(uintptr_t)0x140004000ull ) );
+    CHECK( !ios_image_granular( (const void *)(uintptr_t)0x140001000ull ) );
+
+    /* which image a mapping registers */
+    /* first use, dyld's mapping 64 KB aligned: dyld's mapping, as before */
+    CHECK( ios_dylib_take( 0, !ios_image_granular( (const void *)(uintptr_t)0x140000000ull ) ) ==
+           IOS_DYLIB_TAKE_FIRST );
+    /* first use, dyld's mapping not aligned: an instance at once */
+    CHECK( ios_dylib_take( 0, !ios_image_granular( (const void *)(uintptr_t)0x17290c000ull ) ) ==
+           IOS_DYLIB_TAKE_INSTANCE );
+    /* another process, aligned or not (C4): an instance */
+    CHECK( ios_dylib_take( 1, 0 ) == IOS_DYLIB_TAKE_INSTANCE );
+    CHECK( ios_dylib_take( 0, 1 ) == IOS_DYLIB_TAKE_INSTANCE );
+    CHECK( ios_dylib_take( 1, 1 ) == IOS_DYLIB_TAKE_INSTANCE );
+}
+
 static void test_loaded_again(void)
 {
     static const char *const advapi_names[] =
@@ -1157,6 +1184,7 @@ int main(void)
 {
     test_native_copy();
     test_loaded_again();
+    test_image_granular();
     test_alloc_log();
     test_alloc_fold();
     test_free_region();
