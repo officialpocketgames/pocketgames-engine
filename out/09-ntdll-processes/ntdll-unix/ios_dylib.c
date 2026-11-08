@@ -105,6 +105,9 @@ static struct ios_dylib_image *add_image( const char *name, USHORT machine, void
     entry->has_view = 0;
     entry->no_own_view = 0;
     entry->dyld_image = NULL;
+    entry->header_end = NULL;
+    entry->header_copy = 0;
+    entry->header_logged = 0;
     entry->path_tail[0] = 0;
     __atomic_store_n( &entry->end, end, __ATOMIC_RELEASE );
     if (entry == &images[count]) __atomic_store_n( &image_count, count + 1, __ATOMIC_RELEASE );
@@ -270,8 +273,8 @@ int ios_dylib_instances( const UNICODE_STRING *nt_name, USHORT machine, char **b
  *
  * Part C1-C4: the image of the DLL nt_name for an image of this machine, from its dylib:
  * the first instance on first use, a fresh one from the app when the first already has a view.
- * Clarification 17: when dyld's mapping isn't 64 KB aligned it never gets a view; the first use
- * takes a fresh instance too (dyld's mapping only if the app can't give one).
+ * Clarifications 17 and 19: dyld's mapping never gets a view; the first use takes a fresh
+ * instance too (dyld's mapping only if the app can't give one).
  * Returns STATUS_SUCCESS with *ret filled, STATUS_NOT_FOUND when there is no dylib for it (map
  * the upstream way), or an error that fails the mapping.
  */
@@ -322,10 +325,11 @@ NTSTATUS ios_dylib_open( const UNICODE_STRING *nt_name, USHORT machine, struct i
         if ((first = add_image( ios_file_part( name ), machine, handle, image, data, end, teb_offset )))
         {
             snprintf( first->path_tail, sizeof(first->path_tail), "%s", path );
-            /* clarification 17: dyld placed it off the 64 KB granularity: it never gets a view
-             * of its own; this first use takes an instance at once, as C4 does */
-            first->no_own_view = !ios_image_granular( image );
-            first_use = first->no_own_view;
+            /* clarification 19 (completing 17): dyld's mapping never gets a view of its own,
+             * aligned or not; this first use takes an instance at once, as C4 does, so every
+             * registered image is memory this layer owns (its header can carry its base) */
+            first->no_own_view = 1;
+            first_use = 1;
         }
     }
     if (first && ios_dylib_take( first->has_view, first->no_own_view ) == IOS_DYLIB_TAKE_FIRST)
@@ -333,15 +337,16 @@ NTSTATUS ios_dylib_open( const UNICODE_STRING *nt_name, USHORT machine, struct i
 
     if (!entry && first)
     {
-        /* Part C4: another pseudo-process maps this DLL, or (clarification 17) dyld's mapping
-         * isn't 64 KB aligned: a fresh instance of it, which the app places 64 KB aligned */
+        /* Part C4: another pseudo-process maps this DLL, or (clarifications 17 and 19) its first
+         * use: a fresh instance of it, which the app places 64 KB aligned */
         memset( &inst, 0, sizeof(inst) );
         err[0] = 0;
         if (!mid_pe_dylib_instance( first->handle, path, &inst, err, sizeof(err) ))
         {
             if (first_use)
             {
-                /* an unaligned image is better than no image: dyld's mapping after all */
+                /* an image is better than no image: dyld's mapping after all (its header keeps
+                 * the file's ImageBase, clarification 19) */
                 ios_dylib_trace( "no instance of %s for its first use (%s): dyld's mapping is used\n",
                                  path, err );
                 first->no_own_view = 0;

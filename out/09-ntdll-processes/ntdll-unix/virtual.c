@@ -315,6 +315,9 @@ static NTSTATUS ios_vm_reuse_view( struct file_view *view, const UNICODE_STRING 
 static void ios_vm_free_answer( char *base, char **alloc_base, char **alloc_end, BOOL *reserved );
 static void ios_log_mem( int op, const void *base, SIZE_T size, ULONG type, ULONG prot,
                          const UNICODE_STRING *nt_name, ULONG64 preferred );
+static BOOL ios_vm_header_write_refused( struct file_view *view, char *base, SIZE_T size, ULONG new_prot );
+static void ios_vm_header_base_check( struct file_view *view, char *base, SIZE_T size, ULONG new_prot );
+static void ios_vm_set_header_base( void *module, IMAGE_NT_HEADERS *nt );
 #endif
 
 static inline BOOL is_beyond_limit( const void *addr, size_t size, const void *limit )
@@ -4301,7 +4304,13 @@ NTSTATUS virtual_relocate_module( void *module )
 
     TRACE( "%p -> %p\n", (void *)image_base, module );
 
-    if (!(relocs = get_data_dir( nt, total_size, IMAGE_DIRECTORY_ENTRY_BASERELOC ))) return STATUS_SUCCESS;
+    if (!(relocs = get_data_dir( nt, total_size, IMAGE_DIRECTORY_ENTRY_BASERELOC )))
+    {
+#ifdef WINE_IOS
+        ios_vm_set_header_base( module, nt );  /* MYIOSDECK (spec 10 clarification 19) */
+#endif
+        return STATUS_SUCCESS;
+    }
 
     if (!(protect_old = malloc( nt->FileHeader.NumberOfSections * sizeof(*protect_old ))))
         return STATUS_NO_MEMORY;
@@ -4328,8 +4337,35 @@ NTSTATUS virtual_relocate_module( void *module )
         NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, protect_old[i], &protect_old[i] );
     }
     free( protect_old );
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 10 clarification 19): relocated once, now the header says where it is */
+    ios_vm_set_header_base( module, nt );
+#endif
     return STATUS_SUCCESS;
 }
+
+#ifdef WINE_IOS
+/***********************************************************************
+ *           ios_vm_set_header_base
+ *
+ * MYIOSDECK (spec 10 clarification 19): after ntdll's own relocation of a 64-bit image
+ * (virtual_relocate_module), its header's ImageBase becomes the address it is loaded at, as
+ * Windows' memory manager leaves it: ImageBase made writable for the write, then the header's
+ * protection back. Signed headers (dyld's mapping) refuse to become writable and keep the file's
+ * value. A 32-bit image is left alone: its header would need the guest address.
+ */
+static void ios_vm_set_header_base( void *module, IMAGE_NT_HEADERS *nt )
+{
+    void *addr = module;
+    SIZE_T size = (char *)&nt->OptionalHeader - (char *)module + 32;  /* through ImageBase */
+    ULONG old;
+
+    if (nt->OptionalHeader.Magic != IMAGE_NT_OPTIONAL_HDR64_MAGIC) return;
+    if (NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, PAGE_READWRITE, &old )) return;
+    if (addr == module) ios_pe_set_image_base( module, size, (ULONG_PTR)module );
+    NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, old, &old );
+}
+#endif
 
 
 /* set some initial values in a new TEB */
@@ -6135,7 +6171,18 @@ NTSTATUS WINAPI NtProtectVirtualMemory( HANDLE process, PVOID *addr_ptr, SIZE_T 
         if (get_committed_size( view, base, size, &vprot, VPROT_COMMITTED ) >= size && (vprot & VPROT_COMMITTED))
         {
             old = get_win32_prot( vprot, view->protect );
+#ifdef WINE_IOS
+            /* MYIOSDECK (spec 10 clarification 19): signed headers can't become writable; say so
+             * rather than report a change that can't take effect */
+            if (ios_vm_header_write_refused( view, base, size, new_prot )) status = STATUS_ACCESS_DENIED;
+            else
+#endif
             status = set_protection( view, base, size, new_prot );
+#ifdef WINE_IOS
+            /* clarification 19: the loader made the header copy read-only again after writing
+             * the image's base into it */
+            if (!status) ios_vm_header_base_check( view, base, size, new_prot );
+#endif
         }
         else status = STATUS_NOT_COMMITTED;
     }
@@ -8222,8 +8269,12 @@ static int ios_vm_mprotect( void *base, size_t size, int unix_prot )
 
         if (img)
         {
-            place = (addr < img->data) ? IOS_PLACE_IMAGE_CODE : IOS_PLACE_IMAGE_DATA;
-            next = min( end, (addr < img->data) ? img->data : img->end );
+            /* clarification 19: an instance's header copy is data (never executable) */
+            const char *stop;
+
+            place = ios_dylib_place( addr, img->image, img->data, img->end, img->header_end,
+                                     img->header_copy, &stop );
+            next = min( end, (char *)stop );
         }
         else
         {
@@ -8467,12 +8518,118 @@ static ULONG find_export_rva( char *base, const char *name )
 
 
 /***********************************************************************
+ *           ios_vm_header_write_refused
+ *
+ * Clarification 19: NtProtectVirtualMemory making a range of a dylib image's signed headers
+ * writable (dyld's mapping, or headers that share a page with a section) is refused: Part B
+ * never changes signed text, so the call would report a change that can't take effect, and the
+ * loader writing ImageBase after it would fault. virtual_mutex is held.
+ */
+static BOOL ios_vm_header_write_refused( struct file_view *view, char *base, SIZE_T size, ULONG new_prot )
+{
+    const struct ios_dylib_image *img;
+    unsigned int vprot;
+
+    if ((view->protect & (SEC_IMAGE | VPROT_SYSTEM)) != (SEC_IMAGE | VPROT_SYSTEM)) return FALSE;
+    if (!(img = ios_dylib_find( view->base )) || img->image != (char *)view->base) return FALSE;
+    if (get_vprot_flags( new_prot, &vprot, TRUE ) || !(vprot & (VPROT_WRITE | VPROT_WRITECOPY))) return FALSE;
+    return ios_header_write_refused( base, size, img->image, img->header_end, img->header_copy );
+}
+
+
+/***********************************************************************
+ *           ios_vm_header_base_check
+ *
+ * Clarification 19 (the log): after NtProtectVirtualMemory made part of an instance's header copy
+ * non-writable, the first time its ImageBase holds the image's address, one trace line says so
+ * (the loader writes it after relocating, then restores the header's protection).
+ * virtual_mutex is held.
+ */
+static void ios_vm_header_base_check( struct file_view *view, char *base, SIZE_T size, ULONG new_prot )
+{
+    struct ios_dylib_image *img;
+    unsigned int vprot;
+    uint64_t value;
+
+    if ((view->protect & (SEC_IMAGE | VPROT_SYSTEM)) != (SEC_IMAGE | VPROT_SYSTEM)) return;
+    /* the entry is only written under virtual_mutex once registered */
+    if (!(img = (struct ios_dylib_image *)ios_dylib_find( view->base )) || img->image != (char *)view->base) return;
+    if (!img->header_copy || img->header_logged || base >= img->header_end || base + size <= img->image) return;
+    if (get_vprot_flags( new_prot, &vprot, TRUE ) || (vprot & (VPROT_WRITE | VPROT_WRITECOPY))) return;
+    if (!ios_pe_image_base( img->image, img->header_end - img->image, &value ) || value != (ULONG_PTR)img->image)
+        return;
+    img->header_logged = 1;
+    ios_dylib_trace( "%s (machine %04x) at %p: header base %#llx\n", img->name, img->machine, img->image,
+                     (unsigned long long)value );
+}
+
+
+/***********************************************************************
+ *           ios_vm_header_copy
+ *
+ * Clarification 19 (2): an instance's header range [image, image + h) becomes an anonymous
+ * private copy of the same bytes, so the loader can write the image's actual base into its
+ * ImageBase after relocating it (as Windows' memory manager does). h is SizeOfHeaders rounded up
+ * to the host page, only when no section starts below it. The copy is made read-write and is
+ * never executable; the caller sets the view's header protection (read-only) right after.
+ * dyld's mapping (the fallback) keeps its signed headers. Sets img->header_end and
+ * img->header_copy; returns h, or 0 with the reason in why. virtual_mutex is held.
+ */
+static SIZE_T ios_vm_header_copy( struct ios_dylib_image *img, const IMAGE_NT_HEADERS *nt, char *why,
+                                  size_t why_len )
+{
+    const IMAGE_SECTION_HEADER *sec = IMAGE_FIRST_SECTION( nt );
+    SIZE_T headers = ROUND_SIZE( 0, nt->OptionalHeader.SizeOfHeaders, page_mask );
+    SIZE_T code_size = img->data - img->image, h;
+    UINT32 lowest = 0xffffffff;
+    char *tmp;
+    int i;
+
+    for (i = 0; i < nt->FileHeader.NumberOfSections; i++) lowest = min( lowest, sec[i].VirtualAddress );
+    h = ios_header_copy_size( nt->OptionalHeader.SizeOfHeaders, host_page_size, lowest );
+    img->header_copy = 0;
+    img->header_end = img->image + min( headers, code_size );
+    if (img->handle)
+    {
+        snprintf( why, why_len, "dyld's mapping" );
+        return 0;
+    }
+    if (!h || h > code_size)
+    {
+        snprintf( why, why_len, "headers of %#x bytes share a host page with %s at %#x",
+                  (unsigned int)nt->OptionalHeader.SizeOfHeaders, h ? "the data" : "a section",
+                  h ? (unsigned int)code_size : (unsigned int)lowest );
+        return 0;
+    }
+    tmp = mmap( NULL, h, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0 );
+    if (tmp == MAP_FAILED)
+    {
+        snprintf( why, why_len, "no copy: %s", strerror( errno ) );
+        return 0;
+    }
+    memcpy( tmp, img->image, h );
+    if (mmap( img->image, h, PROT_READ | PROT_WRITE, MAP_FIXED | MAP_PRIVATE | MAP_ANON, -1, 0 ) == MAP_FAILED)
+    {
+        snprintf( why, why_len, "no copy over the headers: %s", strerror( errno ) );
+        munmap( tmp, h );
+        return 0;
+    }
+    memcpy( img->image, tmp, h );
+    munmap( tmp, h );
+    img->header_end = img->image + h;
+    img->header_copy = 1;
+    return h;
+}
+
+
+/***********************************************************************
  *           ios_vm_map_dylib_image
  *
  * Part C3: a view over a signed dylib's image instead of a file mapping: committed, readable,
  * write-copy and executable at the view level, the headers read-only and each section from its
  * characteristics. ARM64EC images get their code ranges and redirected entry point here. No
  * relocation: the server reports the image not at its base and the loader relocates it once.
+ * Clarification 19: an instance's headers are an anonymous copy first (ios_vm_header_copy).
  * STATUS_NOT_FOUND when the image doesn't come from a dylib. virtual_mutex is held.
  */
 static NTSTATUS ios_vm_map_dylib_image( struct file_view **view_ret, struct pe_image_info *image_info,
@@ -8483,8 +8640,11 @@ static NTSTATUS ios_vm_map_dylib_image( struct file_view **view_ret, struct pe_i
     IMAGE_NT_HEADERS *nt;
     IMAGE_SECTION_HEADER *sec;
     IMAGE_DATA_DIRECTORY *dir;
-    SIZE_T size = ROUND_SIZE( 0, image_info->map_size, page_mask );
+    SIZE_T size = ROUND_SIZE( 0, image_info->map_size, page_mask ), copied;
     NTSTATUS status;
+    char why[128], header_note[192];
+    unsigned long long file_base = 0;
+    uint64_t base64;
     int i;
 
     if (image_info->machine == IMAGE_FILE_MACHINE_I386) return STATUS_NOT_FOUND;
@@ -8501,8 +8661,22 @@ static NTSTATUS ios_vm_map_dylib_image( struct file_view **view_ret, struct pe_i
         return status;
 
     nt = (IMAGE_NT_HEADERS *)(img->image + ((IMAGE_DOS_HEADER *)img->image)->e_lfanew);
-    set_vprot( view, img->image, ROUND_SIZE( 0, nt->OptionalHeader.SizeOfHeaders, page_mask ),
+    /* clarification 19: the headers become a copy the loader can write ImageBase into; read-only
+     * now, as before (the loader makes ImageBase writable for the moment it writes it) */
+    why[0] = 0;
+    copied = ios_vm_header_copy( img, nt, why, sizeof(why) );
+    set_vprot( view, img->image,
+               copied ? copied : ROUND_SIZE( 0, nt->OptionalHeader.SizeOfHeaders, page_mask ),
                VPROT_COMMITTED | VPROT_READ );
+    if (ios_pe_image_base( img->image, img->header_end - img->image, &base64 )) file_base = base64;
+    if (!copied)
+        snprintf( header_note, sizeof(header_note), ", header base left %#llx (%s)", file_base, why );
+    else if (file_base == (ULONG_PTR)img->image)
+    {
+        snprintf( header_note, sizeof(header_note), ", header base %#llx", file_base );
+        img->header_logged = 1;
+    }
+    else snprintf( header_note, sizeof(header_note), ", header copied (base %#llx until relocated)", file_base );
     sec = IMAGE_FIRST_SECTION( nt );
     for (i = 0; i < nt->FileHeader.NumberOfSections; i++)
     {
@@ -8524,17 +8698,18 @@ static NTSTATUS ios_vm_map_dylib_image( struct file_view **view_ret, struct pe_i
 #endif
 
     /* clarification 17: whether the image is on the 64 KB granularity, and whether this first
-     * use took an instance in place of dyld's unaligned mapping */
+     * use took an instance in place of dyld's mapping (always, since clarification 19);
+     * clarification 19: the header base, or why the header keeps the file's */
     if (img->dyld_image)
-        ios_dylib_trace( "%s (machine %04x) at %p-%p, data from %p%s, instance (dyld's mapping at %p "
-                         "is not 64 KB aligned)\n", img->name, image_info->machine, img->image,
-                         img->image + size, img->data,
+        ios_dylib_trace( "%s (machine %04x) at %p-%p, data from %p%s, instance (dyld's mapping at %p%s)%s\n",
+                         img->name, image_info->machine, img->image, img->image + size, img->data,
                          ios_image_granular( img->image ) ? ", 64 KB" : ", not 64 KB aligned",
-                         img->dyld_image );
+                         img->dyld_image, ios_image_granular( img->dyld_image ) ? "" : " is not 64 KB aligned",
+                         header_note );
     else
-        ios_dylib_trace( "%s (machine %04x) at %p-%p, data from %p%s\n", img->name, image_info->machine,
+        ios_dylib_trace( "%s (machine %04x) at %p-%p, data from %p%s%s\n", img->name, image_info->machine,
                          img->image, img->image + size, img->data,
-                         ios_image_granular( img->image ) ? ", 64 KB" : ", not 64 KB aligned" );
+                         ios_image_granular( img->image ) ? ", 64 KB" : ", not 64 KB aligned", header_note );
     *view_ret = view;
     return STATUS_SUCCESS;
 }

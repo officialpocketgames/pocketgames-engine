@@ -22,7 +22,8 @@
  * (Part C), ARM64EC import binding with native addresses (Part D), locale tables before WoW64
  * starts (Part G2), the 32-bit heap policies (Part I1), and loader rules for every build
  * (Part H3-H6: log lines, LdrShutdownThread, built-in XInput, the sysx64 farm), plus the
- * ios_teb_tsd_offset data export (Part B1).
+ * ios_teb_tsd_offset data export (Part B1). Spec 10 clarification 19: perform_relocations leaves
+ * the image's actual base in its header's ImageBase.
  */
 
 #include <assert.h>
@@ -2233,6 +2234,23 @@ static void update_load_config( void *module )
 }
 
 
+/* MYIOSDECK (spec 10 clarification 19): as Windows' memory manager leaves it, a relocated image's
+ * header says where the image is loaded (code that takes a module's base from its own header
+ * reads the right address). The header is read-only: ImageBase is made writable for the write,
+ * then its protection is put back. A header that can't become writable (signed text of an image
+ * from a dylib, which the unix side refuses) keeps the file's value. */
+static void set_header_image_base( void *module, IMAGE_NT_HEADERS *nt )
+{
+    void *addr = &nt->OptionalHeader.ImageBase;
+    SIZE_T size = sizeof(nt->OptionalHeader.ImageBase);
+    ULONG old;
+
+    if (NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, PAGE_READWRITE, &old )) return;
+    nt->OptionalHeader.ImageBase = (ULONG_PTR)module;
+    NtProtectVirtualMemory( NtCurrentProcess(), &addr, &size, old, &old );
+}
+
+
 static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T len )
 {
     char *base;
@@ -2263,7 +2281,11 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T 
         return STATUS_CONFLICTING_ADDRESSES;
     }
 
-    if (!relocs->Size) return STATUS_SUCCESS;
+    if (!relocs->Size)
+    {
+        set_header_image_base( module, nt );  /* MYIOSDECK (spec 10 clarification 19): moved, nothing to fix */
+        return STATUS_SUCCESS;
+    }
     if (!relocs->VirtualAddress) return STATUS_CONFLICTING_ADDRESSES;
 
     if (!(protect_old = RtlAllocateHeap( GetProcessHeap(), 0,
@@ -2311,6 +2333,9 @@ static NTSTATUS perform_relocations( void *module, IMAGE_NT_HEADERS *nt, SIZE_T 
         NtProtectVirtualMemory( NtCurrentProcess(), &addr,
                                 &size, protect_old[i], &protect_old[i] );
     }
+    /* MYIOSDECK (spec 10 clarification 19): relocated once from the header's ImageBase; now the
+     * header says where the image is (a later call finds nothing to do) */
+    set_header_image_base( module, nt );
 
 done:
     RtlFreeHeap( GetProcessHeap(), 0, protect_old );

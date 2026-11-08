@@ -402,6 +402,85 @@ uint32_t ios_pe_reloc_dir_size( const void *hdr, size_t len )
     return read_le32( p + opt + entry + 4 );
 }
 
+/* ---------- clarification 19: the header's ImageBase ---------- */
+
+uint64_t ios_header_copy_size( uint32_t size_of_headers, uint64_t host_page, uint32_t lowest_rva )
+{
+    uint64_t h;
+
+    if (!size_of_headers || !host_page) return 0;
+    h = round_up( size_of_headers, host_page );
+    return h <= lowest_rva ? h : 0;
+}
+
+/* the offset of ImageBase in hdr and its width (8: PE32+, 4: PE32), or 0 */
+static size_t image_base_field( const unsigned char *p, size_t len, size_t *width )
+{
+    uint32_t lfanew, opt, opt_size, magic;
+
+    if (!p || len < 0x40 || p[0] != 'M' || p[1] != 'Z') return 0;
+    lfanew = read_le32( p + 0x3c );
+    if (lfanew > len || len - lfanew < 4 + 20) return 0;
+    if (memcmp( p + lfanew, "PE\0\0", 4 )) return 0;
+    opt = lfanew + 4 + 20;
+    opt_size = read_le16( p + lfanew + 4 + 16 );
+    if (len - opt < 2 || opt_size < 2) return 0;
+    magic = read_le16( p + opt );
+    if (magic == 0x20b) *width = 8;
+    else if (magic == 0x10b) *width = 4;
+    else return 0;
+    /* PE32+: ImageBase follows BaseOfCode at 24; PE32 has BaseOfData there, ImageBase at 28;
+     * both end at 32 */
+    if (opt_size < 32 || len - opt < 32) return 0;
+    return opt + (*width == 8 ? 24 : 28);
+}
+
+int ios_pe_image_base( const void *hdr, size_t len, uint64_t *base )
+{
+    const unsigned char *p = hdr;
+    size_t width, off = image_base_field( p, len, &width );
+
+    if (!off) return 0;
+    *base = read_le32( p + off );
+    if (width == 8) *base |= (uint64_t)read_le32( p + off + 4 ) << 32;
+    return 1;
+}
+
+int ios_pe_set_image_base( void *hdr, size_t len, uint64_t base )
+{
+    unsigned char *p = hdr;
+    size_t width, off = image_base_field( p, len, &width ), i;
+
+    if (!off) return 0;
+    if (width == 4 && base >> 32) return 0;
+    for (i = 0; i < width; i++) p[off + i] = (unsigned char)(base >> (8 * i));
+    return 1;
+}
+
+int ios_dylib_place( const char *addr, const char *image, const char *data, const char *end,
+                     const char *header_end, int header_copy, const char **next )
+{
+    if (header_copy && header_end && addr >= image && addr < header_end)
+    {
+        *next = header_end < end ? header_end : end;
+        return IOS_PLACE_IMAGE_DATA;
+    }
+    if (addr < data)
+    {
+        *next = data < end ? data : end;
+        return IOS_PLACE_IMAGE_CODE;
+    }
+    *next = end;
+    return IOS_PLACE_IMAGE_DATA;
+}
+
+int ios_header_write_refused( const char *base, size_t size, const char *image, const char *header_end,
+                              int header_copy )
+{
+    if (header_copy || !header_end || !image) return 0;
+    return base >= image && base < header_end && size <= (size_t)(header_end - base);
+}
+
 int ios_dylib_path( const char *dir, const char *dll_path, char *buf, size_t size )
 {
     const char *p, *name = dll_path;

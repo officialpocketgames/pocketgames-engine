@@ -994,6 +994,107 @@ static void test_wants_window(void)
     CHECK( ios_pe_reloc_dir_size( hdr, sizeof(hdr) ) == 0 );
 }
 
+/* ---------- clarification 19: a DLL's header carries its actual base ---------- */
+
+static uint64_t get64( const unsigned char *p )
+{
+    uint64_t v = 0;
+    int i;
+
+    for (i = 7; i >= 0; i--) v = v << 8 | p[i];
+    return v;
+}
+
+static void test_header_base(void)
+{
+    static char image[0x20000];
+    const size_t opt = 0x80 + 24;
+    unsigned char hdr[1024], before[1024];
+    uint64_t base;
+    const char *next;
+    size_t end;
+
+    /* the header range: the spec's values, then the edges */
+    CHECK( ios_header_copy_size( 0x400, 0x4000, 0x10000 ) == 0x4000 );   /* our DLLs, 16 KB pages */
+    CHECK( ios_header_copy_size( 0x400, 0x4000, 0x1000 ) == 0 );         /* sections from 0x1000 */
+    CHECK( ios_header_copy_size( 0x400, 0x1000, 0x1000 ) == 0x1000 );    /* 4 KB pages: fits */
+    CHECK( ios_header_copy_size( 0x4000, 0x4000, 0x4000 ) == 0x4000 );   /* exactly up to the section */
+    CHECK( ios_header_copy_size( 0x4001, 0x4000, 0x8000 ) == 0x8000 );
+    CHECK( ios_header_copy_size( 0x4001, 0x4000, 0x7fff ) == 0 );
+    CHECK( ios_header_copy_size( 0x400, 0x4000, 0xffffffffu ) == 0x4000 ); /* no section */
+    CHECK( ios_header_copy_size( 0, 0x4000, 0x10000 ) == 0 );
+    CHECK( ios_header_copy_size( 0x400, 0, 0x10000 ) == 0 );
+
+    /* PE32+: ImageBase is the 8 bytes at 24 of the optional header; nothing else changes */
+    end = make_pe( hdr, sizeof(hdr), 0x20b, 0x2022, 0x0160, 16, 0x1200 );
+    put32( hdr + opt + 20, 0x10000 );        /* BaseOfCode */
+    put32( hdr + opt + 24, 0x80000000u );    /* ImageBase 0x180000000 */
+    put32( hdr + opt + 28, 0x1 );
+    put32( hdr + opt + 32, 0x10000 );        /* SectionAlignment */
+    CHECK( ios_pe_image_base( hdr, end, &base ) && base == 0x180000000ull );
+    memcpy( before, hdr, sizeof(hdr) );
+    CHECK( ios_pe_set_image_base( hdr, end, 0x16c790000ull ) );
+    CHECK( get64( hdr + opt + 24 ) == 0x16c790000ull );
+    CHECK( ios_pe_image_base( hdr, end, &base ) && base == 0x16c790000ull );
+    CHECK( !memcmp( hdr, before, opt + 24 ) );
+    CHECK( !memcmp( hdr + opt + 32, before + opt + 32, sizeof(hdr) - opt - 32 ) );
+    /* the header range alone is enough: the field ends 32 bytes into the optional header */
+    CHECK( ios_pe_set_image_base( hdr, opt + 32, 0x180000000ull ) );
+    CHECK( get64( hdr + opt + 24 ) == 0x180000000ull );
+    CHECK( !ios_pe_set_image_base( hdr, opt + 31, 0x16c790000ull ) );
+    CHECK( !ios_pe_image_base( hdr, opt + 31, &base ) );
+    CHECK( get64( hdr + opt + 24 ) == 0x180000000ull );
+
+    /* PE32 (an i386 image): 4 bytes at 28, after BaseOfData; only values below 4 GB */
+    end = make_pe( hdr, sizeof(hdr), 0x10b, 0x0102, 0x0140, 16, 0x345 );
+    put32( hdr + opt + 24, 0x2000 );         /* BaseOfData */
+    put32( hdr + opt + 28, 0x00400000 );
+    put32( hdr + opt + 32, 0x1000 );
+    CHECK( ios_pe_image_base( hdr, end, &base ) && base == 0x400000 );
+    CHECK( ios_pe_set_image_base( hdr, end, 0x10000000 ) );
+    CHECK( ios_pe_image_base( hdr, end, &base ) && base == 0x10000000 );
+    CHECK( hdr[opt + 24] == 0x00 && hdr[opt + 25] == 0x20 && hdr[opt + 32] == 0x00 && hdr[opt + 33] == 0x10 );
+    CHECK( !ios_pe_set_image_base( hdr, end, 0x100000000ull ) );
+    CHECK( ios_pe_image_base( hdr, end, &base ) && base == 0x10000000 );
+
+    /* not a PE, or an optional header too small to hold ImageBase */
+    end = make_pe( hdr, sizeof(hdr), 0x20b, 0x2022, 0x0160, 16, 0x1200 );
+    put16( hdr + 0x80 + 4 + 16, 31 );
+    CHECK( !ios_pe_image_base( hdr, end, &base ) );
+    CHECK( !ios_pe_set_image_base( hdr, end, 1 ) );
+    make_pe( hdr, sizeof(hdr), 0x20b, 0x2022, 0x0160, 16, 0x1200 );
+    hdr[0] = 'Z';
+    CHECK( !ios_pe_image_base( hdr, end, &base ) );
+    make_pe( hdr, sizeof(hdr), 0x20b, 0x2022, 0x0160, 16, 0x1200 );
+    put16( hdr + opt, 0x107 );
+    CHECK( !ios_pe_set_image_base( hdr, end, 1 ) );
+    CHECK( !ios_pe_image_base( NULL, 4096, &base ) );
+
+    /* Part B's place of an address in an image: headers 0x4000 copied, data from 0x10000 */
+    CHECK( ios_dylib_place( image, image, image + 0x10000, image + 0x20000, image + 0x4000, 1, &next ) ==
+           IOS_PLACE_IMAGE_DATA && next == image + 0x4000 );
+    CHECK( ios_dylib_place( image + 0x3fff, image, image + 0x10000, image + 0x20000, image + 0x4000, 1, &next ) ==
+           IOS_PLACE_IMAGE_DATA && next == image + 0x4000 );
+    CHECK( ios_dylib_place( image + 0x4000, image, image + 0x10000, image + 0x20000, image + 0x4000, 1, &next ) ==
+           IOS_PLACE_IMAGE_CODE && next == image + 0x10000 );
+    CHECK( ios_dylib_place( image + 0x10000, image, image + 0x10000, image + 0x20000, image + 0x4000, 1, &next ) ==
+           IOS_PLACE_IMAGE_DATA && next == image + 0x20000 );
+    /* signed headers (no copy) stay code, as before */
+    CHECK( ios_dylib_place( image, image, image + 0x10000, image + 0x20000, image + 0x1000, 0, &next ) ==
+           IOS_PLACE_IMAGE_CODE && next == image + 0x10000 );
+    CHECK( ios_dylib_place( image, image, image + 0x10000, image + 0x20000, NULL, 0, &next ) ==
+           IOS_PLACE_IMAGE_CODE && next == image + 0x10000 );
+
+    /* making signed headers writable is refused; the copy, other ranges and wider ranges aren't */
+    CHECK( ios_header_write_refused( image, 0x1000, image, image + 0x1000, 0 ) );
+    CHECK( ios_header_write_refused( image + 0x800, 0x800, image, image + 0x1000, 0 ) );
+    CHECK( !ios_header_write_refused( image, 0x1001, image, image + 0x1000, 0 ) );
+    CHECK( !ios_header_write_refused( image + 0x1000, 0x1000, image, image + 0x1000, 0 ) );
+    CHECK( !ios_header_write_refused( image, 0x1000, image, image + 0x4000, 1 ) );
+    CHECK( !ios_header_write_refused( image, 0x1000, image, NULL, 0 ) );
+    CHECK( !ios_header_write_refused( image, 0x1000, image + 0x1000, image + 0x2000, 0 ) );
+}
+
 static void test_loaded_again(void)
 {
     static const char *const advapi_names[] =
@@ -1279,6 +1380,7 @@ int main(void)
     test_loaded_again();
     test_image_granular();
     test_wants_window();
+    test_header_base();
     test_alloc_log();
     test_alloc_fold();
     test_free_region();

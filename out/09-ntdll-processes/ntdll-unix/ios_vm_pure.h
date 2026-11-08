@@ -207,6 +207,34 @@ int ios_image_wants_window( unsigned short characteristics, unsigned short dll_c
  * bounds-checked. */
 uint32_t ios_pe_reloc_dir_size( const void *hdr, size_t len );
 
+/* ---------- clarification 19: an image's header carries its actual base ----------
+ * ios_header_copy_size: the size h of the header range that becomes an anonymous copy when an
+ * instance's view is registered: SizeOfHeaders rounded up to the host page (a power of two), when
+ * that is at most lowest_rva (the lowest section RVA; UINT32_MAX when there is no section), else
+ * 0 (the headers share a host page with a section: they stay as they are). 0 for 0 headers. */
+uint64_t ios_header_copy_size( uint32_t size_of_headers, uint64_t host_page, uint32_t lowest_rva );
+
+/* The optional header's ImageBase of the PE headers in hdr (len bytes): PE32+ (8 bytes at offset
+ * 24 of the optional header) or PE32 (4 bytes at offset 28). ios_pe_image_base returns 1 and
+ * stores it in *base, ios_pe_set_image_base writes base (PE32: only a value below 4 GB) and
+ * returns 1; both return 0 for cut-short or malformed headers. Everything is bounds-checked. */
+int ios_pe_image_base( const void *hdr, size_t len, uint64_t *base );
+int ios_pe_set_image_base( void *hdr, size_t len, uint64_t base );
+
+/* Where addr lies in a registered dylib image [image, end) whose data starts at data, for Part
+ * B's protection rule: IOS_PLACE_IMAGE_DATA for the anonymous header copy [image, header_end)
+ * (header_copy set: data, never executable) and for the data, IOS_PLACE_IMAGE_CODE for the rest
+ * below data (signed, never changes). *next: where that place ends (at most end). */
+int ios_dylib_place( const char *addr, const char *image, const char *data, const char *end,
+                     const char *header_end, int header_copy, const char **next );
+
+/* Whether a request making [base, base + size) writable is refused: the range lies entirely in
+ * the headers [image, header_end) of an image whose headers are not the copy (dyld's mapping, or
+ * headers sharing a page with a section). They are signed text: the request can't take effect,
+ * and a caller that wrote after a reported success would fault. */
+int ios_header_write_refused( const char *base, size_t size, const char *image, const char *header_end,
+                              int header_copy );
+
 /* Clarification 4 (spec 18 Part B1): the address of the export `name` of the PE image mapped at
  * image (size bytes, headers included), or NULL. Everything is bounds-checked; forwarders give
  * NULL. Used for ntdll's `ios_teb_tsd_offset`. */
