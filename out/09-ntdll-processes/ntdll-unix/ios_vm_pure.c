@@ -357,6 +357,51 @@ int ios_dylib_take( int first_has_view, int first_no_own_view )
     return (first_has_view || first_no_own_view) ? IOS_DYLIB_TAKE_INSTANCE : IOS_DYLIB_TAKE_FIRST;
 }
 
+/* clarification 18: an image Windows moves anyway leaves the exe window free */
+int ios_image_wants_window( unsigned short characteristics, unsigned short dll_characteristics,
+                            uint32_t reloc_dir_size )
+{
+    const unsigned short relocs_stripped = 0x0001;   /* IMAGE_FILE_RELOCS_STRIPPED */
+    const unsigned short aslr = 0x0040 | 0x0020;     /* DYNAMIC_BASE | HIGH_ENTROPY_VA */
+
+    if (characteristics & relocs_stripped) return 1;
+    if (!reloc_dir_size) return 1;
+    return (dll_characteristics & aslr) != aslr;
+}
+
+static uint32_t read_le16( const unsigned char *p ) { return p[0] | (uint32_t)p[1] << 8; }
+static uint32_t read_le32( const unsigned char *p )
+{
+    return p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
+}
+
+uint32_t ios_pe_reloc_dir_size( const void *hdr, size_t len )
+{
+    /* PE format: e_lfanew at 0x3c; then "PE\0\0", the 20-byte file header (SizeOfOptionalHeader
+     * at 16) and the optional header, whose NumberOfRvaAndSizes and data directories sit at 92
+     * and 96 (PE32, magic 0x10b) or 108 and 112 (PE32+, magic 0x20b); each directory entry is a
+     * VirtualAddress and a Size, and the relocation entry is number 5 */
+    const unsigned char *p = hdr;
+    const uint32_t reloc_index = 5;
+    uint32_t lfanew, opt, opt_size, magic, count_off, dir_off, entry;
+
+    if (!p || len < 0x40 || p[0] != 'M' || p[1] != 'Z') return 0;
+    lfanew = read_le32( p + 0x3c );
+    if (lfanew > len || len - lfanew < 4 + 20) return 0;
+    if (memcmp( p + lfanew, "PE\0\0", 4 )) return 0;
+    opt = lfanew + 4 + 20;
+    opt_size = read_le16( p + lfanew + 4 + 16 );
+    if (opt_size < 2 || len - opt < 2) return 0;
+    magic = read_le16( p + opt );
+    if (magic == 0x20b) { count_off = 108; dir_off = 112; }
+    else if (magic == 0x10b) { count_off = 92; dir_off = 96; }
+    else return 0;
+    entry = dir_off + reloc_index * 8;
+    if (opt_size < entry + 8 || len - opt < entry + 8) return 0;
+    if (read_le32( p + opt + count_off ) <= reloc_index) return 0;
+    return read_le32( p + opt + entry + 4 );
+}
+
 int ios_dylib_path( const char *dir, const char *dll_path, char *buf, size_t size )
 {
     const char *p, *name = dll_path;

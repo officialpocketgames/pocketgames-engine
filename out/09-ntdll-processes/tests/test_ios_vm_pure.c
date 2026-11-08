@@ -901,6 +901,99 @@ static void test_image_granular(void)
     CHECK( ios_dylib_take( 1, 1 ) == IOS_DYLIB_TAKE_INSTANCE );
 }
 
+/* ---------- clarification 18: the window is for programs that can't move ---------- */
+
+static void put16( unsigned char *p, unsigned int v ) { p[0] = v & 0xff; p[1] = (v >> 8) & 0xff; }
+static void put32( unsigned char *p, uint32_t v ) { put16( p, v & 0xffff ); put16( p + 2, v >> 16 ); }
+
+/* a minimal PE header at e_lfanew 0x80: PE32+ (magic 0x20b) or PE32 (0x10b) */
+static size_t make_pe( unsigned char *buf, size_t len, unsigned int magic, unsigned int file_charact,
+                       unsigned int dll_charact, uint32_t rva_count, uint32_t reloc_size )
+{
+    const size_t lfanew = 0x80, opt = lfanew + 4 + 20;
+    size_t count_off = magic == 0x20b ? 108 : 92, dir_off = magic == 0x20b ? 112 : 96;
+    size_t opt_size = dir_off + 16 * 8, dllch_off = 70;
+
+    memset( buf, 0, len );
+    buf[0] = 'M'; buf[1] = 'Z';
+    put32( buf + 0x3c, lfanew );
+    memcpy( buf + lfanew, "PE\0\0", 4 );
+    put16( buf + lfanew + 4, magic == 0x20b ? 0x8664 : 0x014c );
+    put16( buf + lfanew + 4 + 16, (unsigned int)opt_size );
+    put16( buf + lfanew + 4 + 18, file_charact );
+    put16( buf + opt, magic );
+    put16( buf + opt + dllch_off, dll_charact );
+    put32( buf + opt + count_off, rva_count );
+    put32( buf + opt + dir_off + 5 * 8, reloc_size ? 0x2000 : 0 );   /* VirtualAddress */
+    put32( buf + opt + dir_off + 5 * 8 + 4, reloc_size );
+    return opt + opt_size;
+}
+
+static void test_wants_window(void)
+{
+    unsigned char hdr[1024];
+    size_t end;
+
+    /* the spec's values: the launcher (EXECUTABLE_IMAGE | LARGE_ADDRESS_AWARE; HIGH_ENTROPY_VA,
+     * DYNAMIC_BASE, NX_COMPAT, TERMINAL_SERVER_AWARE; relocations) leaves the window free */
+    CHECK( !ios_image_wants_window( 0x0022, 0x8160, 0x1200 ) );
+    /* relocations stripped, or none: it can't move, so it takes the window */
+    CHECK( ios_image_wants_window( 0x0023, 0x8160, 0x1200 ) );
+    CHECK( ios_image_wants_window( 0x0022, 0x8160, 0 ) );
+    /* DYNAMIC_BASE or HIGH_ENTROPY_VA missing: Windows may load it at its preferred base */
+    CHECK( ios_image_wants_window( 0x0022, 0x8120, 0x1200 ) );
+    CHECK( ios_image_wants_window( 0x0022, 0x8140, 0x1200 ) );
+    CHECK( ios_image_wants_window( 0x0022, 0x0000, 0x1200 ) );
+    /* the other bits don't matter */
+    CHECK( !ios_image_wants_window( 0x0022 | 0x0100, 0x0060, 1 ) );
+    CHECK( !ios_image_wants_window( 0x0002, 0xffff, 0x1200 ) );
+    CHECK( ios_image_wants_window( 0xffff, 0xffff, 0x1200 ) );
+
+    /* the relocation directory from the headers: PE32+ and PE32 */
+    end = make_pe( hdr, sizeof(hdr), 0x20b, 0x0022, 0x8160, 16, 0x1200 );
+    CHECK( ios_pe_reloc_dir_size( hdr, sizeof(hdr) ) == 0x1200 );
+    CHECK( ios_pe_reloc_dir_size( hdr, end ) == 0x1200 );
+    CHECK( !ios_image_wants_window( 0x0022, 0x8160, ios_pe_reloc_dir_size( hdr, end ) ) );
+    make_pe( hdr, sizeof(hdr), 0x10b, 0x0102, 0x0140, 16, 0x345 );
+    CHECK( ios_pe_reloc_dir_size( hdr, sizeof(hdr) ) == 0x345 );
+    /* the game: relocations stripped and no directory */
+    make_pe( hdr, sizeof(hdr), 0x20b, 0x0023, 0x8160, 16, 0 );
+    CHECK( ios_pe_reloc_dir_size( hdr, sizeof(hdr) ) == 0 );
+    CHECK( ios_image_wants_window( 0x0023, 0x8160, ios_pe_reloc_dir_size( hdr, sizeof(hdr) ) ) );
+    /* no relocation entry: NumberOfRvaAndSizes 5 or less */
+    make_pe( hdr, sizeof(hdr), 0x20b, 0x0022, 0x8160, 5, 0x1200 );
+    CHECK( ios_pe_reloc_dir_size( hdr, sizeof(hdr) ) == 0 );
+    make_pe( hdr, sizeof(hdr), 0x20b, 0x0022, 0x8160, 6, 0x1200 );
+    CHECK( ios_pe_reloc_dir_size( hdr, sizeof(hdr) ) == 0x1200 );
+    /* headers cut short: nothing read past len */
+    end = make_pe( hdr, sizeof(hdr), 0x20b, 0x0022, 0x8160, 16, 0x1200 );
+    CHECK( ios_pe_reloc_dir_size( hdr, 0x80 + 24 + 112 + 5 * 8 + 7 ) == 0 );
+    CHECK( ios_pe_reloc_dir_size( hdr, 0x80 + 24 + 112 + 5 * 8 + 8 ) == 0x1200 );
+    CHECK( ios_pe_reloc_dir_size( hdr, 0x80 + 3 ) == 0 );
+    CHECK( ios_pe_reloc_dir_size( hdr, 0x3f ) == 0 );
+    CHECK( ios_pe_reloc_dir_size( NULL, 4096 ) == 0 );
+    /* an optional header too small to hold the entry */
+    put16( hdr + 0x80 + 4 + 16, 112 + 5 * 8 + 7 );
+    CHECK( ios_pe_reloc_dir_size( hdr, end ) == 0 );
+    put16( hdr + 0x80 + 4 + 16, 112 + 5 * 8 + 8 );
+    CHECK( ios_pe_reloc_dir_size( hdr, end ) == 0x1200 );
+    /* not a PE: no MZ, no PE signature, an unknown magic, e_lfanew past the end */
+    make_pe( hdr, sizeof(hdr), 0x20b, 0x0022, 0x8160, 16, 0x1200 );
+    hdr[0] = 'Z';
+    CHECK( ios_pe_reloc_dir_size( hdr, sizeof(hdr) ) == 0 );
+    make_pe( hdr, sizeof(hdr), 0x20b, 0x0022, 0x8160, 16, 0x1200 );
+    hdr[0x81] = 'X';
+    CHECK( ios_pe_reloc_dir_size( hdr, sizeof(hdr) ) == 0 );
+    make_pe( hdr, sizeof(hdr), 0x20b, 0x0022, 0x8160, 16, 0x1200 );
+    put16( hdr + 0x80 + 24, 0x107 );
+    CHECK( ios_pe_reloc_dir_size( hdr, sizeof(hdr) ) == 0 );
+    make_pe( hdr, sizeof(hdr), 0x20b, 0x0022, 0x8160, 16, 0x1200 );
+    put32( hdr + 0x3c, 0xfffffff0u );
+    CHECK( ios_pe_reloc_dir_size( hdr, sizeof(hdr) ) == 0 );
+    put32( hdr + 0x3c, sizeof(hdr) - 10 );
+    CHECK( ios_pe_reloc_dir_size( hdr, sizeof(hdr) ) == 0 );
+}
+
 static void test_loaded_again(void)
 {
     static const char *const advapi_names[] =
@@ -1185,6 +1278,7 @@ int main(void)
     test_native_copy();
     test_loaded_again();
     test_image_granular();
+    test_wants_window();
     test_alloc_log();
     test_alloc_fold();
     test_free_region();

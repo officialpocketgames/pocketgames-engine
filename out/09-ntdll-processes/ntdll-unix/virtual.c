@@ -3530,6 +3530,21 @@ static unsigned int get_mapping_info( HANDLE handle, ACCESS_MASK access, unsigne
 /* MYIOSDECK (spec 10 clarification 16): the base and the address limit a process's own
  * NtMapViewOfSection(Ex) of an image asked for, while virtual_map_section maps it (0: none) */
 static __thread ULONG_PTR ios_image_asked, ios_image_limit;
+/* MYIOSDECK (spec 10 clarification 18): the relocation directory size of the main image
+ * virtual_map_image maps (read from its file), and whether Part D's window was left free for it
+ * because Windows would move it anyway (for its `mem: image` line) */
+static __thread unsigned int ios_image_reloc_size;
+static __thread BOOL ios_image_window_free;
+
+/* clarification 18: the relocation directory size from an image file's headers (0: none, or
+ * the headers can't be read) */
+static unsigned int ios_vm_image_reloc_size( int fd )
+{
+    unsigned char hdr[4096];
+    ssize_t got = pread( fd, hdr, sizeof(hdr), 0 );
+
+    return got > 0 ? ios_pe_reloc_dir_size( hdr, (size_t)got ) : 0;
+}
 #endif
 static NTSTATUS map_image_view( struct file_view **view_ret, struct pe_image_info *image_info, SIZE_T size,
                                 ULONG_PTR limit_low, ULONG_PTR limit_high, ULONG alloc_type )
@@ -3650,6 +3665,15 @@ static NTSTATUS virtual_map_image( HANDLE mapping, void **addr_ptr, SIZE_T *size
     if ((status = server_get_unix_fd( mapping, 0, &unix_fd, &needs_close, NULL, NULL )))
         return status;
 
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 10 clarification 18): a 64-bit main image's relocation directory decides
+     * whether it takes Part D's window (ios_vm_exe_window_claim); read before virtual_mutex */
+    ios_image_reloc_size = 0;
+    ios_image_window_free = FALSE;
+    if (!(image_info->image_charact & IMAGE_FILE_DLL) && image_info->machine != IMAGE_FILE_MACHINE_I386)
+        ios_image_reloc_size = ios_vm_image_reloc_size( unix_fd );
+#endif
+
     if (shared_file && ((status = server_get_unix_fd( shared_file, FILE_READ_DATA|FILE_WRITE_DATA,
                                                       &shared_fd, &shared_needs_close, NULL, NULL ))))
     {
@@ -3749,6 +3773,8 @@ done:
 #ifdef WINE_IOS
     if (NT_SUCCESS(status) && from_file)
         ios_log_mem( IOS_MEM_IMAGE, *addr_ptr, *size_ptr, 0, 0, nt_name, preferred_base );
+    ios_image_reloc_size = 0;
+    ios_image_window_free = FALSE;
 #endif
     return status;
 }
@@ -5641,7 +5667,7 @@ static void ios_log_mem( int op, const void *base, SIZE_T size, ULONG type, ULON
 {
     struct ios_proc *proc = ios_proc_current();
     unsigned long long start = (ULONG_PTR)base, end = start + size;
-    char line[MAX_PATH * 3 + 192], name[MAX_PATH * 3], note[96];
+    char line[MAX_PATH * 3 + 240], name[MAX_PATH * 3], note[96];
     int len;
 
     if (!proc || !ios_mem_event_wanted( op, size )) return;
@@ -5662,9 +5688,11 @@ static void ios_log_mem( int op, const void *base, SIZE_T size, ULONG type, ULON
         name[len > 0 ? len : 0] = 0;
         /* clarification 16: a view away from its preferred base says what the call asked for */
         ios_image_asked_note( note, sizeof(note), ios_image_asked, ios_image_limit, start, preferred );
-        snprintf( line, sizeof(line), "mem: image %s %#llx-%#llx (preferred %#llx%s)",
+        /* clarification 18: right after the preferred base, an image that left the window free */
+        snprintf( line, sizeof(line), "mem: image %s %#llx-%#llx (preferred %#llx%s%s)",
                   *ios_file_part( name ) ? ios_file_part( name ) : "(image)", start, end,
-                  (unsigned long long)preferred, note );
+                  (unsigned long long)preferred,
+                  ios_image_window_free ? ", relocatable: the window stays free" : "", note );
         break;
     default:
         snprintf( line, sizeof(line), "mem: unmap %#llx-%#llx", start, end );
@@ -8580,7 +8608,9 @@ static void ios_vm_image_mapped( struct file_view *view, struct pe_image_info *i
  *           ios_vm_exe_window_claim
  *
  * Part D1/D2: a 64-bit main image whose preferred base lies in the exe window claims it (one
- * occupant at a time). virtual_mutex is held.
+ * occupant at a time), unless Windows would move it anyway (clarification 18): then the window
+ * stays free, map_view refuses the preferred base for this process, and the image goes the
+ * search like any image away from its preferred base. virtual_mutex is held.
  */
 static BOOL ios_vm_exe_window_claim( const struct pe_image_info *image_info, void *base, SIZE_T size )
 {
@@ -8589,6 +8619,12 @@ static BOOL ios_vm_exe_window_claim( const struct pe_image_info *image_info, voi
     if (!exe_window.size || proc->wow_base) return FALSE;
     if (image_info->image_charact & IMAGE_FILE_DLL) return FALSE;
     if (image_info->machine == IMAGE_FILE_MACHINE_I386) return FALSE;
+    if (ios_exewin_fits( &exe_window, (ULONG_PTR)base, (size + host_page_mask) & ~host_page_mask ) &&
+        !ios_image_wants_window( image_info->image_charact, image_info->dll_charact, ios_image_reloc_size ))
+    {
+        ios_image_window_free = TRUE;
+        return FALSE;
+    }
     if (ios_exewin_claim( &exe_window, owner_key( proc ), (ULONG_PTR)base, size, host_page_size ))
         return FALSE;
     if (!ios_quiet) ios_log( "process %u: exe window %p-%p claimed\n", proc->serial, base, (char *)base + size );

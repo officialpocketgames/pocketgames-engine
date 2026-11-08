@@ -192,6 +192,21 @@ int ios_image_granular( const void *image );
 #define IOS_DYLIB_TAKE_INSTANCE 1
 int ios_dylib_take( int first_has_view, int first_no_own_view );
 
+/* Clarification 18: whether a 64-bit main image whose preferred base lies in Part D's window
+ * takes the window. characteristics: the file header's; dll_characteristics: the optional
+ * header's; reloc_dir_size: the size of the relocation data directory (0: none). Returns 0 for
+ * an image Windows would move anyway (relocations not stripped, a relocation directory, and both
+ * DYNAMIC_BASE and HIGH_ENTROPY_VA): it goes the normal path away from its preferred base and the
+ * window stays free. Returns 1 for every other image. */
+int ios_image_wants_window( unsigned short characteristics, unsigned short dll_characteristics,
+                            uint32_t reloc_dir_size );
+
+/* Clarification 18: the size of the relocation data directory of the PE headers in hdr (len
+ * bytes, from the start of the file). 0 when the headers are cut short or malformed, when the
+ * optional header has no relocation entry, or when the entry is empty. Everything is
+ * bounds-checked. */
+uint32_t ios_pe_reloc_dir_size( const void *hdr, size_t len );
+
 /* Clarification 4 (spec 18 Part B1): the address of the export `name` of the PE image mapped at
  * image (size bytes, headers included), or NULL. Everything is bounds-checked; forwarders give
  * NULL. Used for ntdll's `ios_teb_tsd_offset`. */
