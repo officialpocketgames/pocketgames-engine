@@ -197,4 +197,13 @@ dxmt_wow_compute_payload(struct wmtcmd_base *cmd, uint64_t base, bool to_host) {
   return true;
 }
 
+/* Spec 05 clarification 20: a 32-bit program's WMTComputePipelineInfo (same layout as the
+   64-bit one: no implicit padding, see winemetal.h) copied whole into `out`, with its archive
+   array pointer made a host address. False when that pointer isn't a guest address. */
+static inline bool
+dxmt_wow_compute_pipeline_info_to_host(const void *guest_info, struct WMTComputePipelineInfo *out, uint64_t base) {
+  memcpy(out, guest_info, sizeof(*out));
+  return dxmt_wow_ptr_to_host(&out->binary_archives_for_lookup, base);
+}
+
 #endif

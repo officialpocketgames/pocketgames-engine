@@ -67,6 +67,15 @@ $cxx $flags -I"$src/dxmt" -o "$build/test_shader_cache_log" "$here/test_shader_c
 # flag; check-shader-fixes.sh checks the converter's source (the converter needs LLVM 15).
 $cxx $flags $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
   -o "$build/test_shader_fixes" "$here/test_shader_fixes.cpp"
+# Spec 05 clarification 17: FORMAT_SUPPORT2's typed UAV bits over the Apple7 table
+# (dxmt_format.cpp with a fake device) and the read-write UAV log line.
+$cxx $flags $native_flags -I"$src/dxmt" -I"$src/d3d11" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
+  -o "$build/test_format_support2" "$here/test_format_support2.cpp" "$src/dxmt/dxmt_format.cpp"
+# Spec 05 clarifications 19 and 21: the constant-buffer bind rule, the frame trace's formats
+# and cap (clarification 20's layouts are in test_wow64).
+$cxx $flags -I"$src/d3d11" -o "$build/test_constant_buffer_bind" "$here/test_constant_buffer_bind.cpp"
+$cxx $flags $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
+  -o "$build/test_frame_trace" "$here/test_frame_trace.cpp"
 sqlite_lib=
 for candidate in -lsqlite3 -l:libsqlite3.so.0; do
   if echo 'int main(void) { return 0; }' | $cc -x c - -o "$build/sqlite_probe" $candidate 2>/dev/null; then
@@ -100,6 +109,9 @@ sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_core_fixes" || status=1
 "$build/test_shader_cache_log" || status=1
 "$build/test_shader_fixes" || status=1
+"$build/test_format_support2" || status=1
+"$build/test_constant_buffer_bind" || status=1
+"$build/test_frame_trace" || status=1
 sh "$here/check-shader-fixes.sh" "$src" || status=1
 if [ -n "$sqlite_lib" ]; then
   "$build/test_cache_contents" "$build" || status=1

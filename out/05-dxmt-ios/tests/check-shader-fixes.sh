@@ -17,7 +17,10 @@
 #     32-bit argument chain copies it;
 #   - udiv: quotient and remainder select all ones on a 0 divisor, with the divisor made 1;
 #   - sample_l adds the sampler's bias to its LOD;
-#   - interpolate-at-offset takes float2, and mul_hi has its name.
+#   - interpolate-at-offset takes float2, and mul_hi has its name;
+#   - clarification 16: DXBC min and max call the precise air.fmin / air.fmax, every DXBC
+#     saturate goes through CreateD3DSaturate (precise air.saturate, then NaN to 0 on the
+#     bits), and "fast_" is only added to a name when FastVariant is asked for.
 # Usage: check-shader-fixes.sh [dxmt/src directory]. POSIX sh, awk and grep.
 
 set -eu
@@ -154,6 +157,32 @@ interp=$(body "$builder" 'AIRBuilder::CreateInterpolateAtOffset(')
 has "interpolate at offset" "$interp" "{Interpoant->getType(), getFloatTy(2)}"
 intbin=$(body "$builder" 'AIRBuilder::CreateIntBinOp(')
 has "integer binary operations" "$intbin" '"max",' '"min",' '"mul_hi",'
+
+# --- spec 05 clarification 16: DXBC min, max and saturate are Metal's precise forms ---
+# "fast_" is only added for FastVariant, in both builders
+for fn in CreateFPUnOp CreateFPBinOp; do
+  fp=$(body "$builder" "AIRBuilder::$fn(")
+  prefix=$(printf '%s\n' "$fp" | LC_ALL=C awk '
+    /if \(FastVariant\)/ { guard = NR }
+    /FnName \+= "fast_";/ { print (guard && NR == guard + 1) ? "ok" : "bad"; exit }')
+  [ "$prefix" = ok ] || fail "$fn: \"fast_\" is not guarded by FastVariant"
+done
+floatbin=$(body "$base" 'Converter::operator()(const InstFloatBinaryOp &')
+has "DXBC min and max" "$floatbin" \
+  "Result = air.CreateFPBinOp(AIRBuilder::fmin, LHS, RHS, /*FastVariant=*/false);" \
+  "Result = air.CreateFPBinOp(AIRBuilder::fmax, LHS, RHS, /*FastVariant=*/false);"
+fastminmax=$(printf '%s\n' "$floatbin" | LC_ALL=C grep -E "AIRBuilder::fm(in|ax), LHS, RHS\)" || true)
+[ -z "$fastminmax" ] || fail "DXBC min or max still fast: $fastminmax"
+# every saturate the DXBC converters emit goes through CreateD3DSaturate
+for f in "$base" "$src/airconv/nt/dxbc_converter_base.hpp" "$src"/airconv/dxbc_converter.cpp \
+  "$src"/airconv/dxbc_converter_gs.cpp "$src"/airconv/dxbc_converter_ts.cpp "$src"/airconv/dxbc_converter_basicblock.cpp; do
+  raw_sat=$(LC_ALL=C grep -n "AIRBuilder::saturate" "$f" || true)
+  [ -z "$raw_sat" ] || fail "$(basename "$f"): saturate not through CreateD3DSaturate: $raw_sat"
+done
+d3d_sat=$(tr -d '\r' < "$src/airconv/nt/dxbc_converter_base.hpp" | LC_ALL=C grep -c "air.CreateD3DSaturate(" || true)
+[ "$d3d_sat" = 2 ] || fail "StoreOperand and StoreOperandVec4 saturate through CreateD3DSaturate: $d3d_sat, expected 2"
+has "CreateD3DSaturate" "$header" \
+  "return getNaNToZero(CreateFPUnOp(saturate, Operand, /*FastVariant=*/false));"
 
 if [ "$failures" -ne 0 ]; then
   echo "check-shader-fixes: $failures failure(s)"

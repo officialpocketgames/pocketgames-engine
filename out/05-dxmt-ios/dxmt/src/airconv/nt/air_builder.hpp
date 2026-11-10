@@ -1,7 +1,8 @@
 // Changed for MYIOSDECK (spec 07 A2): contains LGPL-2.1-or-later blocks from dxmt-d3d9 v0.4-d3d9
 // (e8dd4c6) and (spec 05 clarification 13) from upstream DXMT f48f4c707, marked inline; the
 // file is distributed under LGPL-2.1-or-later as a whole
-// (see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// (see LICENSE-NOTES.md). Spec 05 clarification 16: CreateD3DSaturate. Upstream: DXMT a3a6e8f,
+// MIT (see LICENSE).
 
 #pragma once
 
@@ -558,6 +559,15 @@ public:
     return options.sampleNaNToZero ? getNaNToZero(Operand) : Operand;
   }
   /* end of LGPL block */
+
+  /* MYIOSDECK spec 05 clarification 16: Direct3D's saturate for the DXBC converters. Metal's
+     precise air.saturate (not air.fast_saturate), and NaN components then made 0 on the bits:
+     Direct3D defines saturate(NaN) as 0, and Metal's documentation doesn't say what its
+     saturate does with NaN. */
+  Value *
+  CreateD3DSaturate(Value *Operand) {
+    return getNaNToZero(CreateFPUnOp(saturate, Operand, /*FastVariant=*/false));
+  }
 
 protected:
   raw_ostream &debug;

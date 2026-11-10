@@ -1,6 +1,6 @@
 // Changed for MYIOSDECK (spec 05 B8, D5, E2, H1; spec 06 A, B; spec 07 A2: LGPL-2.1-or-later
-// blocks from dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md).
-// Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// blocks from dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05
+// clarification 17: the read-write UAV format line). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "dxmt_context.hpp"
 #include "Metal.hpp"
 #include "dxmt_command_queue.hpp"
@@ -10,6 +10,8 @@
 #include "util_ios_switch.hpp"
 #endif
 #include "dxmt_format.hpp"
+#include "dxmt_uav_format_log.hpp"
+#include "log/log.hpp"
 #include "dxmt_occlusion_query.hpp"
 #include "dxmt_presenter.hpp"
 #include "wsi_platform.hpp"
@@ -17,6 +19,20 @@
 #include <cfloat>
 
 namespace dxmt {
+
+void
+ArgumentEncodingContext::noteReadWriteUAV(WMTPixelFormat format) {
+  // MYIOSDECK spec 05 clarification 17
+  if (!uav_format_caps_ready_) {
+    uav_format_caps_.Inspect(device_);
+    uav_format_caps_ready_ = true;
+  }
+  auto base = UAVBaseFormat(format);
+  auto found = uav_format_caps_.textureCapabilities.find(base);
+  auto capability = found == uav_format_caps_.textureCapabilities.end() ? FormatCapability::None : found->second;
+  if (ReadWriteUAVFormatLog::global().firstUnsupported(base, capability))
+    Logger::warn(ReadWriteUAVLogLine(base));
+}
 
 ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Device device, InternalCommandLibrary &lib) :
     emulated_cmd(device, lib, *this),
@@ -256,6 +272,11 @@ ArgumentEncodingContext::encodeShaderResources(
   constexpr bool PreRasterStage = stage == PipelineStage::Vertex || stage == PipelineStage::Domain ||
                                  stage == PipelineStage::Hull || stage == PipelineStage::Geometry;
 
+  // spec 05 clarification 21: the compute shader's UAVs, for the traced frame's dispatches
+  const bool trace_uavs = stage == PipelineStage::Compute && trace_active_;
+  if (trace_uavs)
+    trace_cs_uavs_.clear();
+
   for (unsigned i = 0; i < BindingCount; i++) {
     auto &arg = arguments[i];
     switch (arg.Type) {
@@ -327,6 +348,21 @@ ArgumentEncodingContext::encodeShaderResources(
       bool read = (arg.Flags >> 10) & 1, write = (arg.Flags >> 10) & 2;
       auto access_flags =  (DXMT_ENCODER_RESOURCE_ACESS)((arg.Flags >> 10) & 3);
 
+      if (trace_uavs) { // spec 05 clarification 21
+        std::string desc = "u" + std::to_string(arg.SM50BindingSlot) + " ";
+        if (uav.texture.ptr())
+          desc += TraceTexture(uav.texture->pixelFormat(uav.viewId), uav.texture->width(uav.viewId),
+                               uav.texture->height(uav.viewId));
+        else if (uav.buffer.ptr() && (arg.Flags & MTL_SM50_SHADER_ARGUMENT_TEXTURE))
+          desc += TracePixelFormat(uav.buffer->pixelFormat(uav.viewId)) + " " +
+                  std::to_string(uav.slice.elementCount) + " elements";
+        else if (uav.buffer.ptr())
+          desc += "buffer " + std::to_string(uav.slice.byteLength) + " bytes";
+        else
+          desc += "null";
+        trace_cs_uavs_ += (trace_cs_uavs_.empty() ? "" : ", ") + desc;
+      }
+
       if (arg.Flags & MTL_SM50_SHADER_ARGUMENT_BUFFER) {
         if (uav.buffer.ptr()) {
           auto [uav_alloc, offset] = access<PreRasterStage>(uav.buffer, uav.slice.byteOffset, uav.slice.byteLength, access_flags);
@@ -340,6 +376,8 @@ ArgumentEncodingContext::encodeShaderResources(
       } else if (arg.Flags & MTL_SM50_SHADER_ARGUMENT_TEXTURE) {
         if (uav.buffer.ptr()) {
           assert(arg.Flags & MTL_SM50_SHADER_ARGUMENT_TBUFFER_OFFSET);
+          if (read && write) // spec 05 clarification 17
+            noteReadWriteUAV(uav.buffer->pixelFormat(uav.viewId));
           auto [view, offset] = access<PreRasterStage>(uav.buffer, uav.viewId, access_flags);
           encoded_buffer[arg.StructurePtrOffset] = view.gpu_resource_id;
           encoded_buffer[arg.StructurePtrOffset + 1] =
@@ -348,6 +386,8 @@ ArgumentEncodingContext::encodeShaderResources(
         } else if (uav.texture.ptr()) {
           assert(arg.Flags & MTL_SM50_SHADER_ARGUMENT_TEXTURE_MINLOD_CLAMP);
           auto viewIdChecked = uav.texture->checkViewUseArray(uav.viewId, arg.Flags & MTL_SM50_SHADER_ARGUMENT_TEXTURE_ARRAY);
+          if (read && write) // spec 05 clarification 17
+            noteReadWriteUAV(uav.texture->pixelFormat(viewIdChecked));
           encoded_buffer[arg.StructurePtrOffset] = access<PreRasterStage>(uav.texture, viewIdChecked, access_flags).gpuResourceID;
           encoded_buffer[arg.StructurePtrOffset + 1] = TextureMetadata(uav.texture->arrayLength(viewIdChecked), 0);
           makeResident<stage, kind>(uav.texture.ptr(), viewIdChecked, read, write);
@@ -824,6 +864,278 @@ ArgumentEncodingContext::$$setEncodingContext(uint64_t seq_id, uint64_t frame_id
   cpu_buffer_offset_ = 0;
   seq_id_ = seq_id;
   frame_id_ = frame_id;
+  // MYIOSDECK spec 05 clarification 21: frame_id counts the presents before this submission, so
+  // its frame ends with present frame_id + 1. Leaving a traced frame logs its closing lines.
+  if (FrameTraceSwitch() || frame_trace_.active()) {
+    std::vector<std::string> lines;
+    bool traced = FrameTraceSwitch() && IsTracedPresent(frame_id + 1);
+    frame_trace_.setPresent(traced ? frame_id + 1 : 0, lines);
+    trace_active_ = traced;
+    for (auto &line : lines)
+      Logger::info(line);
+  }
+}
+
+/* spec 05 clarification 21: the one place the switch is read, on the Windows side, from the
+   game's environment (GetEnvironmentVariableW through env::getEnvVar). The app sets it with
+   setenv before Wine starts, in test builds only, and Wine copies it into the Windows
+   environment. First called when the Direct3D 11 device is created; the result is kept for
+   the process, and one line says it is on. */
+bool
+FrameTraceSwitch() {
+  static const bool on = [] {
+    bool value = FrameTraceSwitchValue(env::getEnvVar("PG_DXMT_FRAME_TRACE"));
+    if (value)
+      Logger::info("dxmt: frame trace on (PG_DXMT_FRAME_TRACE=1): presents 600 and 3600");
+    return value;
+  }();
+  return on;
+}
+
+void
+ArgumentEncodingContext::traceEncoders(EncoderData **encoders, unsigned count) {
+  std::vector<std::string> out;
+  for (unsigned i = 0; i < count; i++) {
+    auto current = encoders[i];
+    switch (current->type) {
+    case EncoderType::Render:
+      traceRenderPass(static_cast<RenderEncoderData *>(current), out);
+      break;
+    case EncoderType::Compute:
+      traceComputePass(static_cast<ComputeEncoderData *>(current), out);
+      break;
+    case EncoderType::Blit:
+      traceBlitPass(static_cast<BlitEncoderData *>(current), out);
+      break;
+    case EncoderType::Clear: {
+      // a clear not merged into the next render pass (merged ones show as its "clear" load)
+      auto data = static_cast<ClearEncoderData *>(current);
+      auto texture = data->attachment.texture();
+      std::string what = data->clear_dsv ? "clear depth-stencil " : "clear color ";
+      frame_trace_.line(
+          what + TraceTexture(texture.pixelFormat(), data->width, data->height) + " slices " +
+              std::to_string(data->array_length) + " rect " + TraceRect(0, 0, data->width, data->height),
+          out
+      );
+      break;
+    }
+    case EncoderType::Resolve: {
+      auto data = static_cast<ResolveEncoderData *>(current);
+      auto src = data->src.texture();
+      auto dst = data->dst.texture();
+      std::string line = std::string("resolve ") + (data->is_depth ? "depth " : "") +
+                         TraceTexture(src.pixelFormat(), src.width(), src.height()) + " -> " +
+                         TraceTexture(dst.pixelFormat(), dst.width(), dst.height());
+      if (data->src_rect)
+        line += " rect " + TraceRect(data->src_rect->x, data->src_rect->y, data->src_rect->width, data->src_rect->height);
+      frame_trace_.line(line, out);
+      break;
+    }
+    case EncoderType::Present:
+      frame_trace_.line("present", out);
+      break;
+    default:
+      break; // merged (Null), events, upscales, stretch blits
+    }
+  }
+  trace_dispatch_notes_.clear();
+  for (auto &line : out)
+    Logger::info(line);
+}
+
+static std::string
+TraceTextureHandle(obj_handle_t texture) {
+  if (!texture)
+    return "none";
+  return TraceTexture(MTLTexture_pixelFormat(texture), MTLTexture_width(texture), MTLTexture_height(texture));
+}
+
+void
+ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<std::string> &out) {
+  std::vector<std::string> attachments, viewports, scissors;
+  uint32_t width = data->render_target_width, height = data->render_target_height;
+  for (unsigned i = 0; i < data->colors.size(); i++) {
+    auto &color = data->colors[i];
+    if (!color.attachment)
+      continue;
+    auto texture = color.attachment.texture();
+    if (!width) {
+      width = texture.width();
+      height = texture.height();
+    }
+    attachments.push_back(TraceAttachment(
+        "c" + std::to_string(i), texture.pixelFormat(), texture.width(), texture.height(), color.level, color.slice,
+        color.load_action
+    ));
+  }
+  if (data->depth.attachment) {
+    auto texture = data->depth.attachment.texture();
+    attachments.push_back(TraceAttachment(
+        "depth", texture.pixelFormat(), texture.width(), texture.height(), data->depth.level, data->depth.slice,
+        data->depth.load_action
+    ));
+  }
+  if (data->stencil.attachment) {
+    auto texture = data->stencil.attachment.texture();
+    attachments.push_back(TraceAttachment(
+        "stencil", texture.pixelFormat(), texture.width(), texture.height(), data->stencil.level, data->stencil.slice,
+        data->stencil.load_action
+    ));
+  }
+
+  // the viewports and scissor rectangles in effect at each draw
+  unsigned draws = 0;
+  bool partial = false;
+  std::vector<WMTViewport> current_viewports;
+  std::vector<WMTScissorRect> current_scissors;
+  for (auto cmd = (wmtcmd_base *)&data->cmd_head; cmd; cmd = (wmtcmd_base *)cmd->next.get()) {
+    switch ((WMTRenderCommandType)cmd->type) {
+    case WMTRenderCommandSetViewports: {
+      auto body = (wmtcmd_render_setviewports *)cmd;
+      auto first = (WMTViewport *)body->viewports.get();
+      current_viewports.assign(first, first + body->viewport_count);
+      break;
+    }
+    case WMTRenderCommandSetViewport:
+      current_viewports.assign(1, ((wmtcmd_render_setviewport *)cmd)->viewport);
+      break;
+    case WMTRenderCommandSetScissorRects: {
+      auto body = (wmtcmd_render_setscissorrects *)cmd;
+      auto first = (WMTScissorRect *)body->scissor_rects.get();
+      current_scissors.assign(first, first + body->rect_count);
+      break;
+    }
+    case WMTRenderCommandSetScissorRect:
+      current_scissors.assign(1, ((wmtcmd_render_setscissorrect *)cmd)->scissor_rect);
+      break;
+    case WMTRenderCommandDraw:
+    case WMTRenderCommandDrawIndexed:
+    case WMTRenderCommandDrawIndirect:
+    case WMTRenderCommandDrawIndexedIndirect:
+    case WMTRenderCommandDrawMeshThreadgroups:
+    case WMTRenderCommandDrawMeshThreadgroupsIndirect:
+    case WMTRenderCommandDXMTGeometryDraw:
+    case WMTRenderCommandDXMTGeometryDrawIndexed:
+    case WMTRenderCommandDXMTGeometryDrawIndirect:
+    case WMTRenderCommandDXMTGeometryDrawIndexedIndirect:
+    case WMTRenderCommandDXMTTessellationMeshDraw:
+    case WMTRenderCommandDXMTTessellationMeshDrawIndexed:
+    case WMTRenderCommandDXMTTessellationMeshDrawIndirect:
+    case WMTRenderCommandDXMTTessellationMeshDrawIndexedIndirect:
+      draws++;
+      for (auto &v : current_viewports) {
+        TraceAddDistinct(viewports, TraceRect(v.originX, v.originY, v.width, v.height));
+        if (!TraceCovers(v.originX, v.originY, v.width, v.height, width, height))
+          partial = true;
+      }
+      for (auto &s : current_scissors) {
+        TraceAddDistinct(scissors, TraceRect(s.x, s.y, s.width, s.height));
+        if (!TraceCovers(s.x, s.y, s.width, s.height, width, height))
+          partial = true;
+      }
+      break;
+    default:
+      break;
+    }
+  }
+  frame_trace_.line(TraceRenderPass(frame_trace_.nextPass(), attachments, draws, viewports, scissors, partial), out);
+}
+
+void
+ArgumentEncodingContext::traceComputePass(ComputeEncoderData *data, std::vector<std::string> &out) {
+  frame_trace_.line("compute pass " + std::to_string(frame_trace_.nextPass()), out);
+  WMTSize tg{0, 0, 0};
+  for (auto cmd = (wmtcmd_base *)&data->cmd_head; cmd; cmd = (wmtcmd_base *)cmd->next.get()) {
+    switch ((WMTComputeCommandType)cmd->type) {
+    case WMTComputeCommandSetPSO:
+      tg = ((wmtcmd_compute_setpso *)cmd)->threadgroup_size;
+      break;
+    case WMTComputeCommandDispatch:
+    case WMTComputeCommandDispatchThreads:
+    case WMTComputeCommandDispatchIndirect: {
+      // a dispatch from a Direct3D 11 shader has a note; DXMT's own kernels (clears) don't
+      auto note = trace_dispatch_notes_.find(cmd);
+      uint32_t hash = note != trace_dispatch_notes_.end() ? note->second.hash : 0;
+      std::string uavs = note != trace_dispatch_notes_.end() ? note->second.uavs : std::string();
+      if (cmd->type == WMTComputeCommandDispatchIndirect) {
+        frame_trace_.line(TraceDispatch(hash, tg.width, tg.height, tg.depth, true, 0, 0, 0, uavs), out);
+      } else {
+        auto size = ((wmtcmd_compute_dispatch *)cmd)->size;
+        frame_trace_.line(
+            TraceDispatch(hash, tg.width, tg.height, tg.depth, false, size.width, size.height, size.depth, uavs), out
+        );
+      }
+      break;
+    }
+    default:
+      break;
+    }
+  }
+}
+
+void
+ArgumentEncodingContext::traceBlitPass(BlitEncoderData *data, std::vector<std::string> &out) {
+  for (auto cmd = (wmtcmd_base *)&data->cmd_head; cmd; cmd = (wmtcmd_base *)cmd->next.get()) {
+    switch ((WMTBlitCommandType)cmd->type) {
+    case WMTBlitCommandCopyFromBufferToBuffer: {
+      auto body = (wmtcmd_blit_copy_from_buffer_to_buffer *)cmd;
+      frame_trace_.line(
+          "copy buffer -> buffer " + std::to_string(body->copy_length) + " bytes at " +
+              std::to_string(body->src_offset) + " -> " + std::to_string(body->dst_offset),
+          out
+      );
+      break;
+    }
+    case WMTBlitCommandCopyFromBufferToTexture: {
+      // UpdateSubresource and copies from staging buffers
+      auto body = (wmtcmd_blit_copy_from_buffer_to_texture *)cmd;
+      frame_trace_.line(
+          "copy buffer -> " + TraceTextureHandle(body->dst) + " mip " + std::to_string(body->level) + " slice " +
+              std::to_string(body->slice) + " box " +
+              TraceBox(body->origin.x, body->origin.y, body->origin.z, body->size.width, body->size.height,
+                       body->size.depth),
+          out
+      );
+      break;
+    }
+    case WMTBlitCommandCopyFromTextureToBuffer: {
+      auto body = (wmtcmd_blit_copy_from_texture_to_buffer *)cmd;
+      frame_trace_.line(
+          "copy " + TraceTextureHandle(body->src) + " mip " + std::to_string(body->level) + " slice " +
+              std::to_string(body->slice) + " box " +
+              TraceBox(body->origin.x, body->origin.y, body->origin.z, body->size.width, body->size.height,
+                       body->size.depth) +
+              " -> buffer",
+          out
+      );
+      break;
+    }
+    case WMTBlitCommandCopyFromTextureToTexture: {
+      auto body = (wmtcmd_blit_copy_from_texture_to_texture *)cmd;
+      frame_trace_.line(
+          "copy " + TraceTextureHandle(body->src) + " mip " + std::to_string(body->src_level) + " slice " +
+              std::to_string(body->src_slice) + " box " +
+              TraceBox(body->src_origin.x, body->src_origin.y, body->src_origin.z, body->src_size.width,
+                       body->src_size.height, body->src_size.depth) +
+              " -> " + TraceTextureHandle(body->dst) + " mip " + std::to_string(body->dst_level) + " slice " +
+              std::to_string(body->dst_slice) + " at " + std::to_string(body->dst_origin.x) + "," +
+              std::to_string(body->dst_origin.y) + "," + std::to_string(body->dst_origin.z),
+          out
+      );
+      break;
+    }
+    case WMTBlitCommandGenerateMipmaps:
+      frame_trace_.line("generate mipmaps " + TraceTextureHandle(((wmtcmd_blit_generate_mipmaps *)cmd)->texture), out);
+      break;
+    case WMTBlitCommandFillBuffer: {
+      auto body = (wmtcmd_blit_fillbuffer *)cmd;
+      frame_trace_.line("fill buffer " + std::to_string(body->length) + " bytes", out);
+      break;
+    }
+    default:
+      break;
+    }
+  }
 }
 
 constexpr unsigned kEncoderOptimizerThreshold = 64;
@@ -860,6 +1172,11 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       }
     }
   }
+
+  // MYIOSDECK spec 05 clarification 21: the traced frame's passes, in submission order, after
+  // clears were merged into the passes they precede (so their load actions are final)
+  if (trace_active_)
+    traceEncoders(encoders, encoder_count);
 
   std::unique_ptr<VisibilityResultReadback> visibility_readback {};
 

@@ -4,7 +4,8 @@
 // Spec 06 Part F: host tests for the 32-bit helpers of the unix half
 // (dxmt/src/winemetal/unix/ios_wow64.h, ios_wow64_objects.h): pointer
 // conversion (C1, C2), the command-chain walker (C4) and the record table of
-// Part E. Plain C++20 with a fake window base; no Metal, no Wine.
+// Part E. Plain C++20 with a fake window base; no Metal, no Wine. Spec 05 clarification 20:
+// WMTComputePipelineInfo's layout and the 32-bit thunk's copy of it.
 //
 //   c++ -std=c++20 -I../dxmt/src/winemetal -I../dxmt/src/winemetal/unix test_wow64.cpp -o test_wow64
 
@@ -15,6 +16,7 @@
 #include "ios_wow64.h"
 #include "ios_wow64_objects.h"
 
+#include <cstddef>
 #include <cstdlib>
 #include <map>
 #include <vector>
@@ -440,10 +442,72 @@ TestRecordTableFullAndCollisions() {
   CHECK_EQ(tb.t.used, 0);
 }
 
+/* ---- spec 05 clarification 20: WMTComputePipelineInfo ------------------------ */
+
+void
+TestComputePipelineInfoLayout() {
+  using Info = WMTComputePipelineInfo;
+  // The new field is appended after the old ones, at the old size.
+  static_assert(offsetof(Info, immutable_buffers) == 28);
+  static_assert(offsetof(Info, max_total_threads_per_threadgroup) == 32);
+  static_assert(sizeof(Info) == 40);
+  // No implicit padding anywhere: the members' sizes add up to the struct's, and the 8-byte
+  // members sit at multiples of 8. So a 32-bit program (where 8-byte members may be 4-aligned)
+  // lays it out the same way, at the same size.
+  constexpr size_t members = sizeof(Info::compute_function) + sizeof(Info::binary_archives_for_lookup) +
+                             sizeof(Info::binary_archive_for_serialization) +
+                             sizeof(Info::num_binary_archives_for_lookup) + sizeof(Info::fail_on_binary_archive_miss) +
+                             sizeof(Info::padding) + sizeof(Info::tgsize_is_multiple_of_sgwidth) +
+                             sizeof(Info::immutable_buffers) + sizeof(Info::max_total_threads_per_threadgroup) +
+                             sizeof(Info::padding_end);
+  static_assert(members == sizeof(Info));
+  static_assert(offsetof(Info, compute_function) % 8 == 0 && offsetof(Info, binary_archives_for_lookup) % 8 == 0 &&
+                offsetof(Info, binary_archive_for_serialization) % 8 == 0);
+  CHECK_EQ(offsetof(Info, max_total_threads_per_threadgroup), 32);
+  CHECK_EQ(sizeof(Info), 40);
+}
+
+void
+TestComputePipelineInfoThunkCopy() {
+  // A 32-bit program's info, as bytes in its window: the thunk copies it whole and converts
+  // the archive array pointer.
+  alignas(8) unsigned char guest[sizeof(WMTComputePipelineInfo)];
+  WMTComputePipelineInfo src;
+  std::memset(&src, 0, sizeof(src));
+  src.compute_function = 0x1111;
+  src.binary_archives_for_lookup.ptr = (const void *)(uintptr_t)0x2000;
+  src.num_binary_archives_for_lookup = 1;
+  src.tgsize_is_multiple_of_sgwidth = true;
+  src.immutable_buffers = (1u << 29) | (1u << 30);
+  src.max_total_threads_per_threadgroup = 1024;
+  std::memcpy(guest, &src, sizeof(src));
+
+  WMTComputePipelineInfo host;
+  CHECK(dxmt_wow_compute_pipeline_info_to_host(guest, &host, kBase));
+  CHECK_EQ(host.compute_function, 0x1111);
+  CHECK_EQ((uint64_t)(uintptr_t)host.binary_archives_for_lookup.ptr, kBase + 0x2000);
+  CHECK_EQ(host.num_binary_archives_for_lookup, 1);
+  CHECK(host.tgsize_is_multiple_of_sgwidth);
+  CHECK_EQ(host.immutable_buffers, (1u << 29) | (1u << 30));
+  CHECK_EQ(host.max_total_threads_per_threadgroup, 1024);
+  // the program's copy is left as it was
+  CHECK_EQ(std::memcmp(guest, &src, sizeof(src)), 0);
+
+  // NULL archives stay NULL; 0 threads stays 0 (Metal's default)
+  src.binary_archives_for_lookup.ptr = nullptr;
+  src.max_total_threads_per_threadgroup = 0;
+  std::memcpy(guest, &src, sizeof(src));
+  CHECK(dxmt_wow_compute_pipeline_info_to_host(guest, &host, kBase));
+  CHECK(host.binary_archives_for_lookup.ptr == nullptr);
+  CHECK_EQ(host.max_total_threads_per_threadgroup, 0);
+}
+
 } // namespace
 
 int
 main() {
+  TestComputePipelineInfoLayout();
+  TestComputePipelineInfoThunkCopy();
   TestPointerToHost();
   TestPointerToGuest();
   TestChainEmpty();

@@ -1,6 +1,10 @@
 // Changed for MYIOSDECK (spec 05 clarification 10: an LGPL-2.1-or-later block from
-// steamac's DXMT patch 0015, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// steamac's DXMT patch 0015, marked inline, see LICENSE-NOTES.md; spec 05 clarification 17:
+// FORMAT_SUPPORT2 through d3d11_format_support2.hpp; clarification 21: the frame-trace switch is
+// read at device creation). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "com/com_guid.hpp"
+#include "d3d11_format_support2.hpp"
+#include "dxmt_frame_trace.hpp" // spec 05 clarification 21
 #include "d3d11_fence.hpp"
 #include "d3d11_input_layout.hpp"
 #include "d3d11_interfaces.hpp"
@@ -65,6 +69,9 @@ public:
     d3d10_ = std::make_unique<MTLD3D10Device>(this, context_.get());
     is_traced_ = !!::GetModuleHandle("dxgitrace.dll");
     format_inspector_.Inspect(GetMTLDevice());
+    // MYIOSDECK spec 05 clarification 21: the frame-trace switch is read here, once per
+    // process, from the Windows environment (Wine copies the app's environment into it)
+    FrameTraceSwitch();
   }
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
@@ -639,17 +646,10 @@ public:
         return E_INVALIDARG;
       info->OutFormatSupport2 = 0;
 
+      // MYIOSDECK spec 05 clarification 17: the mapping is D3D11FormatSupport2
+      // (d3d11_format_support2.hpp); UAV_TYPED_LOAD needs TextureBufferReadWrite now.
       if (info->InFormat == DXGI_FORMAT_UNKNOWN) {
-        info->OutFormatSupport2 |=
-            D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_ADD |
-            D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS |
-            D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE |
-            D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE |
-            D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX |
-            D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX |
-            D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD |
-            D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE |
-            D3D11_FORMAT_SUPPORT2_SHAREABLE;
+        info->OutFormatSupport2 = D3D11FormatSupport2(DXGI_FORMAT_UNKNOWN, FormatCapability::None);
         return S_OK;
       }
 
@@ -658,43 +658,8 @@ public:
                                     metal_format))) {
         return E_INVALIDARG;
       }
-      auto Capability = GetMTLPixelFormatCapability(metal_format.PixelFormat);
-
-      if (any_bit_set(Capability & FormatCapability::TextureBufferRead)) {
-        info->OutFormatSupport2 |= D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD;
-      }
-
-      if (any_bit_set(Capability & FormatCapability::TextureBufferWrite)) {
-        info->OutFormatSupport2 |= D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE;
-      }
-
-      if (any_bit_set(Capability & FormatCapability::TextureBufferReadWrite)) {
-        info->OutFormatSupport2 |= D3D11_FORMAT_SUPPORT2_UAV_TYPED_LOAD |
-                                   D3D11_FORMAT_SUPPORT2_UAV_TYPED_STORE;
-      }
-
-      if (any_bit_set(Capability & FormatCapability::Atomic)) {
-        info->OutFormatSupport2 |=
-            D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_ADD |
-            D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_BITWISE_OPS |
-            D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_COMPARE_STORE_OR_COMPARE_EXCHANGE |
-            D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_EXCHANGE |
-            D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_SIGNED_MIN_OR_MAX |
-            D3D11_FORMAT_SUPPORT2_UAV_ATOMIC_UNSIGNED_MIN_OR_MAX |
-            D3D11_FORMAT_SUPPORT2_SHAREABLE;
-      }
-
-#ifndef DXMT_NO_PRIVATE_API
-      if (any_bit_set(Capability & FormatCapability::Blend)) {
-        /* UNCHECKED */
-        info->OutFormatSupport2 |= D3D11_FORMAT_SUPPORT2_OUTPUT_MERGER_LOGIC_OP;
-      }
-#endif
-
-      if (any_bit_set(Capability & FormatCapability::Sparse)) {
-        info->OutFormatSupport2 |= D3D11_FORMAT_SUPPORT2_TILED;
-      }
-
+      info->OutFormatSupport2 = D3D11FormatSupport2(
+          info->InFormat, GetMTLPixelFormatCapability(metal_format.PixelFormat));
       return S_OK;
     }
     default:

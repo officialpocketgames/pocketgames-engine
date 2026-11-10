@@ -1,5 +1,5 @@
 #pragma once
-// Changed for MYIOSDECK (spec 05 F2, clarification 13). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 F2, clarifications 13 and 16). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "llvm/ADT/Optional.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/FMF.h"
@@ -190,7 +190,7 @@ public:
         [=, this](auto &DstOp) {
           auto Value_ = Value;
           if (DstOp._.write_type == OperandDataType::Float && Saturate)
-            Value_ = air.CreateFPUnOp(llvm::air::AIRBuilder::saturate, Value);
+            Value_ = air.CreateD3DSaturate(Value); // spec 05 clarification 16: precise, NaN to 0
           this->StoreOperand(DstOp, Value_);
         },
         DstOp
@@ -203,7 +203,7 @@ public:
         [=, this](auto &DstOp) {
           auto Value_ = ValueVec4;
           if (DstOp._.write_type == OperandDataType::Float && Saturate)
-            Value_ = air.CreateFPUnOp(llvm::air::AIRBuilder::saturate, ValueVec4);
+            Value_ = air.CreateD3DSaturate(ValueVec4); // spec 05 clarification 16: precise, NaN to 0
           this->StoreOperand(DstOp, this->MaskSwizzle(Value_, DstOp._.mask));
         },
         DstOp

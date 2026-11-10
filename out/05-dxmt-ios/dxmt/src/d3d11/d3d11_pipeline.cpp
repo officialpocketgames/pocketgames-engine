@@ -1,5 +1,6 @@
 // Changed for MYIOSDECK (spec 05 F3; spec 06 D; spec 05 clarification 10: an LGPL-2.1-or-later block
-// from steamac's DXMT patch 0017, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// from steamac's DXMT patch 0017, marked inline, see LICENSE-NOTES.md; spec 05 clarification 20:
+// compute pipelines built for their threadgroup size). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "Metal.hpp"
 #include "d3d11_private.h"
 #include "d3d11_pipeline.hpp"
@@ -161,6 +162,10 @@ public:
                             shader->reflection().ThreadgroupSize[2];
     // FIXME: might be different on AMD GPU, if it's ever supported
     tgsize_is_multiple_of_sgwidth = (total_tgsize % 32) == 0;
+    // MYIOSDECK spec 05 clarification 20: the pipeline is compiled for numthreads x*y*z, and a
+    // refusal names the shader
+    max_total_threads_ = total_tgsize;
+    shader_hash_ = shader->sha1().string().substr(0, 8);
   }
 
   void GetPipeline(MTL_COMPILED_COMPUTE_PIPELINE *pPipeline) final {
@@ -184,11 +189,13 @@ public:
     info.compute_function = cs.Function;
     info.tgsize_is_multiple_of_sgwidth = tgsize_is_multiple_of_sgwidth;
     info.immutable_buffers = (1 << 29) | (1 << 30);
+    info.max_total_threads_per_threadgroup = max_total_threads_; // spec 05 clarification 20
 
     state_ = device_->GetMTLDevice().newComputePipelineState(info, err);
 
     if (!state_) {
-      ERR("Failed to create compute PSO: ", err.description().getUTF8String());
+      ERR("Failed to create compute PSO for shader ", shader_hash_, " (", max_total_threads_,
+          " threads per threadgroup): ", err.description().getUTF8String());
       return this;
     }
 
@@ -210,6 +217,8 @@ private:
   CompiledShader *ComputeShader;
   WMT::Reference<WMT::ComputePipelineState> state_;
   bool tgsize_is_multiple_of_sgwidth;
+  uint32_t max_total_threads_ = 0; // spec 05 clarification 20
+  std::string shader_hash_;        // spec 05 clarification 20
 };
 
 std::unique_ptr<MTLCompiledComputePipeline>

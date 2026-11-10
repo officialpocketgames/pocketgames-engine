@@ -2,8 +2,8 @@
 // Changed for MYIOSDECK (spec 07 A2): contains an LGPL-2.1-or-later block from dxmt-d3d9
 // v0.4-d3d9 (e8dd4c6), marked inline (see LICENSE-NOTES.md). Changed for spec 05
 // clarification 10: LGPL-2.1-or-later blocks from steamac's DXMT patches 0008 and 0011,
-// marked inline, and the residency-set wrappers 0023 needs (MYIOSDECK's own).
-// Upstream: DXMT a3a6e8f, MIT.
+// marked inline, and the residency-set wrappers 0023 needs (MYIOSDECK's own). Spec 05
+// clarification 20: the compute pipeline info's new field. Upstream: DXMT a3a6e8f, MIT.
 
 #include "./winemetal.h"
 #include <cstddef>
@@ -1114,6 +1114,8 @@ InitializeComputePipelineInfo(WMTComputePipelineInfo &info) {
   info.fail_on_binary_archive_miss = false;
   info.tgsize_is_multiple_of_sgwidth = false;
   info.immutable_buffers = 0;
+  info.max_total_threads_per_threadgroup = 0; // spec 05 clarification 20: Metal's default
+  info.padding_end = 0;
 }
 
 inline void

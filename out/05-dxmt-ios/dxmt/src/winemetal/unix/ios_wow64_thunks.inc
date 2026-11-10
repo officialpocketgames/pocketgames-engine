@@ -215,8 +215,9 @@ wow_MTLDevice_newComputePipelineState(void *obj) {
   uint64_t base = wow_base();
   if (!dxmt_wow_ptr_to_host(&p.info, base) || !p.info.ptr)
     return wow_bad_pointer("MTLDevice_newComputePipelineState");
-  struct WMTComputePipelineInfo info = *(const struct WMTComputePipelineInfo *)p.info.ptr;
-  if (!dxmt_wow_ptr_to_host(&info.binary_archives_for_lookup, base))
+  struct WMTComputePipelineInfo info;
+  /* spec 05 clarification 20: the whole struct, max_total_threads_per_threadgroup included */
+  if (!dxmt_wow_compute_pipeline_info_to_host(p.info.ptr, &info, base))
     return wow_bad_pointer("MTLDevice_newComputePipelineState archives");
   p.info.ptr = &info;
   NTSTATUS status = _MTLDevice_newComputePipelineState(&p);

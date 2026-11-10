@@ -1,4 +1,4 @@
-/* Changed for MYIOSDECK (spec 05 B8, E2, H6, clarification 10; spec 07: LGPL-2.1-or-later blocks
+/* Changed for MYIOSDECK (spec 05 B8, E2, H6, clarifications 10 and 20; spec 07: LGPL-2.1-or-later blocks
    from dxmt-d3d9 v0.4-d3d9, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 #ifndef _WINEMETAL_H
 #define _WINEMETAL_H
@@ -599,7 +599,15 @@ struct WMTComputePipelineInfo {
   uint8_t padding;
   bool tgsize_is_multiple_of_sgwidth;
   uint32_t immutable_buffers;
+  /* MYIOSDECK spec 05 clarification 20 (appended): the most threads one threadgroup of this
+     pipeline runs (MTLComputePipelineDescriptor.maxTotalThreadsPerThreadgroup); 0 leaves Metal's
+     default. The explicit padding keeps the size 40 for 32-bit callers too (no implicit padding
+     anywhere, so the i386 layout is the same). */
+  uint32_t max_total_threads_per_threadgroup;
+  uint32_t padding_end;
 };
+
+STATIC_ASSERT(sizeof(struct WMTComputePipelineInfo) == 40);
 
 WINEMETAL_API obj_handle_t MTLDevice_newComputePipelineState(
     obj_handle_t device, const struct WMTComputePipelineInfo *info, obj_handle_t *err_out

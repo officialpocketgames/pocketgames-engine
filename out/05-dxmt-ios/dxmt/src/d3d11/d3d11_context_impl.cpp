@@ -1,5 +1,6 @@
 // Changed for MYIOSDECK (spec 05 B, C, D; spec 05 clarification 10: LGPL-2.1-or-later blocks from
-// steamac's DXMT patches 0005, 0007 and 0014, marked inline, see LICENSE-NOTES.md).
+// steamac's DXMT patches 0005, 0007 and 0014, marked inline, see LICENSE-NOTES.md; spec 05
+// clarifications 19-21: constant-buffer ranges, compute threadgroup size, frame trace notes).
 // Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 /**
@@ -34,6 +35,8 @@ since it is for internal use only
 #include "dxmt_bc_emulation.hpp"
 #include "dxmt_mip_clamp.hpp"
 #include "util_log_rare.hpp"
+#include "d3d11_constant_buffer_bind.hpp" // spec 05 clarification 19
+#include "dxmt_frame_trace.hpp"           // spec 05 clarification 21
 #include <cstdlib>
 #endif
 
@@ -1810,6 +1813,7 @@ public:
       auto &cmd = enc.encodeComputeCommand<wmtcmd_compute_dispatch>();
       cmd.type = WMTComputeCommandDispatch;
       cmd.size = {ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ};
+      enc.traceDispatch(&cmd); // spec 05 clarification 21
     });
   }
 
@@ -1827,6 +1831,7 @@ public:
         cmd.type = WMTComputeCommandDispatchIndirect;
         cmd.indirect_args_buffer = buffer->buffer();;
         cmd.indirect_args_offset = AlignedByteOffsetForArgs + buffer_offset;
+        enc.traceDispatch(&cmd); // spec 05 clarification 21
       });
     }
   }
@@ -3184,35 +3189,41 @@ public:
 
     auto &ShaderStage = state_.ShaderStages[Stage];
 
+    // MYIOSDECK spec 05 clarification 19: once per process, the first non-zero FirstConstant
+    if (FirstConstantBufferOffsetInUse(pFirstConstant, NumBuffers, ConstantBufferOffsetsSeen()))
+      Logger::info("dxmt: constant buffer offsets in use");
+
     for (unsigned slot = StartSlot; slot < StartSlot + NumBuffers; slot++) {
       auto pConstantBuffer = ppConstantBuffers[slot - StartSlot];
       if (pConstantBuffer) {
+        // MYIOSDECK spec 05 clarification 19: a NULL pFirstConstant / pNumConstants means the
+        // buffer's start / its whole size (at most 4096 constants), also when the same buffer
+        // stays bound after a *SetConstantBuffers1 with an offset.
+        D3D11_BUFFER_DESC desc;
+        pConstantBuffer->GetDesc(&desc);
+        auto range = ConstantBufferBindRange(pFirstConstant, pNumConstants, slot - StartSlot, desc.ByteWidth);
+        if (range.FirstConstant != 0 && FrameTraceSwitch()) // spec 05 clarification 21
+          EmitST([](ArgumentEncodingContext &enc) { enc.traceConstantBufferOffsetBind(); });
         bool replaced = false;
         auto &entry = ShaderStage.ConstantBuffers.bind(slot, {pConstantBuffer}, replaced);
         if (!replaced) {
-          if (pFirstConstant &&
-              pFirstConstant[slot - StartSlot] != entry.FirstConstant) {
+          auto changes = ConstantBufferRebindChanges({entry.FirstConstant, entry.NumConstants}, range);
+          if (changes.offset_changed) {
             ShaderStage.ConstantBuffers.set_dirty(slot);
-            entry.FirstConstant = pFirstConstant[slot - StartSlot];
+            entry.FirstConstant = range.FirstConstant;
             EmitST([=, offset = entry.FirstConstant
                                 << 4](ArgumentEncodingContext &enc) mutable {
               enc.bindConstantBufferOffset<Stage>(slot, offset);
             });
           }
-          if (pNumConstants && pNumConstants[slot - StartSlot] != entry.NumConstants) {
+          if (changes.size_changed) {
             ShaderStage.ConstantBuffers.set_dirty(slot);
-            entry.NumConstants = pNumConstants[slot - StartSlot];
+            entry.NumConstants = range.NumConstants;
           }
           continue;
         }
-        entry.FirstConstant = pFirstConstant ? pFirstConstant[slot - StartSlot] : 0;
-        if (pNumConstants) {
-          entry.NumConstants = pNumConstants[slot - StartSlot];
-        } else {
-          D3D11_BUFFER_DESC desc;
-          pConstantBuffer->GetDesc(&desc);
-          entry.NumConstants = desc.ByteWidth >> 4;
-        }
+        entry.FirstConstant = range.FirstConstant;
+        entry.NumConstants = range.NumConstants;
         entry.Buffer = reinterpret_cast<D3D11ResourceCommon *>(pConstantBuffer);
         EmitST([=, buffer = entry.Buffer->buffer(), offset = entry.FirstConstant << 4](ArgumentEncodingContext &enc
              ) mutable { enc.bindConstantBuffer<Stage>(slot, offset, forward_rc(buffer)); });
@@ -5015,11 +5026,14 @@ public:
     MTL_COMPUTE_PIPELINE_DESC desc{CS};
     device->CreateComputePipeline(&desc, &pipeline);
 
+    // spec 05 clarification 21: the shader's hash for the frame trace (0 when it's off)
+    uint32_t trace_hash = FrameTraceSwitch() ? FrameTraceShaderHash(CS->sha1().data) : 0;
     EmitST([pso = std::move(pipeline),
             tg_size = WMTSize{CS->reflection().ThreadgroupSize[0],
                               CS->reflection().ThreadgroupSize[1],
-                              CS->reflection().ThreadgroupSize[2]}](
+                              CS->reflection().ThreadgroupSize[2]}, trace_hash](
                ArgumentEncodingContext &enc) {
+      enc.traceComputeShader(trace_hash);
       MTL_COMPILED_COMPUTE_PIPELINE ComputePipeline;
       pso->GetPipeline(&ComputePipeline); // may block
       /* LGPL-2.1-or-later, from steamac's DXMT patch 0007 (Holly Hamilton): a null

@@ -1,12 +1,18 @@
 #pragma once
 // Changed for MYIOSDECK (spec 05; spec 07 A2: LGPL-2.1-or-later blocks from dxmt-d3d9 v0.4-d3d9
 // (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10: LGPL-2.1-or-later
-// blocks from steamac's DXMT patch 0023, marked inline). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// blocks from steamac's DXMT patch 0023, marked inline; spec 05 clarification 17: the
+// read-write UAV format line; clarification 21: the frame trace). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 #include "Metal.hpp"
 #include <cstring>
 #include <optional>
 #include "dxmt_buffer.hpp"
+#include "dxmt_format.hpp"
+#include "dxmt_frame_trace.hpp"
+#include <map>
+#include <string>
+#include <vector>
 #include "dxmt_command.hpp"
 #include "dxmt_deptrack.hpp"
 #include "dxmt_occlusion_query.hpp"
@@ -830,6 +836,34 @@ public:
     currentFrameStatistics().compatibility_flags.set(flag);
   }
 
+  /* MYIOSDECK spec 05 clarification 17: called when a UAV the shader both reads and writes is
+     bound; logs once per format per process when Metal can't read and write that format
+     through one texture. The format table is built on the first call. */
+  void noteReadWriteUAV(WMTPixelFormat format);
+
+  /* MYIOSDECK spec 05 clarification 21: the frame trace (dxmt_frame_trace.hpp). Each call is
+     one flag test outside the traced frames. */
+  bool
+  traceActive() const {
+    return trace_active_;
+  }
+  void
+  traceConstantBufferOffsetBind() {
+    if (trace_active_)
+      frame_trace_.countOffsetBind();
+  }
+  void
+  traceComputeShader(uint32_t hash) {
+    if (trace_active_)
+      trace_cs_hash_ = hash;
+  }
+  /* after a dispatch command is encoded: remembers the shader and its UAVs for that command */
+  void
+  traceDispatch(const void *cmd) {
+    if (trace_active_)
+      trace_dispatch_notes_[cmd] = {trace_cs_hash_, trace_cs_uavs_};
+  }
+
   ArgumentEncodingContext(CommandQueue &queue, WMT::Device device, InternalCommandLibrary &lib);
   ~ArgumentEncodingContext();
 
@@ -916,6 +950,24 @@ private:
 
   WMT::Device device_;
   CommandQueue& queue_;
+  /* spec 05 clarification 17: this device's format capabilities, for noteReadWriteUAV */
+  FormatCapabilityInspector uav_format_caps_;
+  bool uav_format_caps_ready_ = false;
+
+  /* spec 05 clarification 21: the frame trace's state, used on the encode thread only */
+  struct TraceDispatchNote {
+    uint32_t hash;
+    std::string uavs;
+  };
+  FrameTraceLog frame_trace_;
+  bool trace_active_ = false;
+  uint32_t trace_cs_hash_ = 0;
+  std::string trace_cs_uavs_;
+  std::map<const void *, TraceDispatchNote> trace_dispatch_notes_;
+  void traceEncoders(EncoderData **encoders, unsigned count);
+  void traceRenderPass(RenderEncoderData *data, std::vector<std::string> &out);
+  void traceComputePass(ComputeEncoderData *data, std::vector<std::string> &out);
+  void traceBlitPass(BlitEncoderData *data, std::vector<std::string> &out);
   /* spec 07 (LGPL, from v0.4-d3d9): depth-write-always state for the depth
      resolve pass; created on first use. */
   WMT::Reference<WMT::DepthStencilState> depth_resolve_dss_;

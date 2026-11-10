@@ -7,7 +7,8 @@
  * LGPL-2.1-or-later as a whole (see LICENSE-NOTES.md). Changed for MYIOSDECK spec 05
  * clarification 10: LGPL-2.1-or-later blocks from steamac's DXMT patches 0006, 0007 and
  * 0008, marked inline, and the residency-set calls 0023 needs (MYIOSDECK's own). Spec 05
- * clarification 13: the 32-bit common argument's flags. Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+ * clarification 13: the 32-bit common argument's flags. Spec 05 clarification 20: the compute
+ * pipeline's maxTotalThreadsPerThreadgroup. Upstream: DXMT a3a6e8f, MIT (see LICENSE).
  */
 #include <stdatomic.h>
 #include <dlfcn.h>
@@ -464,6 +465,9 @@ _MTLDevice_newComputePipelineState(void *obj) {
   NSError *err = NULL;
   descriptor.computeFunction = (id<MTLFunction>)info->compute_function;
   descriptor.threadGroupSizeIsMultipleOfThreadExecutionWidth = info->tgsize_is_multiple_of_sgwidth;
+  /* spec 05 clarification 20: compiled for the shader's threadgroup size */
+  if (info->max_total_threads_per_threadgroup)
+    descriptor.maxTotalThreadsPerThreadgroup = info->max_total_threads_per_threadgroup;
   for (unsigned i = 0; i < 31; i++) {
     if (info->immutable_buffers & (1 << i))
       descriptor.buffers[i].mutability = MTLMutabilityImmutable;

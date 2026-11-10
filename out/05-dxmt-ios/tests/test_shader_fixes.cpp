@@ -2,8 +2,8 @@
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 05 clarification 13, the parts of the six upstream DXMT fixes that build without LLVM:
-//   - the converted-shader cache's version is 19, so every shader cached before the fixes is
-//     converted again;
+//   - the converted-shader cache's version is 20 (19 for these fixes, 20 for clarification 16's
+//     precise min, max and saturate), so every shader cached before them is converted again;
 //   - the NaN-to-0 flag travels in SM50_SHADER_COMMON_DATA after the fields that were there
 //     before, so the argument's existing fields keep their places.
 // check-shader-fixes.sh checks the converter's source for the fixes themselves.
@@ -19,8 +19,8 @@ namespace {
 
 void
 TestCacheVersion() {
-  static_assert(dxmt::kDXMTShaderCacheVersion == 19, "spec 05 clarification 13 bumps the cache to 19");
-  CHECK_EQ(dxmt::kDXMTShaderCacheVersion, 19);
+  static_assert(dxmt::kDXMTShaderCacheVersion == 20, "spec 05 clarification 16 bumps the cache to 20");
+  CHECK_EQ(dxmt::kDXMTShaderCacheVersion, 20);
 }
 
 void

@@ -1,7 +1,7 @@
 // Changed for MYIOSDECK (spec 05 clarification 10: LGPL-2.1-or-later blocks from steamac's DXMT
 // patches 0018 and 0022; clarification 13: LGPL-2.1-or-later blocks from upstream DXMT
-// 3bcaf16b9, 46b1146de and eec0b65a5; marked inline, see LICENSE-NOTES.md). Upstream: DXMT
-// a3a6e8f, MIT (see LICENSE).
+// 3bcaf16b9, 46b1146de and eec0b65a5; marked inline, see LICENSE-NOTES.md; clarification 16:
+// precise min and max). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "dxbc_converter_base.hpp"
 #include "../dxbc_converter.hpp"
 #include "air_builder.hpp"
@@ -1079,12 +1079,15 @@ Converter::operator()(const InstFloatBinaryOp &bin) {
   case FloatBinaryOp::Div:
     Result = ir.CreateFDiv(LHS, RHS);
     break;
+  // MYIOSDECK spec 05 clarification 16: DXBC min and max use Metal's precise air.fmin and
+  // air.fmax, which return the other operand when one is NaN, as Direct3D requires (NaN guards
+  // such as max(x, 0) rely on it); the fast variants don't promise that.
   case FloatBinaryOp::Min: {
-    Result = air.CreateFPBinOp(AIRBuilder::fmin, LHS, RHS);
+    Result = air.CreateFPBinOp(AIRBuilder::fmin, LHS, RHS, /*FastVariant=*/false);
     break;
   }
   case FloatBinaryOp::Max: {
-    Result = air.CreateFPBinOp(AIRBuilder::fmax, LHS, RHS);
+    Result = air.CreateFPBinOp(AIRBuilder::fmax, LHS, RHS, /*FastVariant=*/false);
     break;
   }
   }
