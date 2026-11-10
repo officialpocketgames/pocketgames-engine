@@ -746,6 +746,9 @@ public:
   }
 };
 
+/* defined below; Device's wrappers start every info from it (spec 05 clarification 23) */
+inline void InitializeComputePipelineInfo(WMTComputePipelineInfo &info);
+
 class Device : public Object {
 public:
   uint64_t
@@ -826,27 +829,20 @@ public:
 
   Reference<ComputePipelineState>
   newComputePipelineState(const Function &compute_function, Error &error) {
+    // spec 05 clarification 23: from the initializer, so every field (item 20's included) is set
     WMTComputePipelineInfo info;
+    InitializeComputePipelineInfo(info);
     info.compute_function = compute_function;
-    info.tgsize_is_multiple_of_sgwidth = false;
-    info.immutable_buffers = 0;
-    info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
-    info.binary_archives_for_lookup.set(nullptr);
-    info.num_binary_archives_for_lookup = 0;
-    info.fail_on_binary_archive_miss = false;
     return Reference<ComputePipelineState>(MTLDevice_newComputePipelineState(handle, &info, error.out_handle()));
   }
 
   Reference<ComputePipelineState>
   newComputePipelineState(const Function &compute_function, bool tgsize_is_multiple_of_sgwidth, Error &error) {
+    // spec 05 clarification 23: from the initializer, so every field (item 20's included) is set
     WMTComputePipelineInfo info;
+    InitializeComputePipelineInfo(info);
     info.compute_function = compute_function;
     info.tgsize_is_multiple_of_sgwidth = tgsize_is_multiple_of_sgwidth;
-    info.immutable_buffers = 0;
-    info.binary_archive_for_serialization = NULL_OBJECT_HANDLE;
-    info.binary_archives_for_lookup.set(nullptr);
-    info.num_binary_archives_for_lookup = 0;
-    info.fail_on_binary_archive_miss = false;
     return Reference<ComputePipelineState>(MTLDevice_newComputePipelineState(handle, &info, error.out_handle()));
   }
 
@@ -1112,6 +1108,7 @@ InitializeComputePipelineInfo(WMTComputePipelineInfo &info) {
   info.binary_archives_for_lookup.set(nullptr);
   info.num_binary_archives_for_lookup = 0;
   info.fail_on_binary_archive_miss = false;
+  info.padding = 0; // spec 05 clarification 23: every field set
   info.tgsize_is_multiple_of_sgwidth = false;
   info.immutable_buffers = 0;
   info.max_total_threads_per_threadgroup = 0; // spec 05 clarification 20: Metal's default

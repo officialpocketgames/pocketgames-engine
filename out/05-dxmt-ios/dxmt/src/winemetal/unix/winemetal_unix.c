@@ -31,6 +31,8 @@
 #define WINEMETAL_API
 #include "../winemetal_thunks.h"
 #include "../airconv_thunks.h"
+#include <stdio.h>
+#include "compute_pipeline_limits.h" /* spec 05 clarification 23 */
 
 typedef int NTSTATUS;
 #define STATUS_SUCCESS 0
@@ -465,9 +467,23 @@ _MTLDevice_newComputePipelineState(void *obj) {
   NSError *err = NULL;
   descriptor.computeFunction = (id<MTLFunction>)info->compute_function;
   descriptor.threadGroupSizeIsMultipleOfThreadExecutionWidth = info->tgsize_is_multiple_of_sgwidth;
-  /* spec 05 clarification 20: compiled for the shader's threadgroup size */
-  if (info->max_total_threads_per_threadgroup)
+  /* spec 05 clarification 20: compiled for the shader's threadgroup size; clarification 23:
+     only 1-1024 reach Metal (a bad value would make it assert), for 64-bit and 32-bit callers
+     alike (the 32-bit thunk calls this function) */
+  switch (dxmt_threads_per_threadgroup_use(info->max_total_threads_per_threadgroup)) {
+  case DXMT_THREADS_APPLY:
     descriptor.maxTotalThreadsPerThreadgroup = info->max_total_threads_per_threadgroup;
+    break;
+  case DXMT_THREADS_IGNORED: {
+    static atomic_flag logged = ATOMIC_FLAG_INIT;
+    if (!atomic_flag_test_and_set(&logged))
+      fprintf(stderr, "winemetal: compute pipeline asked for %u threads per threadgroup; ignored (1-1024)\n",
+              info->max_total_threads_per_threadgroup);
+    break;
+  }
+  case DXMT_THREADS_DEFAULT:
+    break;
+  }
   for (unsigned i = 0; i < 31; i++) {
     if (info->immutable_buffers & (1 << i))
       descriptor.buffers[i].mutability = MTLMutabilityImmutable;

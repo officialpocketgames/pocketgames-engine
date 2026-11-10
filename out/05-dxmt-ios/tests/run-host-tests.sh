@@ -76,6 +76,10 @@ $cxx $flags $native_flags -I"$src/dxmt" -I"$src/d3d11" -I"$src/util" -I"$src/win
 $cxx $flags -I"$src/d3d11" -o "$build/test_constant_buffer_bind" "$here/test_constant_buffer_bind.cpp"
 $cxx $flags $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
   -o "$build/test_frame_trace" "$here/test_frame_trace.cpp"
+# Spec 05 clarification 23: Metal.hpp's compute-pipeline wrappers set every field (fake
+# MTLDevice_newComputePipelineState over a dirty stack), and the unix side's threads guard.
+$cxx $flags $native_flags -I"$src/winemetal" -I"$src/winemetal/unix" \
+  -o "$build/test_compute_pipeline_info" "$here/test_compute_pipeline_info.cpp"
 sqlite_lib=
 for candidate in -lsqlite3 -l:libsqlite3.so.0; do
   if echo 'int main(void) { return 0; }' | $cc -x c - -o "$build/sqlite_probe" $candidate 2>/dev/null; then
@@ -112,6 +116,7 @@ sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_format_support2" || status=1
 "$build/test_constant_buffer_bind" || status=1
 "$build/test_frame_trace" || status=1
+"$build/test_compute_pipeline_info" || status=1
 sh "$here/check-shader-fixes.sh" "$src" || status=1
 if [ -n "$sqlite_lib" ]; then
   "$build/test_cache_contents" "$build" || status=1

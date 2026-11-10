@@ -15,6 +15,7 @@
 #include "winemetal.h"
 #include "ios_wow64.h"
 #include "ios_wow64_objects.h"
+#include "compute_pipeline_limits.h" // spec 05 clarification 23
 
 #include <cstddef>
 #include <cstdlib>
@@ -500,6 +501,18 @@ TestComputePipelineInfoThunkCopy() {
   CHECK(dxmt_wow_compute_pipeline_info_to_host(guest, &host, kBase));
   CHECK(host.binary_archives_for_lookup.ptr == nullptr);
   CHECK_EQ(host.max_total_threads_per_threadgroup, 0);
+
+  // spec 05 clarification 23: a garbage value is copied through unchanged, and the unix side's
+  // guard (the same function serves 32-bit callers) keeps it from Metal
+  src.max_total_threads_per_threadgroup = 0xcdcdcdcdu;
+  std::memcpy(guest, &src, sizeof(src));
+  CHECK(dxmt_wow_compute_pipeline_info_to_host(guest, &host, kBase));
+  CHECK_EQ(host.max_total_threads_per_threadgroup, 0xcdcdcdcdu);
+  CHECK_EQ(dxmt_threads_per_threadgroup_use(host.max_total_threads_per_threadgroup), DXMT_THREADS_IGNORED);
+  src.max_total_threads_per_threadgroup = 256;
+  std::memcpy(guest, &src, sizeof(src));
+  CHECK(dxmt_wow_compute_pipeline_info_to_host(guest, &host, kBase));
+  CHECK_EQ(dxmt_threads_per_threadgroup_use(host.max_total_threads_per_threadgroup), DXMT_THREADS_APPLY);
 }
 
 } // namespace
