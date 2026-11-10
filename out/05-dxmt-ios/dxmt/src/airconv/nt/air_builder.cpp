@@ -1,5 +1,6 @@
 // Changed for MYIOSDECK (spec 07 A2): contains LGPL-2.1-or-later blocks from dxmt-d3d9 v0.4-d3d9
-// (e8dd4c6), marked inline; the file is distributed under LGPL-2.1-or-later as a whole
+// (e8dd4c6) and (spec 05 clarification 13) from upstream DXMT f48f4c707 and ae9126982,
+// marked inline; the file is distributed under LGPL-2.1-or-later as a whole
 // (see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "air_builder.hpp"
 #include "llvm/ADT/SmallVector.h"
@@ -365,7 +366,7 @@ AIRBuilder::CreateSampleCommon(
   }
 
   Tys.push_back(getTextureSampleCoordType(Texture));
-  Ops.push_back(Coord);
+  Ops.push_back(getSampleOperand(Coord)); // spec 05 clarification 13 (upstream DXMT f48f4c707)
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
@@ -465,7 +466,7 @@ AIRBuilder::CreateSampleCmpCommon(
   Ops.push_back(getInt(1));
 
   Tys.push_back(getTextureSampleCoordType(Texture));
-  Ops.push_back(Coord);
+  Ops.push_back(getSampleOperand(Coord)); // spec 05 clarification 13 (upstream DXMT f48f4c707)
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
@@ -549,7 +550,7 @@ AIRBuilder::CreateSampleGrad(
   }
 
   Tys.push_back(getTextureSampleCoordType(Texture));
-  Ops.push_back(Coord);
+  Ops.push_back(getSampleOperand(Coord)); // spec 05 clarification 13 (upstream DXMT f48f4c707)
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
@@ -557,9 +558,9 @@ AIRBuilder::CreateSampleGrad(
   }
 
   Tys.push_back(getTextureSampleCoordType(Texture));
-  Ops.push_back(DerivX);
+  Ops.push_back(getSampleOperand(DerivX)); // spec 05 clarification 13 (upstream DXMT f48f4c707)
   Tys.push_back(getTextureSampleCoordType(Texture));
-  Ops.push_back(DerivY);
+  Ops.push_back(getSampleOperand(DerivY)); // spec 05 clarification 13 (upstream DXMT f48f4c707)
 
   Tys.push_back(getFloatTy());
   Ops.push_back(MinLOD);
@@ -780,7 +781,7 @@ AIRBuilder::CreateGather(
   }
 
   Tys.push_back(getTextureSampleCoordType(Texture));
-  Ops.push_back(Coord);
+  Ops.push_back(getSampleOperand(Coord)); // spec 05 clarification 13 (upstream DXMT f48f4c707)
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
@@ -864,7 +865,7 @@ AIRBuilder::CreateGatherCompare(
   Ops.push_back(getInt(1));
 
   Tys.push_back(getTextureSampleCoordType(Texture));
-  Ops.push_back(Coord);
+  Ops.push_back(getSampleOperand(Coord)); // spec 05 clarification 13 (upstream DXMT f48f4c707)
 
   if (TexInfo.is_array) {
     Tys.push_back(getIntTy());
@@ -985,7 +986,7 @@ AIRBuilder::CreateCalculateLOD(const Texture &Texture, Value *Handle, Value *Sam
   Ops.push_back(Sampler);
 
   Tys.push_back(getTextureSampleCoordType(Texture));
-  Ops.push_back(Coord);
+  Ops.push_back(getSampleOperand(Coord)); // spec 05 clarification 13 (upstream DXMT f48f4c707)
 
   /* access: always 0 = sample */
   Tys.push_back(getIntTy());
@@ -1452,7 +1453,11 @@ AIRBuilder::CreateInterpolateAtOffset(Value *Interpoant, Value *Offset, bool Per
 
   auto Fn = getModule()->getOrInsertFunction(
       Perspective ? "air.interpolate_offset_perspective.v4f32" : "air.interpolate_offset_no_perspective.v4f32",
-      FunctionType::get(getFloatTy(4), {Interpoant->getType(), getIntTy(2)}, false), Attrs
+      // LGPL-2.1-or-later, from upstream DXMT ae9126982 ("fix some logic flaws"), adopted for
+      // MYIOSDECK spec 05 clarification 13: the offset argument is float2 (the caller,
+      // InstInterpolateOffset, converts D3D's 4-bit fixed-point offset to float)
+      FunctionType::get(getFloatTy(4), {Interpoant->getType(), getFloatTy(2)}, false), Attrs
+      // end of LGPL block
   );
 
   return builder.CreateCall(Fn, {Interpoant, Offset});
@@ -1731,11 +1736,33 @@ AIRBuilder::CreateIntUnOp(IntUnOp Op, Value *Operand) {
   return builder.CreateCall(Fn, {Operand});
 }
 
+/* LGPL-2.1-or-later, from upstream DXMT f48f4c707 ("sample coordinate NaN-to-0 sanitation"),
+   adopted for MYIOSDECK spec 05 clarification 13. The test is on the bits (exponent all ones,
+   mantissa not 0), not an fcmp: with fast-math flags an fcmp uno may be folded to false. */
+Value *
+AIRBuilder::CreateIsNaN(Value *Operand) {
+  auto OperandType = Operand->getType();
+  llvm::Value *AbsBits = getInt(0x7fffffffu);
+  llvm::Value *InfBits = getInt(0x7f800000u);
+  llvm::Type *CastType = getIntTy();
+  if (auto VecType = dyn_cast<llvm::FixedVectorType>(OperandType)) {
+    AbsBits = builder.CreateVectorSplat(VecType->getNumElements(), AbsBits);
+    InfBits = builder.CreateVectorSplat(VecType->getNumElements(), InfBits);
+    CastType = getIntTy(VecType->getNumElements());
+  }
+  return builder.CreateICmpUGT(builder.CreateAnd(builder.CreateBitCast(Operand, CastType), AbsBits), InfBits);
+}
+/* end of LGPL block */
+
 Value *
 AIRBuilder::CreateIntBinOp(IntBinOp Op, Value *LHS, Value *RHS, bool Signed) {
   static char const *FnNames[] = {
       "max",
       "min",
+      // LGPL-2.1-or-later, from upstream DXMT ae9126982 ("fix some logic flaws"), adopted for
+      // MYIOSDECK spec 05 clarification 13: the name imul/umul's high half needs
+      "mul_hi",
+      // end of LGPL block
   };
 
   if (uint32_t(Op) >= std::size(FnNames)) {

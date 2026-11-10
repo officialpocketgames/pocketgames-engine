@@ -1,3 +1,4 @@
+// Changed for MYIOSDECK (spec 05 clarification 13: the AIR builder gets the conversion flags). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "air_operations.hpp"
 #include "air_signature.hpp"
 #include "airconv_error.hpp"
@@ -167,7 +168,7 @@ convert_dxbc_geometry_shader(
   auto epilogue_bb = llvm::BasicBlock::Create(context, "epilogue", function);
   llvm::IRBuilder<> builder(entry_bb);
   llvm::raw_null_ostream nulldbg{};
-  llvm::air::AIRBuilder air(builder, nulldbg);
+  llvm::air::AIRBuilder air(air_builder_options(sm50_common), builder, nulldbg); // spec 05 clarification 13
   setup_metal_version(module, metal_version);
 
   auto [warp_vertex_count, warp_primitive_count, vertex_per_primitive] =
@@ -584,7 +585,7 @@ convert_dxbc_vertex_for_geometry_shader(
   auto epilogue_bb = llvm::BasicBlock::Create(context, "epilogue", function);
   llvm::IRBuilder<> builder(entry_bb);
   llvm::raw_null_ostream nulldbg{};
-  llvm::air::AIRBuilder air(builder, nulldbg);
+  llvm::air::AIRBuilder air(air_builder_options(sm50_common), builder, nulldbg); // spec 05 clarification 13
 
   setup_metal_version(module, metal_version);
 

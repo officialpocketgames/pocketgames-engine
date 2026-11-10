@@ -1,4 +1,4 @@
-/* Changed for MYIOSDECK (spec 05 F3, clarification 10; spec 07: DXSO API block, LGPL). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
+/* Changed for MYIOSDECK (spec 05 F3, clarifications 10 and 13; spec 07: DXSO API block, LGPL). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 #include "stddef.h"
 #include "stdint.h"
 #include "stdbool.h"
@@ -237,10 +237,20 @@ enum SM50_SHADER_METAL_VERSION {
   SM50_SHADER_METAL_MAX = 0xffffffff,
 };
 
+/* LGPL-2.1-or-later, from upstream DXMT f48f4c707 ("sample coordinate NaN-to-0 sanitation"),
+   fitted for MYIOSDECK spec 05 clarification 13: conversion flags in
+   SM50_SHADER_COMMON_DATA::flags. Direct3D 11 sets SAMPLE_NAN_TO_ZERO unless
+   `d3d11.sampleNaNToZero = False`. */
+enum SM50_SHADER_FLAG {
+  SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO = 1 << 0,
+};
+/* end of LGPL block */
+
 struct SM50_SHADER_COMMON_DATA {
   void *next;
   enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
   enum SM50_SHADER_METAL_VERSION metal_version;
+  uint32_t flags; /* SM50_SHADER_FLAG bits (spec 05 clarification 13) */
 };
 
 struct SM50_SHADER_PSO_PIXEL_SHADER_DATA {

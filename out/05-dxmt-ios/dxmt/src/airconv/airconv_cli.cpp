@@ -1,4 +1,4 @@
-// Changed for MYIOSDECK (spec 05 F5). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 F5, clarification 13). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "airconv_context.hpp"
 #include "airconv_public.h"
 #include "metallib_writer.hpp"
@@ -234,6 +234,7 @@ int main(int argc, char **argv) {
   data.metal_version = SM50_SHADER_METAL_320;
   data.next = 0;
   data.type = SM50_SHADER_COMMON;
+  data.flags = SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO; // as Direct3D 11 by default (spec 05 clarification 13)
 
   if (!HullBeforeDomain.getValue().empty()) {
     ErrorOr<std::unique_ptr<MemoryBuffer>> FileOrErr =

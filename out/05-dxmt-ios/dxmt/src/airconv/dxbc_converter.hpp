@@ -1,5 +1,6 @@
 #pragma once
-// Changed for MYIOSDECK (spec 05 F3, F5, clarification 10). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 F3, F5, clarification 10; clarification 13: an LGPL-2.1-or-later
+// block from upstream DXMT f48f4c707, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 #include <cstdint>
 #include <algorithm>
@@ -482,6 +483,17 @@ void setup_binding_table(
 );
 
 void setup_metal_version(llvm::Module &module, SM50_SHADER_METAL_VERSION metal_verison);
+
+/* LGPL-2.1-or-later, from upstream DXMT f48f4c707 ("sample coordinate NaN-to-0 sanitation"),
+   fitted for MYIOSDECK spec 05 clarification 13: the AIR builder's options from the common
+   compile argument's flags (none without one). */
+inline llvm::air::AIRBuilderOptions
+air_builder_options(const SM50_SHADER_COMMON_DATA *sm50_common) {
+  llvm::air::AIRBuilderOptions options;
+  options.sampleNaNToZero = sm50_common && (sm50_common->flags & SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO);
+  return options;
+}
+/* end of LGPL block */
 
 void setup_temp_register(
   const ShaderInfo *shader_info, io_binding_map &resource_map,

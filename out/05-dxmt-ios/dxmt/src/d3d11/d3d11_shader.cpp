@@ -1,5 +1,6 @@
 // Changed for MYIOSDECK (spec 05 F3; spec 05 clarification 10: LGPL-2.1-or-later blocks from
-// steamac's DXMT patches 0012 and 0017, marked inline, see LICENSE-NOTES.md). Upstream: DXMT
+// steamac's DXMT patches 0012 and 0017, marked inline, see LICENSE-NOTES.md; spec 05
+// clarification 13: the conversion flags, a block from upstream DXMT f48f4c707). Upstream: DXMT
 // a3a6e8f, MIT (see LICENSE).
 #include "d3d11_shader.hpp"
 #include "d3d11_shader_bitcode.hpp"
@@ -9,8 +10,30 @@
 #include "airconv_public.h"
 #include "d3d11_input_layout.hpp"
 #include "sha1/sha1_util.hpp"
+#include "config/config.hpp"
 
 namespace dxmt {
+
+/* LGPL-2.1-or-later, from upstream DXMT f48f4c707 ("sample coordinate NaN-to-0 sanitation"),
+   fitted for MYIOSDECK spec 05 clarification 13: the conversion flags DXMT_CONFIG asks for,
+   read once. Unlike upstream, NaN-to-0 is on unless `d3d11.sampleNaNToZero = False`. */
+static uint32_t
+GetGlobalShaderFlags() {
+  static const uint32_t flags =
+      Config::getInstance().getOption<bool>("d3d11.sampleNaNToZero", true) ? SM50_SHADER_FLAG_SAMPLE_NAN_TO_ZERO : 0u;
+  return flags;
+}
+/* end of LGPL block */
+
+/* MYIOSDECK spec 05 clarification 13: the converted-shader cache is keyed on the variant and
+   on the conversion flags, so turning the option off doesn't reuse shaders converted with it. */
+static Sha1Digest
+CacheKeyWithFlags(const Sha1Digest &variant_digest, uint32_t flags) {
+  Sha1HashState h;
+  h.update(variant_digest);
+  h.update(flags);
+  return h.final();
+}
 
 template <typename Proc>
 class GeneralShaderCompileTask : public CompiledShader {
@@ -18,9 +41,10 @@ public:
   GeneralShaderCompileTask(MTLD3D11Device *pDevice, ManagedShader shader,
                            Proc &&proc, std::string func_name, const Sha1Digest& variant_digest)
       : CompiledShader(), proc(std::forward<Proc>(proc)), func_name(func_name), device_(pDevice),
-        shader_(shader), variant_digest_(variant_digest) {
+        shader_(shader), variant_digest_(CacheKeyWithFlags(variant_digest, GetGlobalShaderFlags())) {
     sm50_common.type = SM50_SHADER_COMMON;
     sm50_common.metal_version = (SM50_SHADER_METAL_VERSION)pDevice->GetDXMTDevice().metalVersion();
+    sm50_common.flags = GetGlobalShaderFlags(); // spec 05 clarification 13
     sm50_common.next = nullptr;
   }
 

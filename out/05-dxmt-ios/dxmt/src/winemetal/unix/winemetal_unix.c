@@ -6,8 +6,8 @@
  * dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, so the file is distributed under
  * LGPL-2.1-or-later as a whole (see LICENSE-NOTES.md). Changed for MYIOSDECK spec 05
  * clarification 10: LGPL-2.1-or-later blocks from steamac's DXMT patches 0006, 0007 and
- * 0008, marked inline, and the residency-set calls 0023 needs (MYIOSDECK's own).
- * Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+ * 0008, marked inline, and the residency-set calls 0023 needs (MYIOSDECK's own). Spec 05
+ * clarification 13: the 32-bit common argument's flags. Upstream: DXMT a3a6e8f, MIT (see LICENSE).
  */
 #include <stdatomic.h>
 #include <dlfcn.h>
@@ -2043,6 +2043,7 @@ struct SM50_SHADER_COMMON_DATA32 {
   uint32_t next;
   enum SM50_SHADER_COMPILATION_ARGUMENT_TYPE type;
   enum SM50_SHADER_METAL_VERSION metal_version;
+  uint32_t flags; /* spec 05 clarification 13 */
 };
 
 struct SM50_SHADER_COMPILATION_ARGUMENT_DATA32 {
@@ -2135,6 +2136,7 @@ sm50_compilation_argument32_convert(
       last_arg->next = NULL;
       data->type = src->type;
       data->metal_version = src->metal_version;
+      data->flags = src->flags; /* spec 05 clarification 13 */
       break;
     }
     case SM50_SHADER_PSO_PIXEL_SHADER: {

@@ -1,5 +1,5 @@
 #pragma once
-// Changed for MYIOSDECK (spec 05 F2, H3, H4, clarifications 10 and 12). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 F2, H3, H4, clarifications 10, 12 and 13). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "Metal.hpp"
 #include "thread.hpp"
 
@@ -9,8 +9,11 @@ namespace dxmt {
 // cached before the change aren't used. Spec 05 clarification 10: 17 for
 // steamac's DXMT patch 0018 (buffer atomics bound-checked), 18 for its patch
 // 0022 (small dynamically indexed temp arrays as select chains); the patches
-// bump AIRCONV_VERSION, which this tree's cache doesn't key on.
-constexpr int kDXMTShaderCacheVersion = 18;
+// bump AIRCONV_VERSION, which this tree's cache doesn't key on. Spec 05
+// clarification 13: 19 for the six upstream DXMT fixes (typed-buffer bounds,
+// NaN-to-0 sample coordinates, udiv by 0, sample_l bias, interpolate offset,
+// mul_hi, geometry-shader pass-through).
+constexpr int kDXMTShaderCacheVersion = 19;
 
 /* Spec 05 H3: DXMT_SHADER_CACHE_PATH (absolute only, with a trailing '/') or
    "dxmt/<exe name>/". A relative path is resolved by the unix half (on iOS,

@@ -1,3 +1,4 @@
+// Changed for MYIOSDECK (spec 05 clarification 13: the AIR builder gets the conversion flags). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "air_signature.hpp"
 #include "airconv_error.hpp"
 #include "dxbc_converter.hpp"
@@ -313,7 +314,7 @@ convert_dxbc_vertex_hull_shader(
   auto vertex_stage_end = llvm::BasicBlock::Create(context, "vertex_end", function);
   llvm::IRBuilder<> builder(entry_bb_global);
   llvm::raw_null_ostream nulldbg{};
-  llvm::air::AIRBuilder air(builder, nulldbg);
+  llvm::air::AIRBuilder air(air_builder_options(sm50_common), builder, nulldbg); // spec 05 clarification 13
 
   // these values are initialized by vertex stage and accessed by hull stage
   llvm::Value *instance_id = nullptr;
@@ -836,7 +837,7 @@ convert_dxbc_tesselator_domain_shader(
   auto real_return = llvm::BasicBlock::Create(context, "real_return", function);
   llvm::IRBuilder<> builder(entry_bb);
   llvm::raw_null_ostream nulldbg{};
-  llvm::air::AIRBuilder air(builder, nulldbg);
+  llvm::air::AIRBuilder air(air_builder_options(sm50_common), builder, nulldbg); // spec 05 clarification 13
 
   setup_metal_version(module, metal_version);
   setup_temp_register(shader_info, resource_map, types, module, builder);

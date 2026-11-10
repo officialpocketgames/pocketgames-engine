@@ -1,4 +1,5 @@
 #pragma once
+// Changed for MYIOSDECK (spec 05 F2, clarification 13). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "llvm/ADT/Optional.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/FMF.h"
@@ -460,7 +461,11 @@ public:
      `LOD` is given and `CheckMip`, coordinate < size at the clamped level,
      slice < array length). Out-of-range coordinate, level and slice are
      clamped to 0 so the access stays inside the texture. Returns the i1 test,
-     or nullptr for kinds that aren't checked. */
+     or nullptr for kinds that aren't checked.
+     Spec 05 clarification 13 (upstream DXMT 3bcaf16b9): texture buffers too.
+     `Address` is then the element index within the view (offset included); it
+     is checked against the view's element count, clamped to 0 when past it,
+     and the view's offset into the Metal texture is added on return. */
   llvm::Value *TexelAccessInRange(
       const TextureResourceHandle &Tex, llvm::Value *&Address, llvm::Value *&ArrayIndex, llvm::Value *&LOD,
       bool CheckMip

@@ -6,8 +6,8 @@
 # decoder, mip-clamp policy, 32-bit pointer/chain/record helpers, atomic wait,
 # the DXSO 32-bit argument chain, the Direct3D 9 iOS rules, the Direct3D 9 call
 # statistics and their call-site coverage; spec 05 clarification 10: the fixes adopted
-# from steamac's DXMT patches; clarification 12: the shader cache's log lines) with any
-# C++20 compiler.
+# from steamac's DXMT patches; clarification 12: the shader cache's log lines; clarification
+# 13: the six upstream DXMT shader fixes) with any C++20 compiler.
 # Usage: run-host-tests.sh [build-dir]
 # CXX selects the C++ compiler (default c++), CC the C compiler (default cc).
 
@@ -63,6 +63,10 @@ $cxx $flags -pthread $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal
 # database holds (on small SQLite databases; the system's libsqlite3 with the declarations in
 # tests/sqlite3-api, so no SQLite development package is needed; skipped without the library).
 $cxx $flags -I"$src/dxmt" -o "$build/test_shader_cache_log" "$here/test_shader_cache_log.cpp"
+# Spec 05 clarification 13 (six upstream DXMT fixes): the cache version and the conversion
+# flag; check-shader-fixes.sh checks the converter's source (the converter needs LLVM 15).
+$cxx $flags $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
+  -o "$build/test_shader_fixes" "$here/test_shader_fixes.cpp"
 sqlite_lib=
 for candidate in -lsqlite3 -l:libsqlite3.so.0; do
   if echo 'int main(void) { return 0; }' | $cc -x c - -o "$build/sqlite_probe" $candidate 2>/dev/null; then
@@ -95,6 +99,8 @@ sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_shader_bitcode" || status=1
 "$build/test_core_fixes" || status=1
 "$build/test_shader_cache_log" || status=1
+"$build/test_shader_fixes" || status=1
+sh "$here/check-shader-fixes.sh" "$src" || status=1
 if [ -n "$sqlite_lib" ]; then
   "$build/test_cache_contents" "$build" || status=1
 else

@@ -1,5 +1,7 @@
 // Changed for MYIOSDECK (spec 05 clarification 10: LGPL-2.1-or-later blocks from steamac's DXMT
-// patches 0018 and 0022, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// patches 0018 and 0022; clarification 13: LGPL-2.1-or-later blocks from upstream DXMT
+// 3bcaf16b9, 46b1146de and eec0b65a5; marked inline, see LICENSE-NOTES.md). Upstream: DXMT
+// a3a6e8f, MIT (see LICENSE).
 #include "dxbc_converter_base.hpp"
 #include "../dxbc_converter.hpp"
 #include "air_builder.hpp"
@@ -32,6 +34,28 @@ UseSelectLowering(llvm::Value *Index, llvm::ArrayType *TyHandle, unsigned VecSiz
          TyHandle->getNumElements() / VecSize <= kMaxSelectLoweredIndexableTempRegisters;
 }
 /* end of LGPL block */
+
+/* MYIOSDECK spec 05 clarification 13 (upstream DXMT 3bcaf16b9's rule for atomics on typed
+   buffers, fitted as a branch like Part F2's typed UAV store): emits `EmitAtomic` only when
+   `InRange` holds; an out-of-range index does no atomic and its result is 0. */
+template <typename EmitAtomic>
+static llvm::Value *
+EmitAtomicIfInRange(llvm::IRBuilderBase &ir, llvm::Value *InRange, EmitAtomic Emit) {
+  auto *Function = ir.GetInsertBlock()->getParent();
+  auto *EntryBB = ir.GetInsertBlock();
+  auto *AtomicBB = llvm::BasicBlock::Create(ir.getContext(), "texbuf_atomic_in_range", Function);
+  auto *DoneBB = llvm::BasicBlock::Create(ir.getContext(), "texbuf_atomic_done", Function);
+  ir.CreateCondBr(InRange, AtomicBB, DoneBB);
+  ir.SetInsertPoint(AtomicBB);
+  llvm::Value *Result = Emit();
+  auto *AtomicEndBB = ir.GetInsertBlock();
+  ir.CreateBr(DoneBB);
+  ir.SetInsertPoint(DoneBB);
+  auto *Phi = ir.CreatePHI(Result->getType(), 2);
+  Phi->addIncoming(Result, AtomicEndBB);
+  Phi->addIncoming(llvm::Constant::getNullValue(Result->getType()), EntryBB);
+  return Phi;
+}
 
 llvm::Value *
 Converter::LoadOperandIndex(const IndexByTempComponent &SrcOpIndex) {
@@ -1329,12 +1353,24 @@ Converter::operator()(const InstIntegerBinaryOpWithTwoDst &bin) {
       StoreOperand(bin.dst_low, ir.CreateMul(Src0Lo, Src1Lo));
     break;
   }
-  case IntegerBinaryOpWithTwoDst::UDiv:
+  case IntegerBinaryOpWithTwoDst::UDiv: {
+    // LGPL-2.1-or-later, from upstream DXMT 46b1146de ("respect division-by-zero behavior of
+    // udiv"), fitted for MYIOSDECK spec 05 clarification 13: Direct3D defines quotient and
+    // remainder by 0 as all ones. Fitted: the divisor is also replaced by 1 where it is 0,
+    // because an LLVM udiv/urem by 0 is undefined behaviour even when its result is unused.
+    auto DivideOrAllOnes = [&](llvm::Value *Num, llvm::Value *Den, bool Remainder) {
+      auto IsZero = ir.CreateIsNull(Den);
+      auto SafeDen = ir.CreateSelect(IsZero, llvm::ConstantInt::get(Den->getType(), 1), Den);
+      auto Result = Remainder ? ir.CreateURem(Num, SafeDen) : ir.CreateUDiv(Num, SafeDen);
+      return ir.CreateSelect(IsZero, llvm::ConstantInt::getAllOnesValue(Den->getType()), Result);
+    };
     if (!IsNull(bin.dst_hi))
-      StoreOperand(bin.dst_hi, ir.CreateUDiv(Src0Hi, Src1Hi));
+      StoreOperand(bin.dst_hi, DivideOrAllOnes(Src0Hi, Src1Hi, false));
     if (!IsNull(bin.dst_low))
-      StoreOperand(bin.dst_low, ir.CreateURem(Src0Lo, Src1Lo));
+      StoreOperand(bin.dst_low, DivideOrAllOnes(Src0Lo, Src1Lo, true));
+    // end of LGPL block
     break;
+  }
   case IntegerBinaryOpWithTwoDst::UAddCarry: {
     if (!IsNull(bin.dst_hi))
       StoreOperand(bin.dst_hi, ir.CreateAdd(Src0Hi, Src1Hi));
@@ -1426,8 +1462,9 @@ Converter::operator()(const InstLoad &load) {
 
   switch (Tex->Logical) {
   case Texture::texture_buffer:
+    // the view's offset is added by TexelAccessInRange, after the bounds check (spec 05
+    // clarification 13, upstream DXMT 3bcaf16b9)
     Address = LoadOperand(load.src_address, kMaskComponentX);
-    Address = ir.CreateAdd(Address, DecodeTextureBufferOffset(Tex->Metadata));
     Offset = air.getInt(load.offsets[0]);
     break;
   case Texture::texture1d:
@@ -1499,6 +1536,18 @@ Converter::TexelAccessInRange(
   using namespace llvm::air;
   bool is_3d = false, is_array = false;
   switch (Tex.Logical) {
+  case Texture::texture_buffer: {
+    // LGPL-2.1-or-later, from upstream DXMT 3bcaf16b9 ("honor texel buffer out-of-bounds
+    // addressing"), fitted for MYIOSDECK spec 05 clarification 13: the element index (with
+    // any texel offset) is checked against the view's element count, and the view's offset
+    // into the larger Metal texture is added only after the check, so an index past the
+    // view never reaches its neighbours' data.
+    auto InRange = ir.CreateICmpULT(Address, DecodeTextureBufferElement(Tex.Metadata));
+    Address = ir.CreateSelect(InRange, Address, llvm::Constant::getNullValue(Address->getType()));
+    Address = ir.CreateAdd(Address, DecodeTextureBufferOffset(Tex.Metadata));
+    return InRange;
+    // end of LGPL block
+  }
   case Texture::texture2d:
   case Texture::depth2d:
     break;
@@ -1556,8 +1605,8 @@ Converter::operator()(const InstLoadUAVTyped &load) {
 
   switch (Tex->Logical) {
   case Texture::texture_buffer:
+    // view offset added by TexelAccessInRange (spec 05 clarification 13)
     Address = LoadOperand(load.src_address, kMaskComponentX);
-    Address = ir.CreateAdd(Address, DecodeTextureBufferOffset(Tex->Metadata));
     break;
   case Texture::texture1d:
     Address = LoadOperand(load.src_address, kMaskComponentX);
@@ -1612,8 +1661,8 @@ Converter::operator()(const InstStoreUAVTyped &store) {
 
   switch (Tex->Logical) {
   case Texture::texture_buffer:
+    // view offset added by TexelAccessInRange (spec 05 clarification 13)
     Address = LoadOperand(store.src_address, kMaskComponentX);
-    Address = ir.CreateAdd(Address, DecodeTextureBufferOffset(Tex->Metadata));
     break;
   case Texture::texture1d:
     Address = LoadOperand(store.src_address, kMaskComponentX);
@@ -1795,7 +1844,11 @@ Converter::operator()(const InstSampleLOD &sample) {
     return;
   }
 
-  llvm::Value *LOD = LoadOperand(sample.src_lod, kMaskComponentX);
+  // LGPL-2.1-or-later, from upstream DXMT eec0b65a5 ("honor sampler bias when sampling with
+  // specific lod"), adopted for MYIOSDECK spec 05 clarification 13: sample_l adds the
+  // sampler's MipLODBias.
+  llvm::Value *LOD = ir.CreateFAdd(LoadOperand(sample.src_lod, kMaskComponentX), Sampler->Bias);
+  // end of LGPL block
 
   auto [Value, Residency] =
       air.CreateSample(Tex->Texture, Tex->Handle, SamplerHandle, Coord, ArrayIndex, sample.offsets, sample_level{LOD});
@@ -2575,8 +2628,8 @@ Converter::operator()(const InstAtomicBinOp &atomic) {
 
     switch (Tex->Logical) {
     case Texture::texture_buffer:
+      // view offset added by TexelAccessInRange below (spec 05 clarification 13)
       Address = LoadOperand(atomic.dst_address, kMaskComponentX);
-      Address = ir.CreateAdd(Address, DecodeTextureBufferOffset(Tex->Metadata));
       break;
     case Texture::texture1d:
       Address = LoadOperand(atomic.dst_address, kMaskComponentX);
@@ -2600,8 +2653,19 @@ Converter::operator()(const InstAtomicBinOp &atomic) {
     default:
       return;
     }
-    auto Value =
-        air.CreateAtomicRMW(Tex->Texture, Tex->Handle, Op, Address, LoadOperand(atomic.src, kMaskAll), ArrayIndex);
+    auto Src = LoadOperand(atomic.src, kMaskAll);
+    auto EmitAtomic = [&]() -> llvm::Value * {
+      return air.CreateAtomicRMW(Tex->Texture, Tex->Handle, Op, Address, Src, ArrayIndex);
+    };
+    llvm::Value *Value = nullptr;
+    if (Tex->Logical == Texture::texture_buffer) {
+      // spec 05 clarification 13 (upstream DXMT 3bcaf16b9): no atomic past the view's end
+      llvm::Value *NoLOD = nullptr;
+      auto InRange = TexelAccessInRange(*Tex, Address, ArrayIndex, NoLOD, false);
+      Value = EmitAtomicIfInRange(ir, InRange, EmitAtomic);
+    } else {
+      Value = EmitAtomic();
+    }
     StoreOperand(atomic.dst_original, Value);
     return;
   }
@@ -2633,8 +2697,8 @@ Converter::operator()(const InstAtomicImmCmpExchange &atomic) {
 
     switch (Tex->Logical) {
     case Texture::texture_buffer:
+      // view offset added by TexelAccessInRange below (spec 05 clarification 13)
       Address = LoadOperand(atomic.dst_address, kMaskComponentX);
-      Address = ir.CreateAdd(Address, DecodeTextureBufferOffset(Tex->Metadata));
       break;
     case Texture::texture1d:
       Address = LoadOperand(atomic.dst_address, kMaskComponentX);
@@ -2658,10 +2722,22 @@ Converter::operator()(const InstAtomicImmCmpExchange &atomic) {
     default:
       return;
     }
-    auto [Value, Flag_DISCARDED] = air.CreateAtomicCmpXchg(
-        Tex->Texture, Tex->Handle, Address, LoadOperand(atomic.src0, kMaskAll), LoadOperand(atomic.src1, kMaskAll),
-        ArrayIndex
-    );
+    auto Compare = LoadOperand(atomic.src0, kMaskAll);
+    auto Exchange = LoadOperand(atomic.src1, kMaskAll);
+    auto EmitAtomic = [&]() -> llvm::Value * {
+      auto [Original, Flag_DISCARDED] =
+          air.CreateAtomicCmpXchg(Tex->Texture, Tex->Handle, Address, Compare, Exchange, ArrayIndex);
+      return Original;
+    };
+    llvm::Value *Value = nullptr;
+    if (Tex->Logical == Texture::texture_buffer) {
+      // spec 05 clarification 13 (upstream DXMT 3bcaf16b9): no atomic past the view's end
+      llvm::Value *NoLOD = nullptr;
+      auto InRange = TexelAccessInRange(*Tex, Address, ArrayIndex, NoLOD, false);
+      Value = EmitAtomicIfInRange(ir, InRange, EmitAtomic);
+    } else {
+      Value = EmitAtomic();
+    }
     StoreOperand(atomic.dst, Value);
     return;
   }

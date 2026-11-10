@@ -1,5 +1,6 @@
 // Changed for MYIOSDECK (spec 07 A2): contains LGPL-2.1-or-later blocks from dxmt-d3d9 v0.4-d3d9
-// (e8dd4c6), marked inline; the file is distributed under LGPL-2.1-or-later as a whole
+// (e8dd4c6) and (spec 05 clarification 13) from upstream DXMT f48f4c707, marked inline; the
+// file is distributed under LGPL-2.1-or-later as a whole
 // (see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 #pragma once
@@ -106,9 +107,25 @@ enum class ThreadScope {
   Simdgroup = 4,
 };
 
+/* LGPL-2.1-or-later, from upstream DXMT f48f4c707 ("sample coordinate NaN-to-0 sanitation"),
+   fitted for MYIOSDECK spec 05 clarification 13 (only the option this change needs). */
+class AIRBuilderOptions {
+public:
+  /* NaN coordinate components (and sample_d's derivatives) become 0 before every sample,
+     gather and LOD query. Off unless a frontend asks for it: Direct3D 11 turns it on by
+     default (`d3d11.sampleNaNToZero`, see dxbc_converter.hpp). */
+  bool sampleNaNToZero = false;
+};
+/* end of LGPL block */
+
 class AIRBuilder {
 public:
   AIRBuilder(IRBuilderBase &ir_builder, raw_ostream &debug) : builder(ir_builder), debug(debug) {}
+  /* spec 05 clarification 13 (upstream DXMT f48f4c707, LGPL-2.1-or-later) */
+  AIRBuilder(const AIRBuilderOptions &options, IRBuilderBase &ir_builder, raw_ostream &debug) :
+      builder(ir_builder),
+      debug(debug),
+      options(options) {}
 
   /* Texture Operations */
 
@@ -525,8 +542,26 @@ public:
 
   std::string getTypeOverloadSuffix(Type *Ty, Signedness Sign = Signedness::DontCare);
 
+  /* LGPL-2.1-or-later, from upstream DXMT f48f4c707, adopted for MYIOSDECK spec 05
+     clarification 13: an i1 (or vector of i1) that is true where a float (vector) is NaN,
+     and the operand with its NaN components replaced by 0. */
+  Value *CreateIsNaN(Value *Operand);
+
+  Value *
+  getNaNToZero(Value *Operand) {
+    return builder.CreateSelect(CreateIsNaN(Operand), Constant::getNullValue(Operand->getType()), Operand);
+  }
+
+  /* the operand, made NaN-free when options.sampleNaNToZero is set */
+  Value *
+  getSampleOperand(Value *Operand) {
+    return options.sampleNaNToZero ? getNaNToZero(Operand) : Operand;
+  }
+  /* end of LGPL block */
+
 protected:
   raw_ostream &debug;
+  AIRBuilderOptions options; /* spec 05 clarification 13 */
 
   Value *
   GetOffset(const Texture &Texture, const int32_t ImmOffset[3]) {

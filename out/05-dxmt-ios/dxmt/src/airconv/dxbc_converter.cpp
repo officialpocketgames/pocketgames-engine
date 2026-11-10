@@ -1,4 +1,5 @@
-// Changed for MYIOSDECK (spec 05 F3, F5, clarification 10). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 F3, F5, clarification 10; clarification 13: an LGPL-2.1-or-later
+// block from upstream DXMT ae9126982, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "dxbc_converter.hpp"
 #include <atomic>
 #include <cstdio>
@@ -511,7 +512,7 @@ llvm::Error convert_dxbc_pixel_shader(
   auto epilogue_bb = llvm::BasicBlock::Create(context, "epilogue", function);
   llvm::IRBuilder<> builder(entry_bb);
   llvm::raw_null_ostream nulldbg{};
-  llvm::air::AIRBuilder air(builder, nulldbg);
+  llvm::air::AIRBuilder air(air_builder_options(sm50_common), builder, nulldbg); // spec 05 clarification 13
 
   setup_metal_version(module, metal_version);
 
@@ -616,7 +617,7 @@ llvm::Error convert_dxbc_compute_shader(
   auto epilogue_bb = llvm::BasicBlock::Create(context, "epilogue", function);
   llvm::IRBuilder<> builder(entry_bb);
   llvm::raw_null_ostream nulldbg{};
-  llvm::air::AIRBuilder air(builder, nulldbg);
+  llvm::air::AIRBuilder air(air_builder_options(sm50_common), builder, nulldbg); // spec 05 clarification 13
 
   setup_metal_version(module, metal_version);
   setup_temp_register(shader_info, resource_map, types, module, builder);
@@ -791,7 +792,7 @@ llvm::Error convert_dxbc_vertex_shader(
   auto epilogue_bb = llvm::BasicBlock::Create(context, "epilogue", function);
   llvm::IRBuilder<> builder(entry_bb);
   llvm::raw_null_ostream nulldbg{};
-  llvm::air::AIRBuilder air(builder, nulldbg);
+  llvm::air::AIRBuilder air(air_builder_options(sm50_common), builder, nulldbg); // spec 05 clarification 13
 
   setup_metal_version(module, metal_version);
 
@@ -1343,15 +1344,17 @@ ParseSM50(const void *pBytecode, size_t BytecodeSize, MTL_SHADER_REFLECTION *pRe
       pRefl->PostTessellator = {.MaxPotentialTessFactor = max_potential_tess_factor};
     }
     if (sm50_shader->shader_type == microsoft::D3D10_SB_GEOMETRY_SHADER) {
+      // LGPL-2.1-or-later, from upstream DXMT ae9126982 ("fix some logic flaws"), adopted for
+      // MYIOSDECK spec 05 clarification 13: a geometry shader whose signatures don't pass
+      // through (more outputs than inputs, several streams, unmatched registers) is not
+      // treated as a pass-through any more; the signature check's result was ignored.
       if (binding_cbuffer_mask || binding_sampler_mask || binding_uav_mask ||
           binding_srv_hi_mask || binding_srv_lo_mask ||
-          !CheckGSBBIsPassThrough(sm50_shader->entry())) {
+          !(CheckGSBBIsPassThrough(sm50_shader->entry()) &&
+            CheckGSSignatureIsPassThrough(inputParser, outputParser, pRefl->GeometryShader.Data))) {
         pRefl->GeometryShader.GSPassThrough = ~0u;
-      } else {
-        CheckGSSignatureIsPassThrough(
-          inputParser, outputParser, pRefl->GeometryShader.Data
-        );
       }
+      // end of LGPL block
       pRefl->GeometryShader.Primitive = sm50_shader->gs_input_primitive;
     }
     if (sm50_shader->shader_type == microsoft::D3D10_SB_PIXEL_SHADER) {
