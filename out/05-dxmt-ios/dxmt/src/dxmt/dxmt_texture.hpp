@@ -1,7 +1,8 @@
 #pragma once
 // Changed for MYIOSDECK (spec 05 D5, H7; spec 07 A2: LGPL-2.1-or-later blocks from dxmt-d3d9
 // v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10: an
-// LGPL-2.1-or-later block from steamac's DXMT patch 0023, marked inline). Upstream: DXMT a3a6e8f, MIT.
+// LGPL-2.1-or-later block from steamac's DXMT patch 0023, marked inline; spec 05 clarification 33:
+// two view accessors). Upstream: DXMT a3a6e8f, MIT.
 #include "Metal.hpp"
 #include "dxmt_deptrack.hpp"
 #include "dxmt_residency.hpp"
@@ -237,6 +238,20 @@ public:
   arrayLength(TextureViewKey view) {
     std::shared_lock<dxmt::shared_mutex> lock(mutex_);
     return viewDescriptors_[view].arraySize;
+  }
+
+  /* MYIOSDECK spec 05 clarification 33: where a view starts in its texture, for the frame dump's
+     per-subresource accounting */
+  unsigned
+  firstMiplevel(TextureViewKey view) {
+    std::shared_lock<dxmt::shared_mutex> lock(mutex_);
+    return viewDescriptors_[view].firstMiplevel;
+  }
+
+  unsigned
+  firstArraySlice(TextureViewKey view) {
+    std::shared_lock<dxmt::shared_mutex> lock(mutex_);
+    return viewDescriptors_[view].firstArraySlice;
   }
 
   /* ---- spec 07: LGPL-2.1-or-later block, from dxmt-d3d9 v0.4-d3d9 (e8dd4c6)

@@ -1831,7 +1831,7 @@ public:
      copies its 2D texture UAVs). The next dispatch opens a compute pass again. */
   void
   TraceAfterDispatch() {
-    if (!FrameTraceSwitch() || !IsTracedPresent(RecordingPresent()))
+    if (!FrameTraceSwitch() || !FrameTraced(RecordingPresent()))
       return;
     SwitchToBlitEncoder(CommandBufferState::BlitEncoderActive);
     EmitOP([](ArgumentEncodingContext &enc) { enc.traceAfterDispatch(); });
@@ -1863,7 +1863,7 @@ public:
   void
   TraceIndirectReadback(ID3D11Buffer *pBufferForArgs, UINT offset, unsigned length, bool indexed) {
     auto bindable = reinterpret_cast<D3D11ResourceCommon *>(pBufferForArgs);
-    if (!bindable || !FrameTraceSwitch() || !IsTracedPresent(RecordingPresent()))
+    if (!bindable || !FrameTraceSwitch() || !FrameTraced(RecordingPresent()))
       return;
     SwitchToBlitEncoder(CommandBufferState::BlitEncoderActive);
     EmitOP([ArgBuffer = bindable->buffer(), offset, length, indexed](ArgumentEncodingContext &enc) {
@@ -5095,7 +5095,7 @@ public:
      pass by the encoder. Geometry, hull and domain shader samplers aren't listed. */
   void
   TraceDrawState() {
-    if (!FrameTraceSwitch() || !IsTracedPresent(RecordingPresent()))
+    if (!FrameTraceSwitch() || !FrameTraced(RecordingPresent()))
       return;
     std::vector<std::string> lines;
     TraceStageSamplers<PipelineStage::Vertex>("vs", lines);
@@ -5141,7 +5141,7 @@ public:
     if (!FinalizeCurrentComputePipeline()) {
       return false;
     }
-    if (FrameTraceSwitch() && IsTracedPresent(RecordingPresent())) { // spec 05 clarification 30
+    if (FrameTraceSwitch() && FrameTraced(RecordingPresent())) { // spec 05 clarification 30
       std::vector<std::string> lines;
       TraceStageSamplers<PipelineStage::Compute>("cs", lines);
       EmitST([lines = std::move(lines)](ArgumentEncodingContext &enc) mutable {

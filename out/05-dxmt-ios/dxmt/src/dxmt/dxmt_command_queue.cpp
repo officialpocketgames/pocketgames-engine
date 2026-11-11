@@ -248,12 +248,24 @@ CommandQueue::WaitForFinishThread() {
 
     // spec 05 clarification 24: the traced frame's indirect arguments, as the GPU had them;
     // the shared slots stay valid until argbuf_allocator frees this chunk's blocks below
-    // spec 05 clarification 27: and the UAV read-backs; 28: the frame dump's files
+    // spec 05 clarification 27: and the UAV read-backs; 39: they go into their frame's trace,
+    // which is written whole (with them in place) once the frame's last command buffer has
+    // completed; 28/33: the dumped frames' files
     if (!device_error) {
-      for (auto &readback : chunk.trace_readbacks)
-        Logger::info(TraceReadbackLine(readback));
-      for (auto &file : chunk.dump_files)
-        WriteFrameDumpFile(file);
+      if (chunk.trace_record && !chunk.trace_readbacks.empty()) {
+        std::lock_guard<std::mutex> lock(chunk.trace_record->mutex);
+        for (auto &readback : chunk.trace_readbacks)
+          chunk.trace_record->readbacks.push_back(TraceReadbackText(readback));
+      }
+      for (auto &record : chunk.trace_ready)
+        WriteFrameTrace(*record);
+      for (auto &ready : chunk.dump_ready) { // clarification 33: each frame's files, then its index
+        for (auto &file : ready.files)
+          WriteFrameDumpFile(file);
+        WriteFrameDumpIndex(ready.directory, ready.index);
+        FrameDumpFinished(); // clarification 40: a later request may be taken
+      }
+      chunk.dump_ready.clear();
     }
 
     if (chunk.signal_frame_latency_fence_ != ~0ull)

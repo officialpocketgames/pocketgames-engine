@@ -1,10 +1,11 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 the MYIOSDECK author
 //
-// Spec 05 clarification 28: the frame dump's plain part (dxmt/src/dxmt/dxmt_frame_dump.hpp):
-// when it is on (both switches, present 1800 only), which formats are dumped and their texel
-// sizes, file and directory names, and the 16 MB / 256 MB limits with their summary line.
-// No image is made or read here: the dump only runs on a device, in test builds.
+// Spec 05 clarifications 28, 31 and 33-37: the frame dump's plain part
+// (dxmt/src/dxmt/dxmt_frame_dump.hpp): when it is on (both switches, presents 1800 and 9000),
+// which formats and types are dumped and their texel sizes, subresource and present names, the
+// one-buffer-per-subresource accounting with first-write copies, and the index's lines and
+// reasons. No image is made or read here: the dump only runs on a device, in test builds.
 
 #include "test_common.hpp"
 
@@ -17,120 +18,276 @@ namespace {
 using namespace dxmt;
 
 void
-TestSwitchOff() {
-  // off unless both switches are on, and only at present 1800
-  CHECK(!FrameDumpActive(false, false, 1800));
-  CHECK(!FrameDumpActive(false, true, 1800)); // the dump switch unset: never
-  CHECK(!FrameDumpActive(true, false, 1800)); // the trace off: never
+TestPresents() {
+  // clarification 36: presents 1800 and 9000, both traced presents too; off unless both switches
   CHECK(FrameDumpActive(true, true, 1800));
+  CHECK(FrameDumpActive(true, true, 9000));
+  CHECK(IsTracedPresent(1800) && IsTracedPresent(9000));
+  CHECK(!FrameDumpActive(false, true, 1800)); // the dump switch unset: never
+  CHECK(!FrameDumpActive(false, true, 9000));
+  CHECK(!FrameDumpActive(true, false, 9000)); // the trace off: never
   CHECK(!FrameDumpActive(true, true, 600));
   CHECK(!FrameDumpActive(true, true, 3000));
-  CHECK(!FrameDumpActive(true, true, 1799));
+  CHECK(!FrameDumpActive(true, true, 10200));
   CHECK(!FrameDumpActive(true, true, 0));
-  CHECK(IsTracedPresent(kFrameDumpPresent)); // the dumped frame is a traced one
-  CHECK(FrameTraceSwitchValue("1"));
   CHECK(!FrameTraceSwitchValue("")); // PG_DXMT_FRAME_DUMP unset reads ""
+  CHECK(FrameDumpDirectory(1800) == "C:\\users\\Public\\pg-dumps\\frame-1800");
+  CHECK(FrameDumpDirectory(9000) == "C:\\users\\Public\\pg-dumps\\frame-9000");
 }
 
 void
 TestFormats() {
   CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatRGBA16Float), 8);
-  CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatRGBA8Unorm), 4);
   CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatRGBA8Unorm_sRGB), 4);
   CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatRG11B10Float), 4);
-  CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatR16Float), 2);
   CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatR8Snorm), 1);
   CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatRGBA32Float), 16);
   CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatBGRX8Unorm), 4); // swizzle flag dropped
-  // not dumped: integer, depth, stencil, compressed
-  CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatR32Uint), 0);
-  CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatRGBA8Uint), 0);
-  CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatDepth32Float), 0);
-  CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatDepth32Float_Stencil8), 0);
-  CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatStencil8), 0);
+  CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatR32Uint), 0);    // integer: "format"
   CHECK_EQ(FrameDumpBytesPerTexel(WMTPixelFormatBC1_RGBA), 0);
+
+  // depth (clarifications 31 and 34)
+  FrameDumpPlane planes[2];
+  CHECK_EQ(FrameDumpDepthPlanes(WMTPixelFormatDepth32Float, planes), 1);
+  CHECK_EQ(planes[0].bytes_per_texel, 4);
+  CHECK_EQ(FrameDumpDepthPlanes(WMTPixelFormatDepth16Unorm, planes), 1);
+  CHECK(std::string(planes[0].format_label) == "Depth16Unorm");
+  CHECK_EQ(planes[0].bytes_per_texel, 2);
+  CHECK_EQ(planes[0].option, WMTBlitOptionNone);
+  CHECK_EQ(FrameDumpDepthPlanes(WMTPixelFormatDepth32Float_Stencil8, planes), 2);
+  CHECK_EQ(planes[0].option, WMTBlitOptionDepthFromDepthStencil);
+  CHECK(std::string(planes[1].format_label) == "Stencil8");
+  CHECK_EQ(planes[1].bytes_per_texel, 1);
+  CHECK_EQ(planes[1].option, WMTBlitOptionStencilFromDepthStencil);
+  CHECK_EQ(FrameDumpDepthPlanes(WMTPixelFormatDepth24Unorm_Stencil8, planes), 0);
+
+  // types (clarification 34)
+  CHECK(FrameDumpLayersOf(WMTTextureType2D) == FrameDumpLayers::Slice);
+  CHECK(FrameDumpLayersOf(WMTTextureType2DArray) == FrameDumpLayers::Slice);
+  CHECK(FrameDumpLayersOf(WMTTextureTypeCube) == FrameDumpLayers::Face);
+  CHECK(FrameDumpLayersOf(WMTTextureTypeCubeArray) == FrameDumpLayers::Face);
+  CHECK(FrameDumpLayersOf(WMTTextureType3D) == FrameDumpLayers::Z0);
+  CHECK(FrameDumpLayersOf(WMTTextureType2DMultisample) == FrameDumpLayers::NotDumped);
+  CHECK(FrameDumpLayersOf(WMTTextureType2DMultisampleArray) == FrameDumpLayers::NotDumped);
+  CHECK(FrameDumpLayersOf(WMTTextureTypeTextureBuffer) == FrameDumpLayers::NotDumped);
 }
 
 void
 TestNames() {
-  CHECK(FrameDumpDirectory(1800) == "C:\\users\\Public\\pg-dumps\\frame-1800");
-  CHECK(FrameDumpFileName(7, "pass14", "c0", WMTPixelFormatRGBA16Float, 1280, 720) ==
-        "0007-pass14-c0-RGBA16Float-1280x720.raw");
-  CHECK(FrameDumpFileName(12, FrameDumpDispatchTag(0x7041a1e5), "u1", WMTPixelFormatR16Float, 640, 360) ==
-        "0012-cs7041a1e5-u1-R16Float-640x360.raw");
-  CHECK(FrameDumpDispatchTag(0xab) == "cs000000ab");
-  // the names carry nothing but numbers, pass or shader hash, slot and format
-  std::string name = FrameDumpFileName(1, "pass0", "c3", WMTPixelFormatRGB10A2Unorm, 1, 1);
-  CHECK(name == "0001-pass0-c3-RGB10A2Unorm-1x1.raw");
-  CHECK(name.find('\\') == std::string::npos && name.find('/') == std::string::npos);
+  CHECK(FrameDumpLayerName(FrameDumpLayers::Slice, false, 0, 0) == "mip0-slice0");
+  CHECK(FrameDumpLayerName(FrameDumpLayers::Slice, false, 2, 5) == "mip2-slice5"); // an array slice
+  CHECK(FrameDumpLayerName(FrameDumpLayers::Face, false, 0, 3) == "mip0-face3");   // a cube face
+  CHECK(FrameDumpLayerName(FrameDumpLayers::Face, true, 1, 8) == "mip1-slice1-face2"); // a cube array's layer 8
+  CHECK(FrameDumpLayerName(FrameDumpLayers::Z0, false, 0, 7) == "mip0-z0");
+  CHECK(FrameDumpSubresourceName(7, "RGBA16Float", 1280, 720, "mip0-slice0", false) ==
+        "t0007-RGBA16Float-1280x720-mip0-slice0.raw");
+  CHECK(FrameDumpSubresourceName(7, "RGBA16Float", 1280, 720, "mip0-slice0", true) ==
+        "t0007-RGBA16Float-1280x720-mip0-slice0-first.raw");
+  CHECK(FrameDumpSubresourceName(12, "Stencil8", 1280, 720, "mip0-slice0", false) ==
+        "t0012-Stencil8-1280x720-mip0-slice0.raw");
+  CHECK(FrameDumpPresentName(WMTPixelFormatBGRA8Unorm, 1280, 720) == "present-BGRA8Unorm-1280x720.raw");
+  CHECK(FrameDumpTextureId(0) == "t0000");
+  CHECK(FrameDumpDispatchTag(0x7041a1e5) == "cs7041a1e5");
 }
 
 void
-TestLimits() {
-  FrameDumpBudget budget;
-  // one 1280x720 RGBA16Float target is 7.03 MB: admitted
-  CHECK(budget.admit(1280ull * 720 * 8));
-  // exactly 16 MB is admitted; one byte more is skipped as too large
-  CHECK(budget.admit(16ull << 20));
-  CHECK(!budget.admit((16ull << 20) + 1));
-  CHECK_EQ(budget.tooLarge(), 1);
-  // fill to the 256 MB total: then everything else is left out
-  FrameDumpBudget total;
-  for (int i = 0; i < 16; i++)
-    CHECK(total.admit(16ull << 20));
-  CHECK_EQ(total.total(), 256ull << 20);
-  CHECK(!total.admit(4));
-  CHECK(!total.admit(16ull << 20));
-  CHECK(!total.admit(32ull << 20)); // over 16 MB counts as too large, not over the total
-  CHECK_EQ(total.files(), 16);
-  CHECK_EQ(total.overTotal(), 2);
-  CHECK_EQ(total.tooLarge(), 1);
-  CHECK(total.summary() == "dump: 16 files, 256.0 MB; left out: 1 over 16 MB, 2 over the 256 MB total");
-  CHECK(FrameDumpBudget().summary() == "dump: 0 files, 0.0 MB; left out: 0 over 16 MB, 0 over the 256 MB total");
+TestOneBufferPerSubresource() {
+  FrameDumpLedger ledger;
+  FrameDumpKey depth{0x10, 0, 0, 0}, stencil{0x10, 0, 0, 1}, color{0x20, 0, 0, 0};
+  uint64_t depth_bytes = 1280ull * 720 * 4, stencil_bytes = 1280ull * 720, color_bytes = 1280ull * 720 * 8;
+  // build 66's case: the same depth and stencil planes written in 25 passes
+  CHECK(ledger.write(depth, depth_bytes) == FrameDumpAction::CopyNew);
+  CHECK(ledger.write(stencil, stencil_bytes) == FrameDumpAction::CopyNew);
+  CHECK(ledger.write(depth, depth_bytes) == FrameDumpAction::CopyWithFirst); // second write: first copy
+  CHECK(ledger.write(stencil, stencil_bytes) == FrameDumpAction::CopyWithFirst);
+  for (int pass = 2; pass < 25; pass++) {
+    CHECK(ledger.write(depth, depth_bytes) == FrameDumpAction::Copy); // rewrites cost nothing
+    CHECK(ledger.write(stencil, stencil_bytes) == FrameDumpAction::Copy);
+  }
+  CHECK_EQ(ledger.lastBytes(), depth_bytes + stencil_bytes); // counted once each
+  CHECK_EQ(ledger.firstBytes(), depth_bytes + stencil_bytes);
+  CHECK_EQ(ledger.files(), 2);
+  CHECK_EQ(ledger.firstFiles(), 2);
+  // later passes still get their buffers
+  CHECK(ledger.write(color, color_bytes) == FrameDumpAction::CopyNew);
+  // other mips, slices and planes are other subresources
+  CHECK(ledger.write({0x20, 1, 0, 0}, color_bytes / 4) == FrameDumpAction::CopyNew);
+  CHECK(ledger.write({0x20, 0, 1, 0}, color_bytes) == FrameDumpAction::CopyNew);
 }
 
 void
-TestDepthPlanes() {
-  // spec 05 clarification 31
-  FrameDumpPlane planes[2];
-  CHECK_EQ(FrameDumpDepthPlanes(WMTPixelFormatDepth32Float, planes), 1);
-  CHECK(std::string(planes[0].slot) == "depth");
-  CHECK_EQ(planes[0].bytes_per_texel, 4);
-  CHECK_EQ(planes[0].option, WMTBlitOptionNone);
-  CHECK_EQ(FrameDumpDepthPlanes(WMTPixelFormatDepth32Float_Stencil8, planes), 2);
-  CHECK(std::string(planes[0].format_label) == "Depth32Float");
-  CHECK_EQ(planes[0].bytes_per_texel, 4);
-  CHECK_EQ(planes[0].option, WMTBlitOptionDepthFromDepthStencil);
-  CHECK(std::string(planes[1].slot) == "stencil");
-  CHECK(std::string(planes[1].format_label) == "Stencil8");
-  CHECK_EQ(planes[1].bytes_per_texel, 1);
-  CHECK_EQ(planes[1].option, WMTBlitOptionStencilFromDepthStencil);
-  CHECK_EQ(FrameDumpDepthPlanes(WMTPixelFormatDepth16Unorm, planes), 0);
-  CHECK_EQ(FrameDumpDepthPlanes(WMTPixelFormatRGBA8Unorm, planes), 0);
+TestBudget() {
+  // 16 MB per subresource: a 2048x2048 Depth32Float is exactly 16 MB and fits
+  FrameDumpLedger ledger;
+  CHECK(ledger.write({1, 0, 0, 0}, 2048ull * 2048 * 4) == FrameDumpAction::CopyNew);
+  CHECK(ledger.write({2, 0, 0, 0}, (16ull << 20) + 1) == FrameDumpAction::Skip);
+  CHECK(ledger.write({2, 0, 0, 0}, (16ull << 20) + 1) == FrameDumpAction::Skip); // stays refused
+  CHECK_EQ(ledger.refused(), 1);
 
-  CHECK(FrameDumpFileName(9, "pass3", "depth", "Depth32Float", 2048, 2048) ==
-        "0009-pass3-depth-Depth32Float-2048x2048.raw");
-  CHECK(FrameDumpFileName(10, "pass3", "stencil", "Stencil8", 1280, 720) == "0010-pass3-stencil-Stencil8-1280x720.raw");
+  // the 256 MB total: last-state buffers fill it; then subresources are refused
+  FrameDumpLedger full;
+  for (uint64_t t = 0; t < 16; t++)
+    CHECK(full.write({100 + t, 0, 0, 0}, 16ull << 20) == FrameDumpAction::CopyNew);
+  CHECK_EQ(full.lastBytes(), 256ull << 20);
+  CHECK(full.write({200, 0, 0, 0}, 4) == FrameDumpAction::Skip);
+  // no room left: a second write takes no first copy, but still copies into its buffer
+  CHECK(full.write({100, 0, 0, 0}, 16ull << 20) == FrameDumpAction::Copy);
+  CHECK_EQ(full.firstFiles(), 0);
 
-  // a 2048x2048 Depth32Float shadow map is exactly 16 MB: included; 2049 wide is not
-  FrameDumpBudget budget;
-  CHECK_EQ(2048ull * 2048 * 4, 16ull << 20);
-  CHECK(budget.admit(2048ull * 2048 * 4));
-  CHECK(!budget.admit(2049ull * 2048 * 4));
-  // a 1280x720 depth-stencil: its depth (3.5 MB) and stencil (0.9 MB) planes
-  CHECK(budget.admit(1280ull * 720 * 4));
-  CHECK(budget.admit(1280ull * 720 * 1));
-  CHECK_EQ(budget.files(), 3);
+  // first-write copies take at most 64 MB, whatever is left
+  FrameDumpLedger share;
+  for (uint64_t t = 0; t < 6; t++)
+    CHECK(share.write({300 + t, 0, 0, 0}, 16ull << 20) == FrameDumpAction::CopyNew);
+  for (uint64_t t = 0; t < 4; t++)
+    CHECK(share.write({300 + t, 0, 0, 0}, 16ull << 20) == FrameDumpAction::CopyWithFirst);
+  CHECK(share.write({304, 0, 0, 0}, 16ull << 20) == FrameDumpAction::Copy); // the share is used up
+  CHECK_EQ(share.firstBytes(), 64ull << 20);
+  // and last-state buffers still fit in what remains: 96 + 64 = 160 MB used, 96 MB left
+  for (uint64_t t = 0; t < 6; t++)
+    CHECK(share.write({400 + t, 0, 0, 0}, 16ull << 20) == FrameDumpAction::CopyNew);
+  CHECK(share.write({500, 0, 0, 0}, 1) == FrameDumpAction::Skip);
+  CHECK(share.summary() == "dump: 12 files (4 with a first-write copy), 256.0 MB; 1 subresources left out (budget)");
+}
+
+void
+TestIndex() {
+  CHECK(std::string(FrameDumpReasonText(FrameDumpReason::Format)) == "format");
+  CHECK(std::string(FrameDumpReasonText(FrameDumpReason::Type)) == "type");
+  CHECK(std::string(FrameDumpReasonText(FrameDumpReason::NotStored)) == "not stored");
+  CHECK(std::string(FrameDumpReasonText(FrameDumpReason::Budget)) == "budget");
+  CHECK(FrameDumpIndexLine("pass 14", "c0", 7, "RGBA16Float", WMTTextureType2D, 1280, 720, "mip0-slice0",
+                           FrameDumpReason::Dumped, "t0007-RGBA16Float-1280x720-mip0-slice0.raw") ==
+        "pass 14 c0: t0007 RGBA16Float 2D 1280x720 mip0-slice0 -> t0007-RGBA16Float-1280x720-mip0-slice0.raw");
+  CHECK(FrameDumpIndexLine("pass 3", "c1", 2, "RGBA16Float", WMTTextureType2DMultisample, 1280, 720, "mip0-slice0",
+                           FrameDumpReason::Type, "") ==
+        "pass 3 c1: t0002 RGBA16Float 2DMS 1280x720 mip0-slice0 not dumped (type)");
+  CHECK(FrameDumpIndexLine("dispatch #4 cs7041a1e5", "u0", 5, "R32Uint", WMTTextureType2D, 640, 360, "mip0-slice0",
+                           FrameDumpReason::Format, "") ==
+        "dispatch #4 cs7041a1e5 u0: t0005 R32Uint 2D 640x360 mip0-slice0 not dumped (format)");
+  CHECK(FrameDumpIndexLine("pass 9", "depth", 3, "Depth32Float", WMTTextureType2D, 2048, 2048, "mip0-slice0",
+                           FrameDumpReason::NotStored, "") ==
+        "pass 9 depth: t0003 Depth32Float 2D 2048x2048 mip0-slice0 not dumped (not stored)");
+  CHECK(FrameDumpIndexLine("copy", "", 9, "RGBA8Unorm", WMTTextureType2D, 512, 512, "mip0-slice0",
+                           FrameDumpReason::Budget, "") ==
+        "copy: t0009 RGBA8Unorm 2D 512x512 mip0-slice0 not dumped (budget)");
+  CHECK(FrameDumpIndexLine("pass 2", "c0", 1, "RGBA16Float", WMTTextureType3D, 32, 32, "mip0-z0",
+                           FrameDumpReason::Dumped, "t0001-RGBA16Float-32x32-mip0-z0.raw") ==
+        "pass 2 c0: t0001 RGBA16Float 3D 32x32 mip0-z0 -> t0001-RGBA16Float-32x32-mip0-z0.raw (3D: slice 0 only)");
+}
+
+/* clarification 40: a fake request file that counts what the policy did with it */
+struct FakeRequestFiles : FrameDumpRequestFiles {
+  bool present = false;
+  bool deletable = true;
+  std::string content = "requested 2026-11-11T10:00:00Z";
+  unsigned reads = 0, removes = 0;
+  bool
+  read(std::string &line) override {
+    reads++;
+    if (!present)
+      return false;
+    line = content;
+    return true;
+  }
+  bool
+  remove() override {
+    removes++;
+    if (!deletable)
+      return false;
+    present = false;
+    return true;
+  }
+};
+
+void
+TestRequests() {
+  // the check interval: only at multiples of 60 presents
+  {
+    FrameDumpRequestPolicy policy;
+    FakeRequestFiles files;
+    files.present = true;
+    std::string log;
+    for (uint64_t p = 1; p < 60; p++)
+      CHECK_EQ(policy.check(p, true, false, files, log), 0);
+    CHECK_EQ(files.reads, 0);
+    // delete, then dump the next present
+    CHECK_EQ(policy.check(60, true, false, files, log), 61);
+    CHECK_EQ(files.reads, 1);
+    CHECK_EQ(files.removes, 1);
+    CHECK(!files.present);
+    CHECK(log == "dxmt: frame dump requested (requested 2026-11-11T10:00:00Z); dumping present 61");
+    // no file: no request
+    CHECK_EQ(policy.check(120, true, false, files, log), 0);
+    CHECK(log.empty());
+  }
+  // at most 4 per process
+  {
+    FrameDumpRequestPolicy policy;
+    FakeRequestFiles files;
+    std::string log;
+    unsigned taken = 0;
+    for (uint64_t p = 60; p <= 600; p += 60) {
+      files.present = true;
+      if (policy.check(p, true, false, files, log))
+        taken++;
+    }
+    CHECK_EQ(taken, 4);
+    CHECK_EQ(policy.granted(), 4);
+    CHECK_EQ(files.removes, 4); // no longer looked at after the fourth
+  }
+  // a request during a dump waits for the next check, file left in place
+  {
+    FrameDumpRequestPolicy policy;
+    FakeRequestFiles files;
+    files.present = true;
+    std::string log;
+    CHECK_EQ(policy.check(1800, true, true, files, log), 0);
+    CHECK(files.present);
+    CHECK_EQ(files.reads, 0);
+    CHECK_EQ(policy.check(1860, true, false, files, log), 1861);
+  }
+  // the switch off: never looked at
+  {
+    FrameDumpRequestPolicy policy;
+    FakeRequestFiles files;
+    files.present = true;
+    std::string log;
+    for (uint64_t p = 60; p <= 6000; p += 60)
+      CHECK_EQ(policy.check(p, false, false, files, log), 0);
+    CHECK_EQ(files.reads, 0);
+    CHECK_EQ(files.removes, 0);
+  }
+  // a file that can't be deleted: logged once, then no more checks
+  {
+    FrameDumpRequestPolicy policy;
+    FakeRequestFiles files;
+    files.present = true;
+    files.deletable = false;
+    std::string log;
+    CHECK_EQ(policy.check(60, true, false, files, log), 0);
+    CHECK(log == "dxmt: frame dump request file can't be deleted; no more requests are taken");
+    CHECK(policy.stopped());
+    CHECK_EQ(policy.check(120, true, false, files, log), 0);
+    CHECK(log.empty());
+    CHECK_EQ(files.reads, 1);
+  }
+  // a requested present is dumped (with both switches), like the fixed ones
+  CHECK(FrameDumpActive(true, true, 61, true));
+  CHECK(!FrameDumpActive(false, true, 61, true));
+  CHECK(!FrameDumpActive(true, true, 61, false));
+  CHECK(std::string(kFrameDumpRequestFile) == "C:\\users\\Public\\pg-dumps\\frame-request");
 }
 
 } // namespace
 
 int
 main() {
-  TestSwitchOff();
+  TestRequests();
+  TestPresents();
   TestFormats();
   TestNames();
-  TestLimits();
-  TestDepthPlanes();
+  TestOneBufferPerSubresource();
+  TestBudget();
+  TestIndex();
   return TestSummary("test_frame_dump");
 }

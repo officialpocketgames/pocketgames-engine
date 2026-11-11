@@ -125,25 +125,32 @@ TestFrameAndCap() {
   CHECK_EQ(log.nextPass(), 1);
   log.countOffsetBind();
   log.countOffsetBind();
-  for (unsigned i = 0; i < kFrameTraceMaxLines + 25; i++)
+  // clarification 39: no cap. Build 66's frame had about 2400 lines; all of them are kept
+  for (unsigned i = 0; i < 2422; i++)
     log.line("pass " + std::to_string(i), out);
-  CHECK_EQ(out.size(), kFrameTraceMaxLines);
-  CHECK(out.front() == "dxmt-frame 600: pass 0");
-  CHECK(out.back() == "dxmt-frame 600: pass 599");
+  CHECK_EQ(out.size(), 2422);
+  CHECK(out.front() == "pass 0"); // no prefix: the file's folder names the frame
+  CHECK(out.back() == "pass 2421");
+  log.countRenderPass(12);
+  log.countRenderPass(3);
+  log.countDispatch();
+  CHECK_EQ(log.renderPasses(), 2);
+  CHECK_EQ(log.draws(), 15);
+  CHECK_EQ(log.dispatchCount(), 1);
 
-  // the next frame closes it: the offset count, then how many lines weren't shown
+  // the next frame closes it: the offset count
   out.clear();
   log.setPresent(0, out);
   CHECK(!log.active());
-  CHECK_EQ(out.size(), 2);
-  CHECK(out[0] == "dxmt-frame 600: constant-buffer binds with a non-zero offset: 2");
-  CHECK(out[1] == std::string("dxmt-frame 600: ") + kLogEllipsis + " 25 more not shown");
+  CHECK_EQ(out.size(), 1);
+  CHECK(out[0] == "constant-buffer binds with a non-zero offset: 2");
 
-  // the second traced frame starts from zero; no "not shown" line when nothing was dropped
+  // the second traced frame starts from zero
   out.clear();
   log.setPresent(1800, out);
   CHECK(out.empty());
   CHECK_EQ(log.nextPass(), 0);
+  CHECK_EQ(log.renderPasses(), 0);
   CHECK_EQ(log.nextIndirect(), 1); // indirect numbers start at 1 in each traced frame
   CHECK_EQ(log.nextIndirect(), 2);
   CHECK_EQ(log.nextDispatch(), 1); // so do dispatch numbers (clarification 27)
@@ -151,8 +158,8 @@ TestFrameAndCap() {
   log.line("present", out);
   log.setPresent(0, out);
   CHECK_EQ(out.size(), 2);
-  CHECK(out[0] == "dxmt-frame 1800: present");
-  CHECK(out[1] == "dxmt-frame 1800: constant-buffer binds with a non-zero offset: 0");
+  CHECK(out[0] == "present");
+  CHECK(out[1] == "constant-buffer binds with a non-zero offset: 0");
   log.setPresent(3000, out);
   CHECK_EQ(log.nextIndirect(), 1);
   CHECK_EQ(log.nextDispatch(), 1);
@@ -161,16 +168,52 @@ TestFrameAndCap() {
 }
 
 void
-TestLineLimit() {
-  FrameTraceLog log;
-  std::vector<std::string> out;
-  log.setPresent(600, out);
-  log.line(std::string(5000, 'x'), out);
-  CHECK_EQ(out.size(), 1);
-  CHECK(out[0].size() <= kFrameTraceMaxLineBytes);
-  CHECK(StartsWith(out[0], "dxmt-frame 600: xxx"));
-  // with the logger's own prefix the message stays within the 900-byte cap
-  CHECK(FormatLogLine("info:  ", out[0]).size() <= kLogMessageMaxBytes);
+TestTraceFile() {
+  // clarification 39: a frame over the old 600-line cap reaches trace.txt whole, with each
+  // read-back right after its line
+  std::vector<std::string> lines;
+  for (unsigned i = 0; i < 2400; i++)
+    lines.push_back("pass " + std::to_string(i) + ": c0 RGBA16Float 1280x720 mip 0 slice 0 load; 3 draws");
+  lines.insert(lines.begin() + 1000, "dispatch #7 cs 1a2b3c4d tg 8x8x1 groups 160x90x1; u0 R32Uint 4096 elements");
+  lines.insert(lines.begin() + 1001, "dispatch #7 sampler cs s0 addr clamp/clamp/clamp ...");
+  lines.insert(lines.begin() + 1500, "indirect #3 dispatch, argument buffer 12 bytes, offset 0, written earlier "
+                                     "in this command buffer: yes");
+  lines.push_back("constant-buffer binds with a non-zero offset: 0");
+  uint32_t values[3] = {0xdeadbeef, 1, 2};
+  FrameTraceReadback uav{1800, 7, 3, false, values};
+  uav.uav = true;
+  FrameTraceReadback args{1800, 3, 3, false, values};
+  FrameTraceReadback stray{1800, 99, 1, false, values}; // no line of its own
+  std::vector<FrameTraceReadbackText> readbacks = {TraceReadbackText(stray), TraceReadbackText(args),
+                                                   TraceReadbackText(uav)};
+  CHECK(readbacks[2].text == "uav #7 u0 deadbeef 00000001 00000002"); // without the log prefix
+  CHECK(readbacks[1].text == "indirect #3 args 3735928559 1 2");
+
+  auto file = FrameTraceFileLines(lines, readbacks);
+  CHECK_EQ(file.size(), lines.size() + 3);
+  CHECK(file[1000] == lines[1000]);
+  CHECK(file[1001] == "uav #7 u0 deadbeef 00000001 00000002"); // right after its dispatch line, once
+  CHECK(file[1002] == lines[1001]);
+  CHECK(file[1501] == lines[1500]);
+  CHECK(file[1502] == "indirect #3 args 3735928559 1 2");
+  CHECK(file.back() == "indirect #99 args 3735928559"); // the stray one at the end
+  CHECK(file[file.size() - 2] == "constant-buffer binds with a non-zero offset: 0");
+
+  CHECK_EQ(TraceLineNumber("dispatch #12 cs 00000001", "dispatch #"), 12);
+  CHECK_EQ(TraceLineNumber("dispatch internal tg 32x1x1", "dispatch #"), 0);
+  CHECK_EQ(TraceLineNumber("indirect #3 args 1 1 1", "indirect #"), 3);
+  CHECK_EQ(TraceLineNumber("indirect #", "indirect #"), 0);
+}
+
+void
+TestSummaryLine() {
+  std::string line = FrameTraceSummary(1800, 2425, 160, 141, 3010, "C:\\users\\Public\\pg-dumps\\frame-1800");
+  CHECK(line == "dxmt-frame 1800: 2425 lines, 160 render passes, 141 dispatches, 3010 draws; trace in "
+                "C:\\users\\Public\\pg-dumps\\frame-1800\\trace.txt");
+  // the one log line per traced frame stays within the 900-byte log cap with the logger's prefix
+  CHECK(line.size() <= kFrameTraceMaxLineBytes);
+  CHECK(FormatLogLine("info:  ", line).size() <= kLogMessageMaxBytes);
+  CHECK(StartsWith(line, "dxmt-frame 1800: "));
 }
 
 } // namespace
@@ -180,6 +223,7 @@ main() {
   TestSwitchAndFrames();
   TestFormats();
   TestFrameAndCap();
-  TestLineLimit();
+  TestTraceFile();
+  TestSummaryLine();
   return TestSummary("test_frame_trace");
 }

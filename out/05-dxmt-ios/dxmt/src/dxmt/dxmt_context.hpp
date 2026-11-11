@@ -13,6 +13,7 @@
 #include "dxmt_frame_trace.hpp"
 #include "dxmt_frame_dump.hpp"
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 #include "dxmt_command.hpp"
@@ -887,9 +888,21 @@ public:
      the first 32 uints of each buffer UAV it bound, and (in the dumped frame) copies each 2D
      texture UAV for the dump */
   void traceAfterDispatch();
-  std::vector<FrameDumpFile>
-  takeDumpFiles() {
-    return std::move(dump_files_);
+  /* spec 05 clarification 33: the dumped frames finished since the last call, for the
+     submission being encoded (its completion follows all of theirs) */
+  std::vector<FrameDumpReady>
+  takeDumpReady() {
+    return std::move(dump_ready_);
+  }
+  /* spec 05 clarification 39: the traced frame this submission belongs to (its read-backs go
+     there), and the traced frames finished since the last call (written on its completion) */
+  std::shared_ptr<FrameTraceRecord>
+  currentTraceRecord() {
+    return trace_active_ ? trace_record_ : nullptr;
+  }
+  std::vector<std::shared_ptr<FrameTraceRecord>>
+  takeTraceReady() {
+    return std::move(trace_ready_);
   }
   /* spec 05 clarification 24, in a blit pass right before an indirect command: copies its
      `length` argument bytes into a shared read-back slot, logged when the command buffer has
@@ -1017,22 +1030,46 @@ private:
   };
   std::vector<TraceUAVBinding> trace_cs_uav_bindings_;
   unsigned trace_last_dispatch_k_ = 0;
-  /* spec 05 clarification 28: the dump of the frame at present 1800 */
-  bool dump_active_ = false; // present 1800 happens in one frame per process: dumped once
-  FrameDumpBudget dump_budget_;
-  unsigned dump_seq_ = 0;
+  /* spec 05 clarifications 28 and 33-36: the dump of the frames at presents 1800 and 9000 (each
+     present happens in one frame per process: dumped once) */
+  bool dump_active_ = false;
+  bool dump_encoding_ = false; // our own copy passes, which endPass doesn't look at
+  uint64_t dump_present_ = 0;
   unsigned trace_pass_count_ = 0; // render and compute passes ended in this traced frame
-  std::vector<FrameDumpFile> dump_files_;
-  void dumpTexture(
-      WMT::Texture texture, unsigned level, unsigned slice, WMTPixelFormat format, uint64_t width, uint64_t height,
-      const std::string &tag, const std::string &slot_name, const std::string &index_line
+  FrameDumpLedger dump_ledger_;
+  std::map<FrameDumpKey, int> dump_buffers_;              // subresource -> its last-state buffer
+  std::map<obj_handle_t, unsigned> dump_texture_ids_;     // Metal texture -> t<id>
+  std::map<obj_handle_t, WMTTextureType> dump_texture_types_;
+  std::vector<FrameDumpFile> dump_files_;                 // this frame's buffers
+  std::string dump_index_;                                // this frame's index.txt
+  std::vector<FrameDumpReady> dump_ready_;                // finished frames
+  /* spec 05 clarification 39 */
+  std::shared_ptr<FrameTraceRecord> trace_record_;
+  std::vector<std::shared_ptr<FrameTraceRecord>> trace_ready_;
+  struct DumpWrite {
+    obj_handle_t texture;
+    TextureAllocation *allocation; // null for a blit command's destination
+    WMTPixelFormat format;
+    WMTTextureType type;
+    uint64_t width, height;
+    unsigned mip, slice;
+    std::string slot;
+    FrameDumpReason reason;
+  };
+  int dumpNewBuffer(const std::string &name, uint64_t bytes);
+  void dumpCopyTexture(
+      obj_handle_t texture, unsigned mip, unsigned slice, uint64_t width, uint64_t height, unsigned texel,
+      WMTBlitOption option, obj_handle_t buffer
   );
-  void dumpPlane(
-      WMT::Texture texture, unsigned level, unsigned slice, const std::string &format_label, unsigned texel,
-      WMTBlitOption option, uint64_t width, uint64_t height, const std::string &tag, const std::string &slot_name,
-      const std::string &index_line
-  ); // spec 05 clarification 31
-  void dumpRenderAttachments(RenderEncoderData *data);
+  unsigned dumpTextureId(obj_handle_t texture);
+  void dumpWrites(const std::string &writer, std::vector<DumpWrite> &writes, EncoderData *source);
+  void dumpViewWrites(
+      std::vector<DumpWrite> &writes, TextureView *view, unsigned level, unsigned slice, unsigned slices,
+      const std::string &slot, FrameDumpReason reason
+  );
+  void dumpHandleWrite(std::vector<DumpWrite> &writes, obj_handle_t texture, unsigned mip, unsigned slice);
+  void dumpAfterPass(EncoderData *ended);
+  void dumpPresent(Rc<Texture> &texture);
   FrameTraceLog frame_trace_;
   bool trace_active_ = false;
   uint32_t trace_cs_hash_ = 0;

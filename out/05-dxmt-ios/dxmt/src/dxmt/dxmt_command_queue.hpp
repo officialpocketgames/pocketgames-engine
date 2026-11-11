@@ -129,7 +129,9 @@ public:
     auto t1 = clock::now();
     visibility_readback = enc.flushCommands(cmdbuf, chunk_id, chunk_event_id);
     trace_readbacks = enc.takeTraceReadbacks(); // spec 05 clarification 24 (empty outside traced frames)
-    dump_files = enc.takeDumpFiles();           // spec 05 clarification 28 (empty outside the dumped frame)
+    dump_ready = enc.takeDumpReady();           // spec 05 clarification 33 (dumped frames that just ended)
+    trace_record = enc.currentTraceRecord();    // spec 05 clarification 39 (this frame's, if traced)
+    trace_ready = enc.takeTraceReady();         // spec 05 clarification 39 (traced frames that just ended)
     auto t2 = clock::now();
     statistics.encode_prepare_interval += (t1 - t0);
     statistics.encode_flush_interval += (t2 - t1);
@@ -154,8 +156,13 @@ public:
   /* spec 05 clarification 24: indirect arguments copied for the frame trace, logged by the
      finish thread once the command buffer has completed */
   std::vector<FrameTraceReadback> trace_readbacks;
-  /* spec 05 clarification 28: textures copied for the frame dump, written by the finish thread */
-  std::vector<FrameDumpFile> dump_files;
+  /* spec 05 clarifications 28 and 33: dumped frames that ended before this submission, written
+     by the finish thread once it (and so all of theirs) completed */
+  std::vector<FrameDumpReady> dump_ready;
+  /* spec 05 clarification 39: the traced frame this submission belongs to (its read-backs are
+     added there on completion), and traced frames that ended before it (written on completion) */
+  std::shared_ptr<FrameTraceRecord> trace_record;
+  std::vector<std::shared_ptr<FrameTraceRecord>> trace_ready;
   uint64_t resource_initializer_event_id;
   std::vector<std::shared_ptr<GpuCompletionTarget>> completion_targets; /* spec 07 */
   dxmt::mutex completion_targets_mutex_;                                 /* spec 07 */
@@ -177,12 +184,13 @@ public:
     signal_frame_latency_fence_ = ~0ull;
     visibility_readback = {};
     trace_readbacks.clear(); /* spec 05 clarification 24 */
-    for (auto &file : dump_files) /* spec 05 clarification 28: any not written (a GPU error) */
-      if (file.host) {
-        file.buffer = {};
-        wsi::aligned_free(file.host);
-      }
-    dump_files.clear();
+    for (auto &ready : dump_ready) { /* spec 05 clarification 33: any not written (a GPU error) */
+      FreeFrameDump(ready);
+      FrameDumpFinished();
+    }
+    dump_ready.clear();
+    trace_record = nullptr; /* spec 05 clarification 39 */
+    trace_ready.clear();
     completion_targets.clear(); /* spec 07 */
     list_enc.reset();
     ref_tracker.clear();
@@ -313,6 +321,7 @@ public:
   PresentBoundary() {
     statistics.compute(frame_count);
     frame_count++;
+    FrameDumpCheckRequest(frame_count); // spec 05 clarification 40 (test builds only)
     statistics.at(frame_count).reset();
     // After present N-th frame (N starts from 1), wait for (N - max_latency)-th frame to finish rendering 
     if (likely(frame_count > max_latency_)) {

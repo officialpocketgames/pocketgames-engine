@@ -2,7 +2,9 @@
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 05 clarification 21: a trace of a frame (clarification 24: present 600, then every 1200th,
-// at most 8 per process), in "dxmt-frame <present>: ..." lines, when the environment has
+// at most 8 per process; 40: and requested dumps), since clarification 39 written whole to
+// C:\users\Public\pg-dumps\frame-<present>\trace.txt with one summary line in the log, when the
+// environment has
 // PG_DXMT_FRAME_TRACE=1 (the app sets it in test builds only; the engine is the same binary for
 // both, so there is no build switch). This header is the plain part: the switch's value rule,
 // which presents are traced, the 600-line cap, and the line formats. ArgumentEncodingContext
@@ -15,6 +17,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -42,10 +45,20 @@ IsTracedPresent(uint64_t present) {
          (present - kFrameTraceFirstPresent) / kFrameTraceInterval < kFrameTraceMaxFrames;
 }
 
-constexpr unsigned kFrameTraceMaxLines = 600;
+/* Spec 05 clarification 40: whether a dump was requested for `present` (process-wide; defined
+   in dxmt_context.cpp). */
+bool FrameDumpRequested(uint64_t present);
+
+/* A present whose frame is traced: the schedule's, or one a dump was requested for. */
+inline bool
+FrameTraced(uint64_t present) {
+  return IsTracedPresent(present) || FrameDumpRequested(present);
+}
+
 /* spec 05 clarification 24: indirect commands of a frame whose arguments are read back */
 constexpr unsigned kFrameTraceMaxReadbacks = 128;
-/* each line's text, so that with the logger's prefix it stays within kLogMessageMaxBytes */
+/* a log line's text, so that with the logger's prefix it stays within kLogMessageMaxBytes
+   (since clarification 39 only the summary line goes to the log; trace.txt has no limit) */
 constexpr size_t kFrameTraceMaxLineBytes = kLogMessageMaxBytes - 32;
 
 /* ---- formats ---- */
@@ -260,11 +273,13 @@ public:
     finish(out);
     present_ = present;
     lines_ = 0;
-    dropped_ = 0;
     offset_binds_ = 0;
     passes_ = 0;
     indirects_ = 0;
     dispatches_ = 0;
+    render_passes_ = 0;
+    dispatch_lines_ = 0;
+    draws_ = 0;
   }
 
   bool
@@ -301,45 +316,138 @@ public:
     return ++dispatches_;
   }
 
-  /* A line of the traced frame: prefixed, cut to kFrameTraceMaxLineBytes, appended to `out`
-     while fewer than kFrameTraceMaxLines were; counted as not shown after that. */
+  /* A line of the traced frame, appended to `out` (spec 05 clarification 39: every line, for
+     the frame's trace.txt; no cap, no prefix). */
   void
   line(const std::string &text, std::vector<std::string> &out) {
     if (!active())
       return;
-    if (lines_ >= kFrameTraceMaxLines) {
-      dropped_++;
-      return;
-    }
     lines_++;
-    out.push_back(CapLogText(prefix() + text, kFrameTraceMaxLineBytes));
+    out.push_back(text);
   }
 
-  /* The frame's closing lines (outside the cap): the constant-buffer offset count, and how many
-     lines weren't shown. */
+  /* spec 05 clarification 39: what the summary line counts */
+  void
+  countRenderPass(unsigned draws) {
+    render_passes_++;
+    draws_ += draws;
+  }
+  void
+  countDispatch() {
+    dispatch_lines_++;
+  }
+  unsigned renderPasses() const { return render_passes_; }
+  unsigned dispatchCount() const { return dispatch_lines_; }
+  uint64_t draws() const { return draws_; }
+
+  /* The frame's closing line: the constant-buffer offset count. */
   void
   finish(std::vector<std::string> &out) {
     if (!active())
       return;
-    out.push_back(prefix() + "constant-buffer binds with a non-zero offset: " + std::to_string(offset_binds_));
-    if (dropped_)
-      out.push_back(prefix() + kLogEllipsis + " " + std::to_string(dropped_) + " more not shown");
+    out.push_back("constant-buffer binds with a non-zero offset: " + std::to_string(offset_binds_));
     present_ = 0;
   }
 
 private:
-  std::string
-  prefix() const {
-    return "dxmt-frame " + std::to_string(present_) + ": ";
-  }
-
   uint64_t present_ = 0;
   unsigned lines_ = 0;
-  uint64_t dropped_ = 0;
   uint64_t offset_binds_ = 0;
   unsigned passes_ = 0;
   unsigned indirects_ = 0;
   unsigned dispatches_ = 0;
+  unsigned render_passes_ = 0;
+  unsigned dispatch_lines_ = 0;
+  uint64_t draws_ = 0;
 };
+
+/* ---- spec 05 clarification 39: the whole trace in a file ---- */
+
+/* a read-back's line as it goes into trace.txt, with what places it there */
+struct FrameTraceReadbackText {
+  bool uav;
+  unsigned k;
+  std::string text; // "uav #4 u0 …" or "indirect #3 args …"
+};
+
+inline FrameTraceReadbackText
+TraceReadbackText(const FrameTraceReadback &readback) {
+  std::string line = TraceReadbackLine(readback);
+  std::string prefix = "dxmt-frame " + std::to_string(readback.present) + ": ";
+  if (line.compare(0, prefix.size(), prefix) == 0)
+    line.erase(0, prefix.size());
+  return {readback.uav, readback.k, line};
+}
+
+/* The number after "dispatch #" or "indirect #" at the start of `line`, or 0. */
+inline unsigned
+TraceLineNumber(const std::string &line, const char *head) {
+  size_t length = std::char_traits<char>::length(head);
+  if (line.compare(0, length, head) != 0)
+    return 0;
+  unsigned k = 0;
+  size_t i = length;
+  for (; i < line.size() && line[i] >= '0' && line[i] <= '9'; i++)
+    k = k * 10 + unsigned(line[i] - '0');
+  if (i == length || i >= line.size() || line[i] != ' ')
+    return 0;
+  return k;
+}
+
+/* trace.txt's lines: the frame's lines, each read-back right after the line it belongs to (a
+   UAV's after its "dispatch #k" line, indirect arguments after their "indirect #k" line), any
+   read-back without its line at the end. */
+inline std::vector<std::string>
+FrameTraceFileLines(const std::vector<std::string> &lines, const std::vector<FrameTraceReadbackText> &readbacks) {
+  std::vector<std::string> out;
+  std::vector<bool> placed(readbacks.size(), false);
+  out.reserve(lines.size() + readbacks.size());
+  for (auto &line : lines) {
+    out.push_back(line);
+    unsigned dispatch = TraceLineNumber(line, "dispatch #");
+    unsigned indirect = TraceLineNumber(line, "indirect #");
+    if (!dispatch && !indirect)
+      continue;
+    for (size_t i = 0; i < readbacks.size(); i++) {
+      if (placed[i])
+        continue;
+      bool here = readbacks[i].uav ? readbacks[i].k == dispatch : readbacks[i].k == indirect;
+      if (here) {
+        out.push_back(readbacks[i].text);
+        placed[i] = true;
+      }
+    }
+  }
+  for (size_t i = 0; i < readbacks.size(); i++)
+    if (!placed[i])
+      out.push_back(readbacks[i].text);
+  return out;
+}
+
+/* "dxmt-frame 1800: 2422 lines, 160 render passes, 141 dispatches, 3010 draws; trace in
+   C:\users\Public\pg-dumps\frame-1800\trace.txt" */
+inline std::string
+FrameTraceSummary(uint64_t present, uint64_t lines, unsigned render_passes, unsigned dispatches, uint64_t draws,
+                  const std::string &directory) {
+  return "dxmt-frame " + std::to_string(present) + ": " + std::to_string(lines) + " lines, " +
+         std::to_string(render_passes) + " render passes, " + std::to_string(dispatches) + " dispatches, " +
+         std::to_string(draws) + " draws; trace in " + directory + "\\trace.txt";
+}
+
+/* One traced frame's trace: filled by the encode thread; read-back lines added by the finish
+   thread as each of its command buffers completes; written as trace.txt once the frame's last
+   one has (WriteFrameTrace, dxmt_context.cpp), which also logs the summary line. */
+struct FrameTraceRecord {
+  uint64_t present = 0;
+  std::string directory;
+  std::vector<std::string> lines;
+  unsigned render_passes = 0;
+  unsigned dispatches = 0;
+  uint64_t draws = 0;
+  std::mutex mutex; // guards readbacks
+  std::vector<FrameTraceReadbackText> readbacks;
+};
+
+void WriteFrameTrace(FrameTraceRecord &record);
 
 } // namespace dxmt
