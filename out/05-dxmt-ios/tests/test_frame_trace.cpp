@@ -77,10 +77,25 @@ TestFormats() {
         "12 draws; viewports 0,0 1280x720; scissors 0,0 768x620 | 0,0 1011x620; PARTIAL");
   CHECK(TraceRenderPass(0, {}, 1, {}, {}, false) == "pass 0: no attachments; 1 draw");
 
-  CHECK(TraceDispatch(0x1a2b3c4d, 8, 8, 1, false, 160, 90, 1, "u0 RGBA16Float 1280x720") ==
-        "dispatch cs 1a2b3c4d tg 8x8x1 groups 160x90x1; u0 RGBA16Float 1280x720");
-  CHECK(TraceDispatch(0x00000abc, 64, 1, 1, true, 0, 0, 0, "") == "dispatch cs 00000abc tg 64x1x1 indirect");
-  CHECK(TraceDispatch(0, 32, 1, 1, false, 4, 1, 1, "") == "dispatch internal tg 32x1x1 groups 4x1x1");
+  CHECK(TraceDispatch(4, 0x1a2b3c4d, 8, 8, 1, false, 160, 90, 1, "u0 RGBA16Float 1280x720") ==
+        "dispatch #4 cs 1a2b3c4d tg 8x8x1 groups 160x90x1; u0 RGBA16Float 1280x720");
+  CHECK(TraceDispatch(5, 0x00000abc, 64, 1, 1, true, 0, 0, 0, "") == "dispatch #5 cs 00000abc tg 64x1x1 indirect");
+  CHECK(TraceDispatch(0, 0, 32, 1, 1, false, 4, 1, 1, "") == "dispatch internal tg 32x1x1 groups 4x1x1");
+
+  // spec 05 clarification 27: the UAV read-back line, and both kinds through TraceReadbackLine
+  uint32_t uav_values[kFrameTraceUAVReadbackValues];
+  for (unsigned i = 0; i < kFrameTraceUAVReadbackValues; i++)
+    uav_values[i] = i == 0 ? 0xdeadbeefu : i;
+  std::string uav_line = TraceUAVReadback(1800, 4, 0, uav_values, kFrameTraceUAVReadbackValues);
+  CHECK(StartsWith(uav_line, "dxmt-frame 1800: uav #4 u0 deadbeef 00000001 00000002 "));
+  CHECK(uav_line.size() == std::string("dxmt-frame 1800: uav #4 u0").size() + 9 * kFrameTraceUAVReadbackValues);
+  CHECK(uav_line.size() <= kFrameTraceMaxLineBytes);
+  FrameTraceReadback uav{1800, 4, 3, false, uav_values};
+  uav.uav = true;
+  uav.slot = 2;
+  CHECK(TraceReadbackLine(uav) == "dxmt-frame 1800: uav #4 u2 deadbeef 00000001 00000002");
+  const uint32_t args[] = {40, 23, 1};
+  CHECK(TraceReadbackLine({1800, 7, 3, false, args}) == "dxmt-frame 1800: indirect #7 args 40 23 1");
   CHECK(TraceBox(0, 0, 0, 256, 256, 1) == "0,0,0 256x256x1");
 
   // spec 05 clarification 24
@@ -131,6 +146,8 @@ TestFrameAndCap() {
   CHECK_EQ(log.nextPass(), 0);
   CHECK_EQ(log.nextIndirect(), 1); // indirect numbers start at 1 in each traced frame
   CHECK_EQ(log.nextIndirect(), 2);
+  CHECK_EQ(log.nextDispatch(), 1); // so do dispatch numbers (clarification 27)
+  CHECK_EQ(log.nextDispatch(), 2);
   log.line("present", out);
   log.setPresent(0, out);
   CHECK_EQ(out.size(), 2);
@@ -138,6 +155,7 @@ TestFrameAndCap() {
   CHECK(out[1] == "dxmt-frame 1800: constant-buffer binds with a non-zero offset: 0");
   log.setPresent(3000, out);
   CHECK_EQ(log.nextIndirect(), 1);
+  CHECK_EQ(log.nextDispatch(), 1);
   log.setPresent(0, out);
   log.countOffsetBind(); // ignored outside a traced frame
 }

@@ -151,14 +151,16 @@ TraceRenderPass(unsigned index, const std::vector<std::string> &attachments, uns
   return line;
 }
 
-/* "dispatch cs 1a2b3c4d tg 8x8x1 groups 160x90x1; u0 RGBA16Float 1280x720" (hash 0: an
-   internal kernel; groups empty: indirect) */
+/* "dispatch #4 cs 1a2b3c4d tg 8x8x1 groups 160x90x1; u0 RGBA16Float 1280x720" (k 0: no
+   number; hash 0: an internal kernel; indirect: no groups). Spec 05 clarification 27: k numbers
+   a frame's Direct3D dispatches, for their "uav #k" read-back lines. */
 inline std::string
-TraceDispatch(uint32_t hash, uint64_t tg_x, uint64_t tg_y, uint64_t tg_z, bool indirect, uint64_t x, uint64_t y,
-              uint64_t z, const std::string &uavs) {
+TraceDispatch(unsigned k, uint32_t hash, uint64_t tg_x, uint64_t tg_y, uint64_t tg_z, bool indirect, uint64_t x,
+              uint64_t y, uint64_t z, const std::string &uavs) {
   char hash_text[16];
   std::snprintf(hash_text, sizeof(hash_text), "%08x", hash);
-  std::string line = "dispatch " + (hash ? std::string("cs ") + hash_text : std::string("internal")) + " tg " +
+  std::string line = std::string("dispatch ") + (k ? "#" + std::to_string(k) + " " : std::string()) +
+                     (hash ? std::string("cs ") + hash_text : std::string("internal")) + " tg " +
                      std::to_string(tg_x) + "x" + std::to_string(tg_y) + "x" + std::to_string(tg_z) + " ";
   line += indirect ? std::string("indirect")
                    : "groups " + std::to_string(x) + "x" + std::to_string(y) + "x" + std::to_string(z);
@@ -201,7 +203,27 @@ struct FrameTraceReadback {
   unsigned count;
   bool indexed;
   const void *data; // shared memory the blit wrote; valid until the command buffer is retired
+  /* spec 05 clarification 27: a UAV read-back after dispatch #k, of slot u<slot> */
+  bool uav = false;
+  unsigned slot = 0;
 };
+
+/* Spec 05 clarification 27: "dxmt-frame 1800: uav #4 u0 00000003 0000001a ..." (the first
+   `count` uints of the UAV at its view's offset, 8 hex digits each) */
+inline std::string
+TraceUAVReadback(uint64_t present, unsigned k, unsigned slot, const uint32_t *values, unsigned count) {
+  std::string line =
+      "dxmt-frame " + std::to_string(present) + ": uav #" + std::to_string(k) + " u" + std::to_string(slot);
+  for (unsigned i = 0; i < count; i++) {
+    char hex[16];
+    std::snprintf(hex, sizeof(hex), " %08x", values[i]);
+    line += hex;
+  }
+  return line;
+}
+
+/* spec 05 clarification 27: uints read back per UAV */
+constexpr unsigned kFrameTraceUAVReadbackValues = 32;
 
 inline std::string
 TraceIndirectArgs(uint64_t present, unsigned k, const uint32_t *values, unsigned count, bool indexed) {
@@ -214,6 +236,15 @@ TraceIndirectArgs(uint64_t present, unsigned k, const uint32_t *values, unsigned
       line += " " + std::to_string(values[i]);
   }
   return line;
+}
+
+/* the read-back's line, either kind (spec 05 clarifications 24 and 27) */
+inline std::string
+TraceReadbackLine(const FrameTraceReadback &readback) {
+  auto values = (const uint32_t *)readback.data;
+  if (readback.uav)
+    return TraceUAVReadback(readback.present, readback.k, readback.slot, values, readback.count);
+  return TraceIndirectArgs(readback.present, readback.k, values, readback.count, readback.indexed);
 }
 
 /* ---- one process's trace ---- */
@@ -233,6 +264,7 @@ public:
     offset_binds_ = 0;
     passes_ = 0;
     indirects_ = 0;
+    dispatches_ = 0;
   }
 
   bool
@@ -261,6 +293,12 @@ public:
   unsigned
   nextIndirect() {
     return ++indirects_;
+  }
+
+  /* spec 05 clarification 27: the next Direct3D dispatch's number in this frame, from 1 */
+  unsigned
+  nextDispatch() {
+    return ++dispatches_;
   }
 
   /* A line of the traced frame: prefixed, cut to kFrameTraceMaxLineBytes, appended to `out`
@@ -301,6 +339,7 @@ private:
   uint64_t offset_binds_ = 0;
   unsigned passes_ = 0;
   unsigned indirects_ = 0;
+  unsigned dispatches_ = 0;
 };
 
 } // namespace dxmt

@@ -2,7 +2,8 @@
 // Changed for MYIOSDECK (spec 05; spec 07 A2: LGPL-2.1-or-later blocks from dxmt-d3d9 v0.4-d3d9
 // (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10: LGPL-2.1-or-later
 // blocks from steamac's DXMT patch 0023, marked inline; spec 05 clarification 17: the
-// read-write UAV format line; clarifications 21 and 24: the frame trace). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// read-write UAV format line; clarifications 21, 24, 27 and 28: the frame trace and dump).
+// Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 #include "Metal.hpp"
 #include <cstring>
@@ -10,6 +11,7 @@
 #include "dxmt_buffer.hpp"
 #include "dxmt_format.hpp"
 #include "dxmt_frame_trace.hpp"
+#include "dxmt_frame_dump.hpp"
 #include <map>
 #include <string>
 #include <vector>
@@ -857,11 +859,22 @@ public:
     if (trace_active_)
       trace_cs_hash_ = hash;
   }
-  /* after a dispatch command is encoded: remembers the shader and its UAVs for that command */
+  /* after a dispatch command is encoded: remembers the shader and its UAVs for that command,
+     and numbers it (spec 05 clarification 27) */
   void
   traceDispatch(const void *cmd) {
-    if (trace_active_)
-      trace_dispatch_notes_[cmd] = {trace_cs_hash_, trace_cs_uavs_};
+    if (!trace_active_)
+      return;
+    trace_last_dispatch_k_ = frame_trace_.nextDispatch();
+    trace_dispatch_notes_[cmd] = {trace_cs_hash_, trace_cs_uavs_, trace_last_dispatch_k_};
+  }
+  /* spec 05 clarifications 27 and 28, in a blit pass right after a traced dispatch: reads back
+     the first 32 uints of each buffer UAV it bound, and (in the dumped frame) copies each 2D
+     texture UAV for the dump */
+  void traceAfterDispatch();
+  std::vector<FrameDumpFile>
+  takeDumpFiles() {
+    return std::move(dump_files_);
   }
   /* spec 05 clarification 24, in a blit pass right before an indirect command: copies its
      `length` argument bytes into a shared read-back slot, logged when the command buffer has
@@ -972,7 +985,30 @@ private:
   struct TraceDispatchNote {
     uint32_t hash;
     std::string uavs;
+    unsigned k; // spec 05 clarification 27
   };
+  /* spec 05 clarifications 27 and 28: the UAVs the compute shader bound, as encoded */
+  struct TraceUAVBinding {
+    unsigned slot;
+    uint32_t flags;
+    Rc<Buffer> buffer;
+    Rc<Texture> texture;
+    unsigned viewId;
+    BufferSlice slice;
+  };
+  std::vector<TraceUAVBinding> trace_cs_uav_bindings_;
+  unsigned trace_last_dispatch_k_ = 0;
+  /* spec 05 clarification 28: the dump of the frame at present 1800 */
+  bool dump_active_ = false; // present 1800 happens in one frame per process: dumped once
+  FrameDumpBudget dump_budget_;
+  unsigned dump_seq_ = 0;
+  unsigned trace_pass_count_ = 0; // render and compute passes ended in this traced frame
+  std::vector<FrameDumpFile> dump_files_;
+  void dumpTexture(
+      WMT::Texture texture, unsigned level, unsigned slice, WMTPixelFormat format, uint64_t width, uint64_t height,
+      const std::string &tag, const std::string &slot_name, const std::string &index_line
+  );
+  void dumpRenderAttachments(RenderEncoderData *data);
   FrameTraceLog frame_trace_;
   bool trace_active_ = false;
   uint32_t trace_cs_hash_ = 0;

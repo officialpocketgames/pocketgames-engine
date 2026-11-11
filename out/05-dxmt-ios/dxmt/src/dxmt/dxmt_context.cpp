@@ -1,6 +1,7 @@
 // Changed for MYIOSDECK (spec 05 B8, D5, E2, H1; spec 06 A, B; spec 07 A2: LGPL-2.1-or-later
 // blocks from dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05
-// clarification 17: the read-write UAV format line). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// clarification 17: the read-write UAV format line; 21, 24, 27, 28: the frame trace and dump).
+// Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "dxmt_context.hpp"
 #include "Metal.hpp"
 #include "dxmt_command_queue.hpp"
@@ -17,6 +18,8 @@
 #include "wsi_platform.hpp"
 #include <cstdint>
 #include <cfloat>
+#include <cstdio>
+#include <filesystem>
 
 namespace dxmt {
 
@@ -274,8 +277,10 @@ ArgumentEncodingContext::encodeShaderResources(
 
   // spec 05 clarification 21: the compute shader's UAVs, for the traced frame's dispatches
   const bool trace_uavs = stage == PipelineStage::Compute && trace_active_;
-  if (trace_uavs)
+  if (trace_uavs) {
     trace_cs_uavs_.clear();
+    trace_cs_uav_bindings_.clear(); // spec 05 clarifications 27 and 28
+  }
 
   for (unsigned i = 0; i < BindingCount; i++) {
     auto &arg = arguments[i];
@@ -361,6 +366,9 @@ ArgumentEncodingContext::encodeShaderResources(
         else
           desc += "null";
         trace_cs_uavs_ += (trace_cs_uavs_.empty() ? "" : ", ") + desc;
+        trace_cs_uav_bindings_.push_back(
+            {arg.SM50BindingSlot, (uint32_t)arg.Flags, uav.buffer, uav.texture, uav.viewId, uav.slice}
+        );
       }
 
       if (arg.Flags & MTL_SM50_SHADER_ARGUMENT_BUFFER) {
@@ -807,8 +815,18 @@ ArgumentEncodingContext::endPass() {
   if (encoder_current->type == EncoderType::Render)
     vro_state_.endEncoder();
 
+  auto ended = encoder_current;
   encoder_current = nullptr;
   encoder_count_++;
+
+  // spec 05 clarification 28: passes are numbered as the trace numbers them (render and compute
+  // passes of the traced frame, in order); in the dumped frame, a render pass's colour
+  // attachments are copied in a blit pass right after it
+  if (trace_active_ && (ended->type == EncoderType::Render || ended->type == EncoderType::Compute)) {
+    trace_pass_count_++;
+    if (dump_active_ && ended->type == EncoderType::Render)
+      dumpRenderAttachments(static_cast<RenderEncoderData *>(ended));
+  }
 }
 
 std::pair<WMT::Buffer, size_t>
@@ -872,6 +890,12 @@ ArgumentEncodingContext::$$setEncodingContext(uint64_t seq_id, uint64_t frame_id
     if (frame_trace_.present() != (traced ? frame_id + 1 : 0)) { // a new frame: spec 05 clarification 24
       trace_readback_count_ = 0;
       trace_pending_indirect_ = 0;
+      trace_last_dispatch_k_ = 0; // clarification 27
+      trace_pass_count_ = 0;      // clarification 28
+      // clarification 28: leaving the dumped frame, say what it wrote and left out
+      if (dump_active_)
+        lines.push_back("dxmt-frame " + std::to_string(frame_trace_.present()) + ": " + dump_budget_.summary());
+      dump_active_ = traced && FrameDumpActive(FrameDumpSwitch(), true, frame_id + 1);
     }
     frame_trace_.setPresent(traced ? frame_id + 1 : 0, lines);
     trace_active_ = traced;
@@ -894,6 +918,174 @@ FrameTraceSwitch() {
     return value;
   }();
   return on;
+}
+
+/* spec 05 clarification 28: the dump switch, read once per process like the trace's */
+bool
+FrameDumpSwitch() {
+  static const bool on = [] {
+    bool value = FrameTraceSwitchValue(env::getEnvVar("PG_DXMT_FRAME_DUMP"));
+    if (value)
+      Logger::info("dxmt: frame dump on (PG_DXMT_FRAME_DUMP=1): the traced frame at present 1800, to "
+                   "C:\\users\\Public\\pg-dumps");
+    return value;
+  }();
+  return on;
+}
+
+/* spec 05 clarification 28: on the finish thread, after the command buffer completed */
+void
+WriteFrameDumpFile(FrameDumpFile &file) {
+  std::error_code error;
+  std::filesystem::create_directories(file.directory, error);
+  std::string path = file.directory + "\\" + file.name;
+  if (FILE *out = std::fopen(path.c_str(), "wb")) {
+    std::fwrite(file.host, 1, file.bytes, out);
+    std::fclose(out);
+    if (FILE *index = std::fopen((file.directory + "\\index.txt").c_str(), "a")) {
+      std::fprintf(index, "%s %s\n", file.name.c_str(), file.index_line.c_str());
+      std::fclose(index);
+    }
+  } else {
+    WARN("dxmt: frame dump: can't write ", path);
+  }
+  file.buffer = {}; // the Metal buffer goes before the memory it was placed on
+  wsi::aligned_free(file.host);
+  file.host = nullptr;
+}
+
+void
+ArgumentEncodingContext::dumpTexture(
+    WMT::Texture texture, unsigned level, unsigned slice, WMTPixelFormat format, uint64_t width, uint64_t height,
+    const std::string &tag, const std::string &slot_name, const std::string &index_line
+) {
+  // spec 05 clarification 28: encoded in the open blit pass
+  unsigned texel = FrameDumpBytesPerTexel(format);
+  if (!texel || !width || !height)
+    return;
+  uint64_t bytes = width * height * texel;
+  if (!dump_budget_.admit(bytes))
+    return;
+  FrameDumpFile file;
+  file.directory = FrameDumpDirectory(frame_trace_.present());
+  file.name = FrameDumpFileName(++dump_seq_, tag, slot_name, format, width, height);
+  file.index_line = index_line;
+  file.bytes = bytes;
+  file.host = wsi::aligned_malloc(PlacedMemoryLength(bytes), kPlacedMemoryAlignment);
+  WMTBufferInfo info;
+  info.length = PlacedMemoryLength(bytes);
+  info.memory.set(file.host);
+  info.options = (WMTResourceOptions)(WMTResourceStorageModeShared | WMTResourceHazardTrackingModeUntracked);
+  info.gpu_address = 0;
+  file.buffer = device_.newBuffer(info);
+  if (!file.buffer) {
+    wsi::aligned_free(file.host);
+    return;
+  }
+  auto &cmd = encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_buffer>();
+  cmd.type = WMTBlitCommandCopyFromTextureToBuffer;
+  cmd.src = texture;
+  cmd.slice = slice;
+  cmd.level = level;
+  cmd.origin = {0, 0, 0};
+  cmd.size = {width, height, 1};
+  cmd.dst = file.buffer;
+  cmd.offset = 0;
+  cmd.bytes_per_row = width * texel;
+  cmd.bytes_per_image = bytes;
+  cmd.options = WMTBlitOptionNone;
+  dump_files_.push_back(std::move(file));
+}
+
+void
+ArgumentEncodingContext::dumpRenderAttachments(RenderEncoderData *data) {
+  // spec 05 clarification 28: called by endPass for a render pass of the dumped frame; the
+  // copies go into a blit pass of their own right after it
+  bool any = false;
+  for (auto &color : data->colors) {
+    if (!color.attachment)
+      continue;
+    auto *view = color.attachment.ptr();
+    auto *texture = view->allocation->descriptor;
+    if (texture->textureType(view->key) == WMTTextureType2D && FrameDumpBytesPerTexel(texture->pixelFormat(view->key)))
+      any = true;
+  }
+  if (!any)
+    return;
+  unsigned pass = trace_pass_count_ - 1;
+  startBlitPass();
+  for (unsigned i = 0; i < data->colors.size(); i++) {
+    auto &color = data->colors[i];
+    if (!color.attachment)
+      continue;
+    auto *view = color.attachment.ptr();
+    auto *texture = view->allocation->descriptor;
+    if (texture->textureType(view->key) != WMTTextureType2D)
+      continue;
+    trackTexture<false>(view->allocation, DXMT_ENCODER_RESOURCE_ACESS_READ);
+    auto format = texture->pixelFormat(view->key);
+    uint64_t width = std::max(texture->width(view->key) >> color.level, 1u);
+    uint64_t height = std::max(texture->height(view->key) >> color.level, 1u);
+    std::string slot = "c" + std::to_string(i);
+    dumpTexture(
+        color.attachment.texture(), color.level, color.slice, format, width, height, "pass" + std::to_string(pass),
+        slot, "pass " + std::to_string(pass) + " " + slot + " " + TraceTexture(format, width, height)
+    );
+  }
+  endPass();
+}
+
+void
+ArgumentEncodingContext::traceAfterDispatch() {
+  // spec 05 clarifications 27 and 28; runs in the blit pass the context opened after the dispatch
+  if (!trace_active_ || !trace_last_dispatch_k_)
+    return;
+  unsigned k = trace_last_dispatch_k_;
+  for (auto &uav : trace_cs_uav_bindings_) {
+    if (uav.buffer.ptr()) {
+      // raw and structured buffers, and typed R32Uint / R32Sint ones
+      uint32_t byte_offset = 0, byte_length = 0;
+      if (uav.flags & MTL_SM50_SHADER_ARGUMENT_BUFFER) {
+        byte_offset = uav.slice.byteOffset;
+        byte_length = uav.slice.byteLength;
+      } else {
+        auto format = uav.buffer->pixelFormat(uav.viewId) & 0xFFFF;
+        if (format != WMTPixelFormatR32Uint && format != WMTPixelFormatR32Sint)
+          continue;
+        byte_offset = uav.slice.firstElement * 4;
+        byte_length = uav.slice.elementCount * 4;
+      }
+      unsigned length = std::min<uint32_t>(byte_length, kFrameTraceUAVReadbackValues * 4) & ~3u;
+      if (!length || trace_readback_count_ >= kFrameTraceMaxReadbacks)
+        continue;
+      trace_readback_count_++;
+      auto [src, src_offset] = access(uav.buffer, byte_offset, length, DXMT_ENCODER_RESOURCE_ACESS_READ);
+      auto [mapped, readback, readback_offset] = queue_.AllocateArgumentBuffer(seq_id_, kFrameTraceUAVReadbackValues * 4);
+      auto &cmd = encodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
+      cmd.type = WMTBlitCommandCopyFromBufferToBuffer;
+      cmd.src = src->buffer();
+      cmd.src_offset = src_offset + byte_offset;
+      cmd.dst = readback;
+      cmd.dst_offset = readback_offset;
+      cmd.copy_length = length;
+      FrameTraceReadback entry{frame_trace_.present(), k, length / 4, false, mapped};
+      entry.uav = true;
+      entry.slot = uav.slot;
+      trace_readbacks_.push_back(entry);
+    } else if (uav.texture.ptr() && dump_active_) {
+      if (uav.texture->textureType(uav.viewId) != WMTTextureType2D)
+        continue;
+      auto &view = access(uav.texture, uav.viewId, DXMT_ENCODER_RESOURCE_ACESS_READ);
+      auto format = uav.texture->pixelFormat(uav.viewId);
+      uint64_t width = uav.texture->width(uav.viewId), height = uav.texture->height(uav.viewId);
+      std::string slot = "u" + std::to_string(uav.slot);
+      dumpTexture(
+          view.texture, 0, 0, format, width, height, FrameDumpDispatchTag(trace_cs_hash_), slot,
+          "dispatch #" + std::to_string(k) + " " + FrameDumpDispatchTag(trace_cs_hash_) + " " + slot + " " +
+              TraceTexture(format, width, height)
+      );
+    }
+  }
 }
 
 void
@@ -1113,14 +1305,15 @@ ArgumentEncodingContext::traceComputePass(ComputeEncoderData *data, std::vector<
       auto note = trace_dispatch_notes_.find(cmd);
       uint32_t hash = note != trace_dispatch_notes_.end() ? note->second.hash : 0;
       std::string uavs = note != trace_dispatch_notes_.end() ? note->second.uavs : std::string();
+      unsigned k = note != trace_dispatch_notes_.end() ? note->second.k : 0; // spec 05 clarification 27
       if (cmd->type == WMTComputeCommandDispatchIndirect) {
-        frame_trace_.line(TraceDispatch(hash, tg.width, tg.height, tg.depth, true, 0, 0, 0, uavs), out);
+        frame_trace_.line(TraceDispatch(k, hash, tg.width, tg.height, tg.depth, true, 0, 0, 0, uavs), out);
         if (auto indirect = trace_indirect_notes_.find(cmd); indirect != trace_indirect_notes_.end())
           frame_trace_.line(indirect->second, out); // spec 05 clarification 24
       } else {
         auto size = ((wmtcmd_compute_dispatch *)cmd)->size;
         frame_trace_.line(
-            TraceDispatch(hash, tg.width, tg.height, tg.depth, false, size.width, size.height, size.depth, uavs), out
+            TraceDispatch(k, hash, tg.width, tg.height, tg.depth, false, size.width, size.height, size.depth, uavs), out
         );
       }
       break;

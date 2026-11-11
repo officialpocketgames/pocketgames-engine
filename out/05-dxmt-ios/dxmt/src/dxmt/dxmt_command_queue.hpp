@@ -2,7 +2,7 @@
 // Changed for MYIOSDECK (spec 05 E2, H1, H2, H5; spec 07 A2: LGPL-2.1-or-later blocks from
 // dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10:
 // an LGPL-2.1-or-later member from steamac's DXMT patch 0023, marked inline; spec 05 clarification
-// 24: the frame trace's read-backs). Upstream: DXMT a3a6e8f, MIT.
+// 24 and 28: the frame trace's read-backs and the frame dump's copies). Upstream: DXMT a3a6e8f, MIT.
 
 #include "Metal.hpp"
 #include "dxmt_allocation.hpp"
@@ -16,6 +16,7 @@
 #include "dxmt_statistics.hpp"
 #include "log/log.hpp"
 #include "thread.hpp"
+#include "wsi_platform.hpp" // spec 05 clarification 28: aligned_free of unwritten dump copies
 #include "util_cpu_fence.hpp"
 #include <atomic>
 #include <chrono>
@@ -128,6 +129,7 @@ public:
     auto t1 = clock::now();
     visibility_readback = enc.flushCommands(cmdbuf, chunk_id, chunk_event_id);
     trace_readbacks = enc.takeTraceReadbacks(); // spec 05 clarification 24 (empty outside traced frames)
+    dump_files = enc.takeDumpFiles();           // spec 05 clarification 28 (empty outside the dumped frame)
     auto t2 = clock::now();
     statistics.encode_prepare_interval += (t1 - t0);
     statistics.encode_flush_interval += (t2 - t1);
@@ -152,6 +154,8 @@ public:
   /* spec 05 clarification 24: indirect arguments copied for the frame trace, logged by the
      finish thread once the command buffer has completed */
   std::vector<FrameTraceReadback> trace_readbacks;
+  /* spec 05 clarification 28: textures copied for the frame dump, written by the finish thread */
+  std::vector<FrameDumpFile> dump_files;
   uint64_t resource_initializer_event_id;
   std::vector<std::shared_ptr<GpuCompletionTarget>> completion_targets; /* spec 07 */
   dxmt::mutex completion_targets_mutex_;                                 /* spec 07 */
@@ -173,6 +177,12 @@ public:
     signal_frame_latency_fence_ = ~0ull;
     visibility_readback = {};
     trace_readbacks.clear(); /* spec 05 clarification 24 */
+    for (auto &file : dump_files) /* spec 05 clarification 28: any not written (a GPU error) */
+      if (file.host) {
+        file.buffer = {};
+        wsi::aligned_free(file.host);
+      }
+    dump_files.clear();
     completion_targets.clear(); /* spec 07 */
     list_enc.reset();
     ref_tracker.clear();

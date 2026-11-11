@@ -1,7 +1,8 @@
 // Changed for MYIOSDECK (spec 05 B, C, D; spec 05 clarification 10: LGPL-2.1-or-later blocks from
 // steamac's DXMT patches 0005, 0007 and 0014, marked inline, see LICENSE-NOTES.md; spec 05
 // clarifications 19-21: constant-buffer ranges, compute threadgroup size, frame trace notes;
-// 24-25: indirect read-backs, the barrier before an indirect dispatch).
+// 24-25: indirect read-backs, the barrier before an indirect dispatch; 27-28: the blit pass
+// after a traced dispatch).
 // Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 /**
@@ -1821,6 +1822,18 @@ public:
       cmd.size = {ThreadGroupCountX, ThreadGroupCountY, ThreadGroupCountZ};
       enc.traceDispatch(&cmd); // spec 05 clarification 21
     });
+    TraceAfterDispatch(); // spec 05 clarifications 27 and 28
+  }
+
+  /* MYIOSDECK spec 05 clarifications 27 and 28: in a traced frame of the immediate context, a
+     blit pass right after the dispatch reads back its buffer UAVs (and, in the dumped frame,
+     copies its 2D texture UAVs). The next dispatch opens a compute pass again. */
+  void
+  TraceAfterDispatch() {
+    if (!FrameTraceSwitch() || !IsTracedPresent(RecordingPresent()))
+      return;
+    SwitchToBlitEncoder(CommandBufferState::BlitEncoderActive);
+    EmitOP([](ArgumentEncodingContext &enc) { enc.traceAfterDispatch(); });
   }
 
   void
@@ -1839,6 +1852,7 @@ public:
         enc.traceIndirect(&cmd, buffer, ArgBuffer->length(), AlignedByteOffsetForArgs, "dispatch", true);
         enc.traceDispatch(&cmd); // spec 05 clarification 21
       });
+      TraceAfterDispatch(); // spec 05 clarifications 27 and 28
     }
   }
 
