@@ -1,4 +1,4 @@
-/* Changed for MYIOSDECK (spec 05 B8, E2, H6, clarifications 10 and 20; spec 07: LGPL-2.1-or-later blocks
+/* Changed for MYIOSDECK (spec 05 B8, E2, H6, clarifications 10, 20 and 25; spec 07: LGPL-2.1-or-later blocks
    from dxmt-d3d9 v0.4-d3d9, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 #ifndef _WINEMETAL_H
 #define _WINEMETAL_H
@@ -1000,6 +1000,8 @@ enum WMTComputeCommandType : uint16_t {
   WMTComputeCommandDispatchThreads,
   WMTComputeCommandWaitForFence,
   WMTComputeCommandUpdateFence,
+  /* MYIOSDECK spec 05 clarification 25 (appended): wmtcmd_compute_memory_barrier */
+  WMTComputeCommandMemoryBarrier,
 };
 
 struct wmtcmd_compute_nop {
@@ -1085,6 +1087,19 @@ struct wmtcmd_compute_fence_op {
   struct WMTMemoryPointer next;
   obj_handle_t fence;
 };
+
+/* MYIOSDECK spec 05 clarification 25: -[MTLComputeCommandEncoder memoryBarrierWithScope:].
+   `scope` holds enum WMTBarrierScope bits (declared with the render records below). No
+   pointers besides `next`; explicit padding keeps it 24 bytes for 32-bit callers too. */
+struct wmtcmd_compute_memory_barrier {
+  enum WMTComputeCommandType type;
+  uint16_t reserved[3];
+  struct WMTMemoryPointer next;
+  uint8_t scope;
+  uint8_t padding[7];
+};
+
+STATIC_ASSERT(sizeof(struct wmtcmd_compute_memory_barrier) == 24);
 
 WINEMETAL_API void MTLComputeCommandEncoder_encodeCommands(obj_handle_t encoder, const struct wmtcmd_base *cmd_head);
 

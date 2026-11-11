@@ -80,6 +80,8 @@ $cxx $flags $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src
 # MTLDevice_newComputePipelineState over a dirty stack), and the unix side's threads guard.
 $cxx $flags $native_flags -I"$src/winemetal" -I"$src/winemetal/unix" \
   -o "$build/test_compute_pipeline_info" "$here/test_compute_pipeline_info.cpp"
+# Spec 05 clarification 25: the memory barrier before an indirect dispatch.
+$cxx $flags -I"$src/winemetal" -I"$src/dxmt" -o "$build/test_indirect_dispatch" "$here/test_indirect_dispatch.cpp"
 sqlite_lib=
 for candidate in -lsqlite3 -l:libsqlite3.so.0; do
   if echo 'int main(void) { return 0; }' | $cc -x c - -o "$build/sqlite_probe" $candidate 2>/dev/null; then
@@ -117,6 +119,7 @@ sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_constant_buffer_bind" || status=1
 "$build/test_frame_trace" || status=1
 "$build/test_compute_pipeline_info" || status=1
+"$build/test_indirect_dispatch" || status=1
 sh "$here/check-shader-fixes.sh" "$src" || status=1
 if [ -n "$sqlite_lib" ]; then
   "$build/test_cache_contents" "$build" || status=1

@@ -1,6 +1,6 @@
 // Changed for MYIOSDECK (spec 05 D2, D5, E1, E2; dynamic-buffer discard; spec 05 clarification 10:
-// LGPL-2.1-or-later blocks from steamac's DXMT patch 0015, marked inline, see LICENSE-NOTES.md).
-// Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// LGPL-2.1-or-later blocks from steamac's DXMT patch 0015, marked inline, see LICENSE-NOTES.md;
+// clarification 24: RecordingPresent). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "config/config.hpp"
 #include "d3d11_fence.hpp"
 #include "d3d11_private.h"
@@ -53,6 +53,14 @@ template <>
 std::tuple<WMT::Buffer, uint64_t>
 ImmediateContextBase::AllocateStagingBuffer(size_t size, size_t alignment) {
   return ctx_state.cmd_queue.AllocateStagingBuffer(size, alignment);
+}
+
+/* MYIOSDECK spec 05 clarification 24: the immediate context records the frame that its next
+   Present ends */
+template <>
+uint64_t
+ImmediateContextBase::RecordingPresent() {
+  return ctx_state.cmd_queue.CurrentFrameSeq();
 }
 
 template <>

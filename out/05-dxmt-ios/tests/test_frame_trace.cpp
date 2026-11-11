@@ -27,10 +27,25 @@ TestSwitchAndFrames() {
   CHECK(!FrameTraceSwitchValue(""));
   CHECK(!FrameTraceSwitchValue("0"));
   CHECK(!FrameTraceSwitchValue("yes"));
+  // spec 05 clarification 24: 600, then every 1200th, at most 8
+  unsigned traced = 0;
+  uint64_t last = 0;
+  for (uint64_t present = 0; present <= 20000; present++) {
+    if (IsTracedPresent(present)) {
+      traced++;
+      last = present;
+    }
+  }
+  CHECK_EQ(traced, 8);
+  CHECK_EQ(last, 9000);
   CHECK(IsTracedPresent(600));
-  CHECK(IsTracedPresent(3600));
+  CHECK(IsTracedPresent(1800));
+  CHECK(IsTracedPresent(3000));
+  CHECK(!IsTracedPresent(3600)); // clarification 21's second frame no longer
   CHECK(!IsTracedPresent(599));
   CHECK(!IsTracedPresent(601));
+  CHECK(!IsTracedPresent(1200));
+  CHECK(!IsTracedPresent(10200)); // a 9th
   CHECK(!IsTracedPresent(0));
   const uint8_t sha1[20] = {0x1a, 0x2b, 0x3c, 0x4d, 0x5e};
   CHECK_EQ(FrameTraceShaderHash(sha1), 0x1a2b3c4d);
@@ -67,6 +82,19 @@ TestFormats() {
   CHECK(TraceDispatch(0x00000abc, 64, 1, 1, true, 0, 0, 0, "") == "dispatch cs 00000abc tg 64x1x1 indirect");
   CHECK(TraceDispatch(0, 32, 1, 1, false, 4, 1, 1, "") == "dispatch internal tg 32x1x1 groups 4x1x1");
   CHECK(TraceBox(0, 0, 0, 256, 256, 1) == "0,0,0 256x256x1");
+
+  // spec 05 clarification 24
+  CHECK(TraceIndirect(3, "dispatch", 4096, 48, 1) ==
+        "indirect #3 dispatch, argument buffer 4096 bytes, offset 48, written earlier in this command buffer: yes");
+  CHECK(TraceIndirect(4, "dispatch", 12, 0, 0) ==
+        "indirect #4 dispatch, argument buffer 12 bytes, offset 0, written earlier in this command buffer: no");
+  CHECK(TraceIndirect(5, "draw indexed", 640, 20, -1) == "indirect #5 draw indexed, argument buffer 640 bytes, offset 20");
+  const uint32_t dispatch_args[] = {40, 23, 1};
+  CHECK(TraceIndirectArgs(1800, 3, dispatch_args, 3, false) == "dxmt-frame 1800: indirect #3 args 40 23 1");
+  const uint32_t draw_args[] = {36, 1, 0, 0};
+  CHECK(TraceIndirectArgs(600, 1, draw_args, 4, false) == "dxmt-frame 600: indirect #1 args 36 1 0 0");
+  const uint32_t indexed_args[] = {6, 128, 0, (uint32_t)-4, 2}; // BaseVertexLocation is signed
+  CHECK(TraceIndirectArgs(600, 2, indexed_args, 5, true) == "dxmt-frame 600: indirect #2 args 6 128 0 -4 2");
 }
 
 void
@@ -98,14 +126,19 @@ TestFrameAndCap() {
 
   // the second traced frame starts from zero; no "not shown" line when nothing was dropped
   out.clear();
-  log.setPresent(3600, out);
+  log.setPresent(1800, out);
   CHECK(out.empty());
   CHECK_EQ(log.nextPass(), 0);
+  CHECK_EQ(log.nextIndirect(), 1); // indirect numbers start at 1 in each traced frame
+  CHECK_EQ(log.nextIndirect(), 2);
   log.line("present", out);
   log.setPresent(0, out);
   CHECK_EQ(out.size(), 2);
-  CHECK(out[0] == "dxmt-frame 3600: present");
-  CHECK(out[1] == "dxmt-frame 3600: constant-buffer binds with a non-zero offset: 0");
+  CHECK(out[0] == "dxmt-frame 1800: present");
+  CHECK(out[1] == "dxmt-frame 1800: constant-buffer binds with a non-zero offset: 0");
+  log.setPresent(3000, out);
+  CHECK_EQ(log.nextIndirect(), 1);
+  log.setPresent(0, out);
   log.countOffsetBind(); // ignored outside a traced frame
 }
 

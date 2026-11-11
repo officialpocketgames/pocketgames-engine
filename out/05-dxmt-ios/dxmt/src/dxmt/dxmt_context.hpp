@@ -2,7 +2,7 @@
 // Changed for MYIOSDECK (spec 05; spec 07 A2: LGPL-2.1-or-later blocks from dxmt-d3d9 v0.4-d3d9
 // (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10: LGPL-2.1-or-later
 // blocks from steamac's DXMT patch 0023, marked inline; spec 05 clarification 17: the
-// read-write UAV format line; clarification 21: the frame trace). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// read-write UAV format line; clarifications 21 and 24: the frame trace). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 #include "Metal.hpp"
 #include <cstring>
@@ -863,6 +863,20 @@ public:
     if (trace_active_)
       trace_dispatch_notes_[cmd] = {trace_cs_hash_, trace_cs_uavs_};
   }
+  /* spec 05 clarification 24, in a blit pass right before an indirect command: copies its
+     `length` argument bytes into a shared read-back slot, logged when the command buffer has
+     completed (takeTraceReadbacks) */
+  void traceIndirectReadback(Rc<Buffer> const &args, unsigned offset, unsigned length, bool indexed);
+  /* after an indirect command is encoded: its "indirect #k" line (argument buffer, offset and,
+     for a dispatch, whether this command buffer wrote that buffer before) */
+  void traceIndirect(
+      const void *cmd, BufferAllocation *allocation, uint64_t buffer_bytes, unsigned offset, const char *what,
+      bool dispatch
+  );
+  std::vector<FrameTraceReadback>
+  takeTraceReadbacks() {
+    return std::move(trace_readbacks_);
+  }
 
   ArgumentEncodingContext(CommandQueue &queue, WMT::Device device, InternalCommandLibrary &lib);
   ~ArgumentEncodingContext();
@@ -964,6 +978,11 @@ private:
   uint32_t trace_cs_hash_ = 0;
   std::string trace_cs_uavs_;
   std::map<const void *, TraceDispatchNote> trace_dispatch_notes_;
+  /* spec 05 clarification 24 */
+  std::map<const void *, std::string> trace_indirect_notes_;
+  std::vector<FrameTraceReadback> trace_readbacks_;
+  unsigned trace_pending_indirect_ = 0; // k given by the read-back to the indirect command after it
+  unsigned trace_readback_count_ = 0;   // read-backs in this traced frame
   void traceEncoders(EncoderData **encoders, unsigned count);
   void traceRenderPass(RenderEncoderData *data, std::vector<std::string> &out);
   void traceComputePass(ComputeEncoderData *data, std::vector<std::string> &out);

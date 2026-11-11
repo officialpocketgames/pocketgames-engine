@@ -1,3 +1,4 @@
+// Changed for MYIOSDECK (spec 05 clarification 24: RecordingPresent). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "d3d11_device.hpp"
 #include "d3d11_private.h"
 #include "d3d11_context_impl.cpp"
@@ -53,6 +54,14 @@ template <>
 std::tuple<WMT::Buffer, uint64_t>
 DeferredContextBase::AllocateStagingBuffer(size_t size, size_t alignment) {
   return ctx_state.current_cmdlist->AllocateStagingBuffer(size, alignment);
+}
+
+/* MYIOSDECK spec 05 clarification 24: a deferred context records for a later frame, so it
+   never adds the frame trace's read-backs */
+template <>
+uint64_t
+DeferredContextBase::RecordingPresent() {
+  return 0;
 }
 
 template <>

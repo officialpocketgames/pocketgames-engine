@@ -8,7 +8,8 @@
  * clarification 10: LGPL-2.1-or-later blocks from steamac's DXMT patches 0006, 0007 and
  * 0008, marked inline, and the residency-set calls 0023 needs (MYIOSDECK's own). Spec 05
  * clarification 13: the 32-bit common argument's flags. Spec 05 clarification 20: the compute
- * pipeline's maxTotalThreadsPerThreadgroup. Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+ * pipeline's maxTotalThreadsPerThreadgroup (23: its guard). Spec 05 clarification 25: the
+ * compute memory barrier record. Upstream: DXMT a3a6e8f, MIT (see LICENSE).
  */
 #include <stdatomic.h>
 #include <dlfcn.h>
@@ -964,6 +965,13 @@ _MTLComputeCommandEncoder_encodeCommands(void *obj) {
     case WMTComputeCommandWaitForFence: {
       struct wmtcmd_compute_fence_op *body = (struct wmtcmd_compute_fence_op *)next;
       [encoder waitForFence:(id<MTLFence>)body->fence];
+      break;
+    }
+    case WMTComputeCommandMemoryBarrier: {
+      /* spec 05 clarification 25: e.g. a typed-buffer UAV write (through a texture made from
+         the buffer) before an indirect dispatch that reads the buffer itself */
+      struct wmtcmd_compute_memory_barrier *body = (struct wmtcmd_compute_memory_barrier *)next;
+      [encoder memoryBarrierWithScope:(MTLBarrierScope)body->scope];
       break;
     }
     }

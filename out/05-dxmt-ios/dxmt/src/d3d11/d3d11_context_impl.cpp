@@ -1,6 +1,7 @@
 // Changed for MYIOSDECK (spec 05 B, C, D; spec 05 clarification 10: LGPL-2.1-or-later blocks from
 // steamac's DXMT patches 0005, 0007 and 0014, marked inline, see LICENSE-NOTES.md; spec 05
-// clarifications 19-21: constant-buffer ranges, compute threadgroup size, frame trace notes).
+// clarifications 19-21: constant-buffer ranges, compute threadgroup size, frame trace notes;
+// 24-25: indirect read-backs, the barrier before an indirect dispatch).
 // Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 /**
@@ -37,6 +38,7 @@ since it is for internal use only
 #include "util_log_rare.hpp"
 #include "d3d11_constant_buffer_bind.hpp" // spec 05 clarification 19
 #include "dxmt_frame_trace.hpp"           // spec 05 clarification 21
+#include "dxmt_indirect.hpp"              // spec 05 clarification 25
 #include <cstdlib>
 #endif
 
@@ -1601,6 +1603,7 @@ public:
     uint32_t ControlPointCount;
     if(!to_metal_primitive_type(state_.InputAssembler.Topology, Primitive, ControlPointCount))
       return;
+    TraceIndirectReadback(pBufferForArgs, AlignedByteOffsetForArgs, 20, true); // spec 05 clarification 24
     DrawCallStatus status = PreDraw<true>();
     if (status == DrawCallStatus::Invalid)
       return;
@@ -1627,6 +1630,7 @@ public:
         cmd.indirect_args_offset = AlignedByteOffsetForArgs + buffer_offset;
         cmd.index_buffer = index_buffer;
         cmd.index_buffer_offset = IndexBufferOffset + index_sub_offset;
+        enc.traceIndirect(&cmd, buffer, ArgBuffer->length(), AlignedByteOffsetForArgs, "draw indexed", false); // spec 05 clarification 24
       });
     }
   }
@@ -1640,6 +1644,7 @@ public:
     uint32_t ControlPointCount;
     if(!to_metal_primitive_type(state_.InputAssembler.Topology, Primitive, ControlPointCount))
       return;
+    TraceIndirectReadback(pBufferForArgs, AlignedByteOffsetForArgs, 16, false); // spec 05 clarification 24
     DrawCallStatus status = PreDraw<false>();
     if (status == DrawCallStatus::Invalid)
       return;
@@ -1658,6 +1663,7 @@ public:
         cmd.primitive_type = Primitive;
         cmd.indirect_args_buffer = buffer->buffer();;
         cmd.indirect_args_offset = AlignedByteOffsetForArgs + buffer_offset;
+        enc.traceIndirect(&cmd, buffer, ArgBuffer->length(), AlignedByteOffsetForArgs, "draw", false); // spec 05 clarification 24
       });
     }
   }
@@ -1822,18 +1828,32 @@ public:
   DispatchIndirect(ID3D11Buffer *pBufferForArgs, UINT AlignedByteOffsetForArgs) override {
     std::lock_guard<mutex_t> lock(mutex);
 
+    TraceIndirectReadback(pBufferForArgs, AlignedByteOffsetForArgs, 12, false); // spec 05 clarification 24
     if (!PreDispatch())
       return;
     if (auto bindable = reinterpret_cast<D3D11ResourceCommon *>(pBufferForArgs)) {
       EmitOP([AlignedByteOffsetForArgs, ArgBuffer = bindable->buffer()](ArgumentEncodingContext &enc) {
         auto [buffer, buffer_offset] = enc.access(ArgBuffer, AlignedByteOffsetForArgs, 12, DXMT_ENCODER_RESOURCE_ACESS_READ);
-        auto &cmd = enc.encodeComputeCommand<wmtcmd_compute_dispatch_indirect>();
-        cmd.type = WMTComputeCommandDispatchIndirect;
-        cmd.indirect_args_buffer = buffer->buffer();;
-        cmd.indirect_args_offset = AlignedByteOffsetForArgs + buffer_offset;
+        // spec 05 clarification 25: a buffers-and-textures memory barrier, then the dispatch
+        auto &cmd = EncodeIndirectDispatch(enc, buffer->buffer(), AlignedByteOffsetForArgs + buffer_offset);
+        enc.traceIndirect(&cmd, buffer, ArgBuffer->length(), AlignedByteOffsetForArgs, "dispatch", true);
         enc.traceDispatch(&cmd); // spec 05 clarification 21
       });
     }
+  }
+
+  /* MYIOSDECK spec 05 clarification 24: in a traced frame of the immediate context, a blit of
+     the indirect command's `length` argument bytes into a read-back slot, right before it (the
+     command's own encoder is opened again after it, as after a copy). */
+  void
+  TraceIndirectReadback(ID3D11Buffer *pBufferForArgs, UINT offset, unsigned length, bool indexed) {
+    auto bindable = reinterpret_cast<D3D11ResourceCommon *>(pBufferForArgs);
+    if (!bindable || !FrameTraceSwitch() || !IsTracedPresent(RecordingPresent()))
+      return;
+    SwitchToBlitEncoder(CommandBufferState::BlitEncoderActive);
+    EmitOP([ArgBuffer = bindable->buffer(), offset, length, indexed](ArgumentEncodingContext &enc) {
+      enc.traceIndirectReadback(ArgBuffer, offset, length, indexed);
+    });
   }
 #pragma endregion
 
@@ -3005,6 +3025,9 @@ public:
   template <typename T> moveonly_list<T> AllocateCommandData(size_t n = 1);
 
   std::tuple<WMT::Buffer, uint64_t> AllocateStagingBuffer(size_t size, size_t alignment);
+  /* spec 05 clarification 24: the number of the present that ends the frame being recorded
+     (immediate context), or 0 (a deferred context records for later) */
+  uint64_t RecordingPresent();
   void UseCopyDestination(Rc<StagingResource> &);
   void UseCopySource(Rc<StagingResource> &);
 

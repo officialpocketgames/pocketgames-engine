@@ -515,10 +515,44 @@ TestComputePipelineInfoThunkCopy() {
   CHECK_EQ(dxmt_threads_per_threadgroup_use(host.max_total_threads_per_threadgroup), DXMT_THREADS_APPLY);
 }
 
+/* ---- spec 05 clarification 25: the compute memory barrier record -------------- */
+
+void
+TestComputeMemoryBarrierRecord() {
+  using R = wmtcmd_compute_memory_barrier;
+  // 64-bit and 32-bit lay it out alike: next (8 bytes, a WMTMemoryPointer either way) at 8,
+  // scope at 16, explicit padding to 24, no implicit padding
+  static_assert(offsetof(R, next) == 8);
+  static_assert(offsetof(R, scope) == 16);
+  static_assert(sizeof(R) == 24);
+  static_assert(sizeof(R::type) + sizeof(R::reserved) + sizeof(R::next) + sizeof(R::scope) + sizeof(R::padding) ==
+                sizeof(R));
+  CHECK_EQ(WMTComputeCommandMemoryBarrier, WMTComputeCommandUpdateFence + 1); // appended
+
+  // a 32-bit program's chain: barrier then indirect dispatch. Only the links convert; the
+  // barrier's scope is copied as it is (it has no pointer).
+  Arena a(2);
+  auto *barrier = reinterpret_cast<R *>(Rec(a, 0, WMTComputeCommandMemoryBarrier));
+  barrier->scope = WMTBarrierScopeBuffers | WMTBarrierScopeTextures;
+  auto *dispatch = Rec(a, 1, WMTComputeCommandDispatchIndirect);
+  Link(a, (wmtcmd_base *)barrier, dispatch);
+  uint64_t head = a.guest(barrier);
+  CHECK_EQ(dxmt_wow_chain_to_host(&head, a.base, dxmt_wow_compute_payload, 16), 2);
+  CHECK_EQ(head, (uint64_t)(uintptr_t)barrier);
+  CHECK_EQ(dxmt_wow_load(&barrier->next), (uint64_t)(uintptr_t)dispatch);
+  CHECK_EQ(barrier->scope, WMTBarrierScopeBuffers | WMTBarrierScopeTextures);
+  CHECK_EQ(barrier->type, WMTComputeCommandMemoryBarrier);
+  dxmt_wow_chain_to_guest(&head, a.base, dxmt_wow_compute_payload, 2);
+  CHECK_EQ(head, a.guest(barrier));
+  CHECK_EQ(dxmt_wow_load(&barrier->next), a.guest(dispatch));
+  CHECK_EQ(barrier->scope, WMTBarrierScopeBuffers | WMTBarrierScopeTextures);
+}
+
 } // namespace
 
 int
 main() {
+  TestComputeMemoryBarrierRecord();
   TestComputePipelineInfoLayout();
   TestComputePipelineInfoThunkCopy();
   TestPointerToHost();

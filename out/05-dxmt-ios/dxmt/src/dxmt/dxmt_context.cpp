@@ -869,6 +869,10 @@ ArgumentEncodingContext::$$setEncodingContext(uint64_t seq_id, uint64_t frame_id
   if (FrameTraceSwitch() || frame_trace_.active()) {
     std::vector<std::string> lines;
     bool traced = FrameTraceSwitch() && IsTracedPresent(frame_id + 1);
+    if (frame_trace_.present() != (traced ? frame_id + 1 : 0)) { // a new frame: spec 05 clarification 24
+      trace_readback_count_ = 0;
+      trace_pending_indirect_ = 0;
+    }
     frame_trace_.setPresent(traced ? frame_id + 1 : 0, lines);
     trace_active_ = traced;
     for (auto &line : lines)
@@ -885,11 +889,57 @@ bool
 FrameTraceSwitch() {
   static const bool on = [] {
     bool value = FrameTraceSwitchValue(env::getEnvVar("PG_DXMT_FRAME_TRACE"));
-    if (value)
-      Logger::info("dxmt: frame trace on (PG_DXMT_FRAME_TRACE=1): presents 600 and 3600");
+    if (value) // spec 05 clarification 24: the schedule
+      Logger::info("dxmt: frame trace on (PG_DXMT_FRAME_TRACE=1): present 600, then every 1200th, at most 8");
     return value;
   }();
   return on;
+}
+
+void
+ArgumentEncodingContext::traceIndirectReadback(Rc<Buffer> const &args, unsigned offset, unsigned length, bool indexed) {
+  // spec 05 clarification 24; runs in the blit pass the context opened for it
+  if (!trace_active_ || trace_readback_count_ >= kFrameTraceMaxReadbacks)
+    return;
+  trace_readback_count_++;
+  unsigned k = frame_trace_.nextIndirect();
+  trace_pending_indirect_ = k;
+  auto [src, src_offset] = access(args, offset, length, DXMT_ENCODER_RESOURCE_ACESS_READ);
+  auto [mapped, readback, readback_offset] = queue_.AllocateArgumentBuffer(seq_id_, 32);
+  auto &cmd = encodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
+  cmd.type = WMTBlitCommandCopyFromBufferToBuffer;
+  cmd.src = src->buffer();
+  cmd.src_offset = src_offset + offset;
+  cmd.dst = readback;
+  cmd.dst_offset = readback_offset;
+  cmd.copy_length = length;
+  trace_readbacks_.push_back({frame_trace_.present(), k, length / 4, indexed, mapped});
+}
+
+void
+ArgumentEncodingContext::traceIndirect(
+    const void *cmd, BufferAllocation *allocation, uint64_t buffer_bytes, unsigned offset, const char *what,
+    bool dispatch
+) {
+  // spec 05 clarification 24
+  if (!trace_active_)
+    return;
+  unsigned k = trace_pending_indirect_ ? trace_pending_indirect_ : frame_trace_.nextIndirect();
+  trace_pending_indirect_ = 0;
+  int written = -1;
+  if (dispatch) {
+    // DXMT's own view: an encoder of this command buffer (the open one included) whose write
+    // set has the argument buffer's key. A Bloom filter, so "yes" may be a false positive;
+    // GPU-read-only buffers are never tracked, so they read "no".
+    EncoderDepSet probe;
+    probe.add(allocation->depkey);
+    written = 0;
+    for (EncoderData *e = encoder_head.next; e && !written; e = e->next)
+      written = !probe.isDisjointWith(e->buf_write);
+    if (!written && encoder_current)
+      written = !probe.isDisjointWith(encoder_current->buf_write);
+  }
+  trace_indirect_notes_[cmd] = TraceIndirect(k, what, buffer_bytes, offset, written);
 }
 
 void
@@ -939,6 +989,7 @@ ArgumentEncodingContext::traceEncoders(EncoderData **encoders, unsigned count) {
     }
   }
   trace_dispatch_notes_.clear();
+  trace_indirect_notes_.clear();
   for (auto &line : out)
     Logger::info(line);
 }
@@ -986,6 +1037,7 @@ ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<st
   // the viewports and scissor rectangles in effect at each draw
   unsigned draws = 0;
   bool partial = false;
+  std::vector<std::string> indirect_lines;
   std::vector<WMTViewport> current_viewports;
   std::vector<WMTScissorRect> current_scissors;
   for (auto cmd = (wmtcmd_base *)&data->cmd_head; cmd; cmd = (wmtcmd_base *)cmd->next.get()) {
@@ -1023,6 +1075,8 @@ ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<st
     case WMTRenderCommandDXMTTessellationMeshDrawIndirect:
     case WMTRenderCommandDXMTTessellationMeshDrawIndexedIndirect:
       draws++;
+      if (auto note = trace_indirect_notes_.find(cmd); note != trace_indirect_notes_.end())
+        indirect_lines.push_back(note->second); // spec 05 clarification 24
       for (auto &v : current_viewports) {
         TraceAddDistinct(viewports, TraceRect(v.originX, v.originY, v.width, v.height));
         if (!TraceCovers(v.originX, v.originY, v.width, v.height, width, height))
@@ -1039,6 +1093,8 @@ ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<st
     }
   }
   frame_trace_.line(TraceRenderPass(frame_trace_.nextPass(), attachments, draws, viewports, scissors, partial), out);
+  for (auto &line : indirect_lines)
+    frame_trace_.line(line, out);
 }
 
 void
@@ -1059,6 +1115,8 @@ ArgumentEncodingContext::traceComputePass(ComputeEncoderData *data, std::vector<
       std::string uavs = note != trace_dispatch_notes_.end() ? note->second.uavs : std::string();
       if (cmd->type == WMTComputeCommandDispatchIndirect) {
         frame_trace_.line(TraceDispatch(hash, tg.width, tg.height, tg.depth, true, 0, 0, 0, uavs), out);
+        if (auto indirect = trace_indirect_notes_.find(cmd); indirect != trace_indirect_notes_.end())
+          frame_trace_.line(indirect->second, out); // spec 05 clarification 24
       } else {
         auto size = ((wmtcmd_compute_dispatch *)cmd)->size;
         frame_trace_.line(

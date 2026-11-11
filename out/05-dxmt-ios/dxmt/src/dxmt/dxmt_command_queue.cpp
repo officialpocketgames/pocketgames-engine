@@ -1,7 +1,7 @@
 // Changed for MYIOSDECK (spec 05 B9, D2, H2, H5; spec 06 D; spec 07 A2: LGPL-2.1-or-later blocks
 // from dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10:
-// LGPL-2.1-or-later blocks from steamac's DXMT patches 0019 and 0023, marked inline). Upstream: DXMT
-// a3a6e8f, MIT.
+// LGPL-2.1-or-later blocks from steamac's DXMT patches 0019 and 0023, marked inline; spec 05
+// clarification 24: logging the frame trace's read-backs). Upstream: DXMT a3a6e8f, MIT.
 #include "dxmt_command_queue.hpp"
 #include "Metal.hpp"
 #include "dxmt_chunk_slots.hpp"
@@ -244,6 +244,15 @@ CommandQueue::WaitForFinishThread() {
 #ifdef DXMT_IOS
     AccountGpuBusyTime(chunk);
 #endif
+
+    // spec 05 clarification 24: the traced frame's indirect arguments, as the GPU had them;
+    // the shared slots stay valid until argbuf_allocator frees this chunk's blocks below
+    if (!device_error) {
+      for (auto &readback : chunk.trace_readbacks)
+        Logger::info(TraceIndirectArgs(
+            readback.present, readback.k, (const uint32_t *)readback.data, readback.count, readback.indexed
+        ));
+    }
 
     if (chunk.signal_frame_latency_fence_ != ~0ull)
       frame_latency_fence_.signal(chunk.signal_frame_latency_fence_);

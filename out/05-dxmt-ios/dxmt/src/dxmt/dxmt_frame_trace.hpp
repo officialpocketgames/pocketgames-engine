@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 the MYIOSDECK author
 //
-// Spec 05 clarification 21: a trace of one frame, twice per process (the 600th and the 3600th
-// present), in "dxmt-frame <present>: ..." lines, when the environment has
+// Spec 05 clarification 21: a trace of a frame (clarification 24: present 600, then every 1200th,
+// at most 8 per process), in "dxmt-frame <present>: ..." lines, when the environment has
 // PG_DXMT_FRAME_TRACE=1 (the app sets it in test builds only; the engine is the same binary for
 // both, so there is no build switch). This header is the plain part: the switch's value rule,
 // which presents are traced, the 600-line cap, and the line formats. ArgumentEncodingContext
@@ -29,13 +29,22 @@ FrameTraceSwitchValue(const std::string &value) {
   return value == "1";
 }
 
-/* `present` counts from 1: the frame that ends with the process's n-th present. */
+/* Spec 05 clarification 24 (amends 21): present 600, then every 1200th (1800, 3000, ...), at
+   most kFrameTraceMaxFrames per process. `present` counts from 1: the frame that ends with the
+   process's n-th present. */
+constexpr uint64_t kFrameTraceFirstPresent = 600;
+constexpr uint64_t kFrameTraceInterval = 1200;
+constexpr uint64_t kFrameTraceMaxFrames = 8;
+
 constexpr bool
 IsTracedPresent(uint64_t present) {
-  return present == 600 || present == 3600;
+  return present >= kFrameTraceFirstPresent && (present - kFrameTraceFirstPresent) % kFrameTraceInterval == 0 &&
+         (present - kFrameTraceFirstPresent) / kFrameTraceInterval < kFrameTraceMaxFrames;
 }
 
 constexpr unsigned kFrameTraceMaxLines = 600;
+/* spec 05 clarification 24: indirect commands of a frame whose arguments are read back */
+constexpr unsigned kFrameTraceMaxReadbacks = 128;
 /* each line's text, so that with the logger's prefix it stays within kLogMessageMaxBytes */
 constexpr size_t kFrameTraceMaxLineBytes = kLogMessageMaxBytes - 32;
 
@@ -172,6 +181,41 @@ TraceBox(uint64_t x, uint64_t y, uint64_t z, uint64_t w, uint64_t h, uint64_t d)
          std::to_string(h) + "x" + std::to_string(d);
 }
 
+/* Spec 05 clarification 24: an indirect command's own line, "indirect #3 dispatch, argument
+   buffer 4096 bytes, offset 48, written earlier in this command buffer: yes". `written` is
+   1 / 0, or -1 when not asked (draws). */
+inline std::string
+TraceIndirect(unsigned k, const char *what, uint64_t buffer_bytes, uint64_t offset, int written) {
+  std::string line = "indirect #" + std::to_string(k) + " " + what + ", argument buffer " +
+                     std::to_string(buffer_bytes) + " bytes, offset " + std::to_string(offset);
+  if (written >= 0)
+    line += std::string(", written earlier in this command buffer: ") + (written ? "yes" : "no");
+  return line;
+}
+
+/* The argument values read back after the command buffer completed: 3 for a dispatch, 4 for
+   DrawInstancedIndirect, 5 for DrawIndexedInstancedIndirect (BaseVertexLocation is signed). */
+struct FrameTraceReadback {
+  uint64_t present;
+  unsigned k;
+  unsigned count;
+  bool indexed;
+  const void *data; // shared memory the blit wrote; valid until the command buffer is retired
+};
+
+inline std::string
+TraceIndirectArgs(uint64_t present, unsigned k, const uint32_t *values, unsigned count, bool indexed) {
+  std::string line = "dxmt-frame " + std::to_string(present) + ": indirect #" + std::to_string(k) + " args";
+  for (unsigned i = 0; i < count; i++) {
+    // DrawIndexedInstancedIndirect's 4th value, BaseVertexLocation, is an INT
+    if (indexed && i == 3)
+      line += " " + std::to_string((int32_t)values[i]);
+    else
+      line += " " + std::to_string(values[i]);
+  }
+  return line;
+}
+
 /* ---- one process's trace ---- */
 
 class FrameTraceLog {
@@ -188,6 +232,7 @@ public:
     dropped_ = 0;
     offset_binds_ = 0;
     passes_ = 0;
+    indirects_ = 0;
   }
 
   bool
@@ -210,6 +255,12 @@ public:
   countOffsetBind() {
     if (active())
       offset_binds_++;
+  }
+
+  /* spec 05 clarification 24: the next indirect command's number in this frame, from 1 */
+  unsigned
+  nextIndirect() {
+    return ++indirects_;
   }
 
   /* A line of the traced frame: prefixed, cut to kFrameTraceMaxLineBytes, appended to `out`
@@ -249,6 +300,7 @@ private:
   uint64_t dropped_ = 0;
   uint64_t offset_binds_ = 0;
   unsigned passes_ = 0;
+  unsigned indirects_ = 0;
 };
 
 } // namespace dxmt
