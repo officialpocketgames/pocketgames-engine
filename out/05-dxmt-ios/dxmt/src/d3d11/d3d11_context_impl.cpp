@@ -2,7 +2,7 @@
 // steamac's DXMT patches 0005, 0007 and 0014, marked inline, see LICENSE-NOTES.md; spec 05
 // clarifications 19-21: constant-buffer ranges, compute threadgroup size, frame trace notes;
 // 24-25: indirect read-backs, the barrier before an indirect dispatch; 27-28: the blit pass
-// after a traced dispatch).
+// after a traced dispatch; 30: state lines).
 // Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 /**
@@ -40,6 +40,7 @@ since it is for internal use only
 #include "d3d11_constant_buffer_bind.hpp" // spec 05 clarification 19
 #include "dxmt_frame_trace.hpp"           // spec 05 clarification 21
 #include "dxmt_indirect.hpp"              // spec 05 clarification 25
+#include "d3d11_trace_state.hpp"          // spec 05 clarification 30
 #include <cstdlib>
 #endif
 
@@ -5025,6 +5026,7 @@ public:
         cmd.rect_count = scissors.size();
       });
     }
+    TraceDrawState(); // spec 05 clarification 30
     dirty_state.clrAll();
     if (cmdbuf_state == CommandBufferState::TessellationRenderPipelineReady) {
       UploadShaderStageResourceBinding<PipelineStage::Vertex, PipelineKind::Tessellation>();
@@ -5087,10 +5089,64 @@ public:
     return true;
   }
 
+  /* MYIOSDECK spec 05 clarification 30: in a traced frame of the immediate context, the
+     descriptions of the state a draw uses (its vertex and pixel shaders' samplers, blend,
+     depth-stencil, rasterizer; the device's defaults for NULL ones), kept distinct per render
+     pass by the encoder. Geometry, hull and domain shader samplers aren't listed. */
+  void
+  TraceDrawState() {
+    if (!FrameTraceSwitch() || !IsTracedPresent(RecordingPresent()))
+      return;
+    std::vector<std::string> lines;
+    TraceStageSamplers<PipelineStage::Vertex>("vs", lines);
+    TraceStageSamplers<PipelineStage::Pixel>("ps", lines);
+    D3D11_BLEND_DESC1 blend;
+    (state_.OutputMerger.BlendState ? state_.OutputMerger.BlendState : default_blend_state)->GetDesc1(&blend);
+    lines.push_back(TraceBlendState(blend, state_.OutputMerger.NumRTVs));
+    D3D11_DEPTH_STENCIL_DESC depth_stencil;
+    (state_.OutputMerger.DepthStencilState ? state_.OutputMerger.DepthStencilState : default_depth_stencil_state)
+        ->GetDesc(&depth_stencil);
+    lines.push_back(TraceDepthStencilState(depth_stencil, state_.OutputMerger.StencilRef));
+    D3D11_RASTERIZER_DESC rasterizer;
+    (state_.Rasterizer.RasterizerState ? state_.Rasterizer.RasterizerState : default_rasterizer_state)
+        ->GetDesc(&rasterizer);
+    lines.push_back(TraceRasterizerState(rasterizer));
+    EmitST([lines = std::move(lines)](ArgumentEncodingContext &enc) mutable { enc.traceState(std::move(lines)); });
+  }
+
+  /* spec 05 clarification 30: one line per sampler slot the stage's shader declares */
+  template <PipelineStage Stage>
+  void
+  TraceStageSamplers(const char *stage_name, std::vector<std::string> &lines) {
+    auto shader = GetManagedShader<Stage>();
+    if (!shader)
+      return;
+    uint32_t mask = shader->reflection().SamplerSlotMask;
+    auto &samplers = state_.ShaderStages[Stage].Samplers;
+    for (unsigned slot = 0; slot < 16; slot++) {
+      if (!(mask & (1u << slot)))
+        continue;
+      if (samplers.test_bound(slot) && samplers.at(slot).Sampler) {
+        D3D11_SAMPLER_DESC desc;
+        samplers.at(slot).Sampler->GetDesc(&desc);
+        lines.push_back(TraceSamplerState(stage_name, slot, desc));
+      } else {
+        lines.push_back(TraceSamplerNull(stage_name, slot));
+      }
+    }
+  }
+
   bool
   PreDispatch() {
     if (!FinalizeCurrentComputePipeline()) {
       return false;
+    }
+    if (FrameTraceSwitch() && IsTracedPresent(RecordingPresent())) { // spec 05 clarification 30
+      std::vector<std::string> lines;
+      TraceStageSamplers<PipelineStage::Compute>("cs", lines);
+      EmitST([lines = std::move(lines)](ArgumentEncodingContext &enc) mutable {
+        enc.traceComputeSamplers(std::move(lines));
+      });
     }
     UploadShaderStageResourceBinding<PipelineStage::Compute, PipelineKind::Ordinary>();
     return true;

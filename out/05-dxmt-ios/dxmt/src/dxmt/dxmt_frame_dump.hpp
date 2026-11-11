@@ -6,7 +6,8 @@
 // present 1800 writes each colour attachment after its render pass and each 2D texture UAV
 // after its dispatch, as raw texels, to
 //   C:\users\Public\pg-dumps\frame-<n>\<seq>-<pass or dispatch hash>-<slot>-<format>-<w>x<h>.raw
-// with an index.txt. Only 2D float, unorm and snorm formats; none over 16 MB; 256 MB in total.
+// with an index.txt. Only 2D float, unorm and snorm formats (clarification 31: and the depth,
+// and stencil, planes a render pass writes); none over 16 MB; 256 MB in total.
 // The files are the program's own images: they stay on the device they were made on and the
 // spec writer's PC, never in a repository, CI artifact or test data; no name here carries a
 // program's name. This header is the plain part, for the host tests: the switch, the frame,
@@ -83,14 +84,47 @@ FrameDumpBytesPerTexel(WMTPixelFormat format) {
   }
 }
 
-/* "0007-pass14-c0-RGBA16Float-1280x720.raw", "0012-cs7041a1e5-u1-R16Float-640x360.raw" */
+/* "0007-pass14-c0-RGBA16Float-1280x720.raw", "0012-cs7041a1e5-u1-R16Float-640x360.raw",
+   "0009-pass3-depth-Depth32Float-2048x2048.raw" */
 inline std::string
-FrameDumpFileName(unsigned seq, const std::string &tag, const std::string &slot, WMTPixelFormat format,
+FrameDumpFileName(unsigned seq, const std::string &tag, const std::string &slot, const std::string &format_label,
                   uint64_t width, uint64_t height) {
   char number[16];
   std::snprintf(number, sizeof(number), "%04u", seq);
-  return std::string(number) + "-" + tag + "-" + slot + "-" + TracePixelFormat(format) + "-" + std::to_string(width) +
-         "x" + std::to_string(height) + ".raw";
+  return std::string(number) + "-" + tag + "-" + slot + "-" + format_label + "-" + std::to_string(width) + "x" +
+         std::to_string(height) + ".raw";
+}
+
+inline std::string
+FrameDumpFileName(unsigned seq, const std::string &tag, const std::string &slot, WMTPixelFormat format,
+                  uint64_t width, uint64_t height) {
+  return FrameDumpFileName(seq, tag, slot, TracePixelFormat(format), width, height);
+}
+
+/* Spec 05 clarification 31: the planes a depth attachment is dumped as. Depth32Float as is;
+   Depth32Float_Stencil8 as its depth (4 bytes a texel, the depth-from-depth-stencil blit
+   option) and its stencil plane (1 byte, R8, the stencil-from-depth-stencil option). Other
+   depth formats (Depth16Unorm, Depth24Unorm_Stencil8): none. */
+struct FrameDumpPlane {
+  const char *slot;
+  const char *format_label;
+  unsigned bytes_per_texel;
+  WMTBlitOption option;
+};
+
+inline unsigned
+FrameDumpDepthPlanes(WMTPixelFormat format, FrameDumpPlane planes[2]) {
+  switch (static_cast<WMTPixelFormat>(format & 0xFFFF)) {
+  case WMTPixelFormatDepth32Float:
+    planes[0] = {"depth", "Depth32Float", 4, WMTBlitOptionNone};
+    return 1;
+  case WMTPixelFormatDepth32Float_Stencil8:
+    planes[0] = {"depth", "Depth32Float", 4, WMTBlitOptionDepthFromDepthStencil};
+    planes[1] = {"stencil", "Stencil8", 1, WMTBlitOptionStencilFromDepthStencil};
+    return 2;
+  default:
+    return 0;
+  }
 }
 
 /* "C:\users\Public\pg-dumps\frame-1800" */

@@ -89,6 +89,40 @@ TestLimits() {
   CHECK(FrameDumpBudget().summary() == "dump: 0 files, 0.0 MB; left out: 0 over 16 MB, 0 over the 256 MB total");
 }
 
+void
+TestDepthPlanes() {
+  // spec 05 clarification 31
+  FrameDumpPlane planes[2];
+  CHECK_EQ(FrameDumpDepthPlanes(WMTPixelFormatDepth32Float, planes), 1);
+  CHECK(std::string(planes[0].slot) == "depth");
+  CHECK_EQ(planes[0].bytes_per_texel, 4);
+  CHECK_EQ(planes[0].option, WMTBlitOptionNone);
+  CHECK_EQ(FrameDumpDepthPlanes(WMTPixelFormatDepth32Float_Stencil8, planes), 2);
+  CHECK(std::string(planes[0].format_label) == "Depth32Float");
+  CHECK_EQ(planes[0].bytes_per_texel, 4);
+  CHECK_EQ(planes[0].option, WMTBlitOptionDepthFromDepthStencil);
+  CHECK(std::string(planes[1].slot) == "stencil");
+  CHECK(std::string(planes[1].format_label) == "Stencil8");
+  CHECK_EQ(planes[1].bytes_per_texel, 1);
+  CHECK_EQ(planes[1].option, WMTBlitOptionStencilFromDepthStencil);
+  CHECK_EQ(FrameDumpDepthPlanes(WMTPixelFormatDepth16Unorm, planes), 0);
+  CHECK_EQ(FrameDumpDepthPlanes(WMTPixelFormatRGBA8Unorm, planes), 0);
+
+  CHECK(FrameDumpFileName(9, "pass3", "depth", "Depth32Float", 2048, 2048) ==
+        "0009-pass3-depth-Depth32Float-2048x2048.raw");
+  CHECK(FrameDumpFileName(10, "pass3", "stencil", "Stencil8", 1280, 720) == "0010-pass3-stencil-Stencil8-1280x720.raw");
+
+  // a 2048x2048 Depth32Float shadow map is exactly 16 MB: included; 2049 wide is not
+  FrameDumpBudget budget;
+  CHECK_EQ(2048ull * 2048 * 4, 16ull << 20);
+  CHECK(budget.admit(2048ull * 2048 * 4));
+  CHECK(!budget.admit(2049ull * 2048 * 4));
+  // a 1280x720 depth-stencil: its depth (3.5 MB) and stencil (0.9 MB) planes
+  CHECK(budget.admit(1280ull * 720 * 4));
+  CHECK(budget.admit(1280ull * 720 * 1));
+  CHECK_EQ(budget.files(), 3);
+}
+
 } // namespace
 
 int
@@ -97,5 +131,6 @@ main() {
   TestFormats();
   TestNames();
   TestLimits();
+  TestDepthPlanes();
   return TestSummary("test_frame_dump");
 }

@@ -866,7 +866,22 @@ public:
     if (!trace_active_)
       return;
     trace_last_dispatch_k_ = frame_trace_.nextDispatch();
-    trace_dispatch_notes_[cmd] = {trace_cs_hash_, trace_cs_uavs_, trace_last_dispatch_k_};
+    trace_dispatch_notes_[cmd] = {trace_cs_hash_, trace_cs_uavs_, trace_last_dispatch_k_, trace_cs_samplers_};
+  }
+  /* spec 05 clarification 30: the state lines of a traced draw, kept distinct per render pass */
+  void
+  traceState(std::vector<std::string> &&lines) {
+    if (!trace_active_ || !encoder_current)
+      return;
+    auto &list = trace_state_notes_[encoder_current];
+    for (auto &line : lines)
+      TraceAddDistinct(list, line);
+  }
+  /* spec 05 clarification 30: the samplers of the next dispatches */
+  void
+  traceComputeSamplers(std::vector<std::string> &&lines) {
+    if (trace_active_)
+      trace_cs_samplers_ = std::move(lines);
   }
   /* spec 05 clarifications 27 and 28, in a blit pass right after a traced dispatch: reads back
      the first 32 uints of each buffer UAV it bound, and (in the dumped frame) copies each 2D
@@ -985,8 +1000,12 @@ private:
   struct TraceDispatchNote {
     uint32_t hash;
     std::string uavs;
-    unsigned k; // spec 05 clarification 27
+    unsigned k;                        // spec 05 clarification 27
+    std::vector<std::string> samplers; // spec 05 clarification 30
   };
+  /* spec 05 clarification 30 */
+  std::map<const void *, std::vector<std::string>> trace_state_notes_; // render encoder -> its distinct states
+  std::vector<std::string> trace_cs_samplers_;
   /* spec 05 clarifications 27 and 28: the UAVs the compute shader bound, as encoded */
   struct TraceUAVBinding {
     unsigned slot;
@@ -1008,6 +1027,11 @@ private:
       WMT::Texture texture, unsigned level, unsigned slice, WMTPixelFormat format, uint64_t width, uint64_t height,
       const std::string &tag, const std::string &slot_name, const std::string &index_line
   );
+  void dumpPlane(
+      WMT::Texture texture, unsigned level, unsigned slice, const std::string &format_label, unsigned texel,
+      WMTBlitOption option, uint64_t width, uint64_t height, const std::string &tag, const std::string &slot_name,
+      const std::string &index_line
+  ); // spec 05 clarification 31
   void dumpRenderAttachments(RenderEncoderData *data);
   FrameTraceLog frame_trace_;
   bool trace_active_ = false;

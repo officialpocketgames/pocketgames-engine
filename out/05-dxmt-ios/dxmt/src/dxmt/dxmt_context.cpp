@@ -959,8 +959,19 @@ ArgumentEncodingContext::dumpTexture(
     WMT::Texture texture, unsigned level, unsigned slice, WMTPixelFormat format, uint64_t width, uint64_t height,
     const std::string &tag, const std::string &slot_name, const std::string &index_line
 ) {
-  // spec 05 clarification 28: encoded in the open blit pass
-  unsigned texel = FrameDumpBytesPerTexel(format);
+  dumpPlane(
+      texture, level, slice, TracePixelFormat(format), FrameDumpBytesPerTexel(format), WMTBlitOptionNone, width, height,
+      tag, slot_name, index_line
+  );
+}
+
+void
+ArgumentEncodingContext::dumpPlane(
+    WMT::Texture texture, unsigned level, unsigned slice, const std::string &format_label, unsigned texel,
+    WMTBlitOption option, uint64_t width, uint64_t height, const std::string &tag, const std::string &slot_name,
+    const std::string &index_line
+) {
+  // spec 05 clarifications 28 and 31: encoded in the open blit pass
   if (!texel || !width || !height)
     return;
   uint64_t bytes = width * height * texel;
@@ -968,7 +979,7 @@ ArgumentEncodingContext::dumpTexture(
     return;
   FrameDumpFile file;
   file.directory = FrameDumpDirectory(frame_trace_.present());
-  file.name = FrameDumpFileName(++dump_seq_, tag, slot_name, format, width, height);
+  file.name = FrameDumpFileName(++dump_seq_, tag, slot_name, format_label, width, height);
   file.index_line = index_line;
   file.bytes = bytes;
   file.host = wsi::aligned_malloc(PlacedMemoryLength(bytes), kPlacedMemoryAlignment);
@@ -993,7 +1004,7 @@ ArgumentEncodingContext::dumpTexture(
   cmd.offset = 0;
   cmd.bytes_per_row = width * texel;
   cmd.bytes_per_image = bytes;
-  cmd.options = WMTBlitOptionNone;
+  cmd.options = option; // spec 05 clarification 31: a plane of a depth-stencil texture
   dump_files_.push_back(std::move(file));
 }
 
@@ -1010,7 +1021,16 @@ ArgumentEncodingContext::dumpRenderAttachments(RenderEncoderData *data) {
     if (texture->textureType(view->key) == WMTTextureType2D && FrameDumpBytesPerTexel(texture->pixelFormat(view->key)))
       any = true;
   }
-  if (!any)
+  // spec 05 clarification 31: a depth attachment the pass writes (not read-only, stored)
+  FrameDumpPlane depth_planes[2];
+  unsigned depth_plane_count = 0;
+  if (data->depth.attachment && !(data->dsv_readonly_flags & 1) && data->depth.store_action == WMTStoreActionStore) {
+    auto *view = data->depth.attachment.ptr();
+    auto *texture = view->allocation->descriptor;
+    if (texture->textureType(view->key) == WMTTextureType2D)
+      depth_plane_count = FrameDumpDepthPlanes(texture->pixelFormat(view->key), depth_planes);
+  }
+  if (!any && !depth_plane_count)
     return;
   unsigned pass = trace_pass_count_ - 1;
   startBlitPass();
@@ -1031,6 +1051,22 @@ ArgumentEncodingContext::dumpRenderAttachments(RenderEncoderData *data) {
         color.attachment.texture(), color.level, color.slice, format, width, height, "pass" + std::to_string(pass),
         slot, "pass " + std::to_string(pass) + " " + slot + " " + TraceTexture(format, width, height)
     );
+  }
+  if (depth_plane_count) { // spec 05 clarification 31
+    auto *view = data->depth.attachment.ptr();
+    auto *texture = view->allocation->descriptor;
+    trackTexture<false>(view->allocation, DXMT_ENCODER_RESOURCE_ACESS_READ);
+    uint64_t width = std::max(texture->width(view->key) >> data->depth.level, 1u);
+    uint64_t height = std::max(texture->height(view->key) >> data->depth.level, 1u);
+    for (unsigned p = 0; p < depth_plane_count; p++) {
+      auto &plane = depth_planes[p];
+      dumpPlane(
+          data->depth.attachment.texture(), data->depth.level, data->depth.slice, plane.format_label,
+          plane.bytes_per_texel, plane.option, width, height, "pass" + std::to_string(pass), plane.slot,
+          "pass " + std::to_string(pass) + " " + plane.slot + " " + plane.format_label + " " + std::to_string(width) +
+              "x" + std::to_string(height)
+      );
+    }
   }
   endPass();
 }
@@ -1182,6 +1218,7 @@ ArgumentEncodingContext::traceEncoders(EncoderData **encoders, unsigned count) {
   }
   trace_dispatch_notes_.clear();
   trace_indirect_notes_.clear();
+  trace_state_notes_.clear(); // spec 05 clarification 30
   for (auto &line : out)
     Logger::info(line);
 }
@@ -1284,7 +1321,12 @@ ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<st
       break;
     }
   }
-  frame_trace_.line(TraceRenderPass(frame_trace_.nextPass(), attachments, draws, viewports, scissors, partial), out);
+  unsigned index = frame_trace_.nextPass();
+  frame_trace_.line(TraceRenderPass(index, attachments, draws, viewports, scissors, partial), out);
+  // spec 05 clarification 30: the distinct states the pass's draws used
+  if (auto states = trace_state_notes_.find(data); states != trace_state_notes_.end())
+    for (auto &state : states->second)
+      frame_trace_.line("pass " + std::to_string(index) + " " + state, out);
   for (auto &line : indirect_lines)
     frame_trace_.line(line, out);
 }
@@ -1316,6 +1358,10 @@ ArgumentEncodingContext::traceComputePass(ComputeEncoderData *data, std::vector<
             TraceDispatch(k, hash, tg.width, tg.height, tg.depth, false, size.width, size.height, size.depth, uavs), out
         );
       }
+      // spec 05 clarification 30: the dispatch's samplers
+      if (note != trace_dispatch_notes_.end())
+        for (auto &sampler : note->second.samplers)
+          frame_trace_.line("dispatch #" + std::to_string(k) + " " + sampler, out);
       break;
     }
     default:
