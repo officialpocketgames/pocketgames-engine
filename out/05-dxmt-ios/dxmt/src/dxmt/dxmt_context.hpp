@@ -878,16 +878,44 @@ public:
     for (auto &line : lines)
       TraceAddDistinct(list, line);
   }
-  /* spec 05 clarification 44: a traced draw's line, in its render pass's order; an indirect
-     one waits for its number from traceIndirect */
+  /* spec 05 clarifications 44, 48 and 49: a traced draw's lines (the draw, then its bindings,
+     '\n'-separated), in its render pass's order, numbered in the frame. An indirect draw takes
+     its number now: the one its read-back blit just took, else a new one, which the indirect
+     command's traceIndirect then uses. */
   void
-  traceDraw(std::string &&line, bool indirect) {
-    if (!trace_active_ || !encoder_current)
+  traceDraw(std::string &&lines, bool indirect) {
+    if (!trace_active_)
       return;
-    auto &list = trace_draw_notes_[encoder_current];
-    list.push_back(std::move(line));
-    if (indirect)
-      trace_draw_waiting_ = {encoder_current, list.size() - 1};
+    unsigned serial = ++trace_draw_serial_;
+    if (!encoder_current)
+      return;
+    if (indirect) {
+      unsigned k = trace_pending_indirect_ ? trace_pending_indirect_ : frame_trace_.nextIndirect();
+      trace_pending_indirect_ = 0;
+      trace_draw_indirect_k_ = k;
+      if (auto at = lines.find("#?"); at != std::string::npos)
+        lines.replace(at, 2, "#" + std::to_string(k));
+    }
+    trace_draw_notes_[encoder_current].push_back({serial, std::move(lines)});
+  }
+  /* spec 05 clarification 50, in a blit pass right before a draw of a dumped frame: the first
+     64 uints of each vertex-shader buffer SRV at its first element */
+  struct TraceSrvBuffer {
+    unsigned slot;
+    Rc<Buffer> buffer;
+    uint32_t byte_offset;
+    uint32_t byte_length;
+  };
+  void traceSrvReadback(std::vector<TraceSrvBuffer> &&buffers);
+  /* spec 05 clarification 50: a draw the context turned down after its read-backs: it takes its
+     serial (its read-backs then go at the end of trace.txt), and an indirect read-back's
+     number isn't handed to the next draw */
+  void
+  traceDrawDropped() {
+    if (!trace_active_)
+      return;
+    ++trace_draw_serial_;
+    trace_pending_indirect_ = 0;
   }
   /* spec 05 clarification 30: the samplers of the next dispatches */
   void
@@ -1029,13 +1057,15 @@ private:
   };
   /* spec 05 clarification 30 */
   std::map<const void *, std::vector<std::string>> trace_state_notes_; // render encoder -> its distinct states
-  /* spec 05 clarification 44 */
-  std::map<const void *, std::vector<std::string>> trace_draw_notes_; // render encoder -> its draws
-  struct TraceDrawWaiting {
-    const void *encoder;
-    size_t index;
+  /* spec 05 clarifications 44 and 48-50 */
+  struct TraceDrawNote {
+    unsigned serial;
+    std::string lines;
   };
-  TraceDrawWaiting trace_draw_waiting_ = {nullptr, 0};
+  std::map<const void *, std::vector<TraceDrawNote>> trace_draw_notes_; // render encoder -> its draws
+  unsigned trace_draw_serial_ = 0;     // draws in this traced frame
+  unsigned trace_draw_indirect_k_ = 0; // the k the last indirect draw took, for its traceIndirect
+  unsigned trace_srv_skipped_ = 0; // clarification 50: the dumped frame's, for its trace's end
   std::vector<std::string> trace_cs_samplers_;
   /* spec 05 clarifications 27 and 28: the UAVs the compute shader bound, as encoded */
   struct TraceUAVBinding {

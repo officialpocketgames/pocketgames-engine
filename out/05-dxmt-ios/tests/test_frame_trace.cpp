@@ -262,6 +262,75 @@ TestDrawsAndLayers() {
 }
 
 void
+TestDrawReadbacks() {
+  // clarification 48: an indirect draw's arguments right after its draw line (not after the
+  // later "indirect #k" line); 50: a draw's vertex-shader buffer read-backs after its last
+  // binding line, named after the draw; one without its draw at the end
+  CHECK_EQ(TraceDrawIndirectNumber("pass 2 draw 1: draw indexed instanced indirect #4; vs 11111111"), 4);
+  CHECK_EQ(TraceDrawIndirectNumber("pass 2 draw 5: draw instanced indirect #12; vs 11111111"), 12);
+  CHECK_EQ(TraceDrawIndirectNumber("pass 2 draw 5: draw instanced indirect #?; vs 11111111"), 0);
+  CHECK_EQ(TraceDrawIndirectNumber("pass 2 draw 1: draw indexed indices 6 start 0 base 0; vs 1"), 0);
+  CHECK_EQ(TraceDrawIndirectNumber("indirect #4 draw indexed, argument buffer 640 bytes, offset 20"), 0);
+
+  std::vector<std::string> lines = {
+      "pass 2: c0 RGBA16Float 1280x720 mip 0 slice 0 load; 2 draws",
+      "pass 2 draw 1: draw indexed instanced indirect #4; vs 11111111 writes -; gs -",
+      "pass 2 draw 1 srv vs t0 buffer-structured UNKNOWN first 0 count 1024 stride 32",
+      "pass 2 draw 1 cb vs b0 256 bytes first 0 count 16",
+      "indirect #4 draw indexed, argument buffer 640 bytes, offset 20",
+      "pass 2 draw 2: draw instanced indirect #12; vs 22222222 writes -; gs -",
+      "indirect #12 draw, argument buffer 64 bytes, offset 0",
+  };
+  int32_t indexed_args[5] = {6, 128, 0, -4, 2};
+  uint32_t draw_args[4] = {36, 1, 0, 0};
+  uint32_t particles[3] = {0x3f800000, 0, 0xbf000000};
+  FrameTraceReadback args4{1800, 4, 5, true, indexed_args};
+  FrameTraceReadback args12{1800, 12, 4, false, draw_args};
+  FrameTraceReadback srv{1800, 0, 3, false, particles};
+  srv.srv = true;
+  srv.slot = 0;
+  srv.serial = 1;
+  FrameTraceReadback lost = srv; // a draw that never got its line
+  lost.slot = 1;
+  lost.serial = 9;
+  CHECK(TraceReadbackLine(srv) == "dxmt-frame 1800: srv vs t0 3f800000 00000000 bf000000");
+  std::vector<FrameTraceReadbackText> readbacks = {TraceReadbackText(lost), TraceReadbackText(srv),
+                                                   TraceReadbackText(args12), TraceReadbackText(args4)};
+  CHECK(readbacks[1].srv && readbacks[1].serial == 1 && readbacks[1].text == "srv vs t0 3f800000 00000000 bf000000");
+  std::map<unsigned, FrameTraceDrawAnchor> anchors = {{1, {3, "pass 2 draw 1"}}, {2, {5, "pass 2 draw 2"}}};
+
+  auto file = FrameTraceFileLines(lines, readbacks, anchors);
+  std::vector<std::string> expected = {
+      lines[0],
+      lines[1],
+      "indirect #4 args 6 128 0 -4 2", // right after the draw line
+      lines[2],
+      lines[3],
+      "pass 2 draw 1 srv vs t0 3f800000 00000000 bf000000", // after the draw's last binding line
+      lines[4],
+      lines[5],
+      "indirect #12 args 36 1 0 0",
+      lines[6],
+      "draw #9 srv vs t1 3f800000 00000000 bf000000", // no anchor: at the end
+  };
+  CHECK_EQ(file.size(), expected.size());
+  for (size_t i = 0; i < expected.size() && i < file.size(); i++)
+    CHECK(file[i] == expected[i]);
+
+  // without draw lines (a dispatch's indirect), the arguments still follow "indirect #k"
+  std::vector<std::string> plain = {"indirect #4 draw indexed, argument buffer 640 bytes, offset 20", "end"};
+  auto old = FrameTraceFileLines(plain, {TraceReadbackText(args4)});
+  CHECK_EQ(old.size(), 3u);
+  CHECK(old.size() == 3 && old[1] == "indirect #4 args 6 128 0 -4 2");
+
+  // the 64 uints a read-back holds, and the note when some were left out
+  std::vector<uint32_t> many(kFrameTraceSrvReadbackValues, 0x01020304);
+  std::string full = TraceSrvReadbackText(17, many.data(), (unsigned)many.size());
+  CHECK(full.size() == std::string("srv vs t17").size() + 9 * kFrameTraceSrvReadbackValues);
+  CHECK(TraceSrvLeftOut(12) == "vertex-shader buffer read-backs left out: 12 (300 a frame, 64 MB share)");
+}
+
+void
 TestSummaryLine() {
   std::string line = FrameTraceSummary(1800, 2425, 160, 141, 3010, "C:\\users\\Public\\pg-dumps\\frame-1800");
   CHECK(line == "dxmt-frame 1800: 2425 lines, 160 render passes, 141 dispatches, 3010 draws; trace in "
@@ -281,6 +350,7 @@ main() {
   TestFrameAndCap();
   TestTraceFile();
   TestDrawsAndLayers();
+  TestDrawReadbacks();
   TestSummaryLine();
   return TestSummary("test_frame_trace");
 }

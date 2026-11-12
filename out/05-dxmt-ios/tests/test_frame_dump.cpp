@@ -150,6 +150,37 @@ TestBudget() {
 }
 
 void
+TestSrvReadbackLimit() {
+  // clarification 50: at most 300 vertex-shader buffer read-backs a frame
+  FrameDumpLedger ledger;
+  for (unsigned i = 0; i < kFrameTraceMaxSrvReadbacks; i++)
+    CHECK(ledger.takeSrvReadback(256));
+  CHECK(!ledger.takeSrvReadback(256));
+  CHECK(!ledger.takeSrvReadback(256));
+  CHECK_EQ(ledger.srvReadbacks(), 300u);
+  CHECK_EQ(ledger.srvSkipped(), 2u);
+  CHECK_EQ(ledger.firstBytes(), 300ull * 256);
+
+  // ... out of item 41's 64 MB first-write share: none once the share is used up
+  FrameDumpLedger used;
+  for (uint64_t t = 0; t < 4; t++) {
+    CHECK(used.write({300 + t, 0, 0, 0}, 16ull << 20) == FrameDumpAction::CopyNew);
+    CHECK(used.write({300 + t, 0, 0, 0}, 16ull << 20) == FrameDumpAction::CopyWithFirst);
+  }
+  CHECK(!used.takeSrvReadback(256));
+  CHECK_EQ(used.srvReadbacks(), 0u);
+  CHECK_EQ(used.srvSkipped(), 1u);
+  // and the share's last bytes still go
+  FrameDumpLedger nearly;
+  CHECK(nearly.takeShare((64ull << 20) - 256));
+  CHECK(nearly.takeSrvReadback(256));
+  CHECK(!nearly.takeSrvReadback(256));
+  CHECK_EQ(nearly.firstBytes(), 64ull << 20);
+  // a new frame's ledger starts again
+  CHECK((FrameDumpLedger{}).takeSrvReadback(256));
+}
+
+void
 TestIndex() {
   CHECK(std::string(FrameDumpReasonText(FrameDumpReason::Format)) == "format");
   CHECK(std::string(FrameDumpReasonText(FrameDumpReason::Type)) == "type");
@@ -333,6 +364,7 @@ main() {
   TestNames();
   TestOneBufferPerSubresource();
   TestBudget();
+  TestSrvReadbackLimit();
   TestIndex();
   return TestSummary("test_frame_dump");
 }

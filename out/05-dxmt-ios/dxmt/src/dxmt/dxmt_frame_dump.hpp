@@ -55,6 +55,16 @@ FrameDumpActive(bool dump_switch, bool trace_switch, uint64_t present, bool requ
   return dump_switch && trace_switch && (requested || (IsDumpedPresent(present) && IsTracedPresent(present)));
 }
 
+/* Spec 05 clarification 50: the API thread's view of whether the frame ending with `present`
+   is dumped (the encoder's own test is FrameDumpActive at the frame's start). */
+inline bool
+FrameDumped(uint64_t present) {
+  if (!present || !FrameDumpSwitch() || !FrameTraceSwitch())
+    return false;
+  bool requested = FrameDumpRequested(present);
+  return FrameDumpActive(true, true, present, requested) && FrameTraced(present);
+}
+
 /* Bytes per texel of a colour format that is dumped (float, unorm, snorm), or 0 (integer,
    depth, stencil, compressed or unknown). DXMT's swizzle flags are dropped. */
 constexpr unsigned
@@ -360,6 +370,38 @@ public:
     return FrameDumpAction::Copy;
   }
 
+  /* Spec 05 clarification 50: `bytes` of the first-write share for something else (a vertex
+     shader's buffer read-back); false when the share or the total is used up. */
+  bool
+  takeShare(uint64_t bytes) {
+    if (first_bytes_ + bytes > kFrameDumpMaxFirstBytes || last_bytes_ + first_bytes_ + bytes > kFrameDumpMaxTotalBytes)
+      return false;
+    first_bytes_ += bytes;
+    return true;
+  }
+
+  /* Spec 05 clarification 50: whether one more vertex-shader buffer read-back of `bytes` may be
+     made this frame: at most 300, each out of the first-write share. Counts it either way. */
+  bool
+  takeSrvReadback(uint64_t bytes) {
+    if (srv_readbacks_ >= kFrameTraceMaxSrvReadbacks || !takeShare(bytes)) {
+      srv_skipped_++;
+      return false;
+    }
+    srv_readbacks_++;
+    return true;
+  }
+
+  unsigned
+  srvReadbacks() const {
+    return srv_readbacks_;
+  }
+
+  unsigned
+  srvSkipped() const {
+    return srv_skipped_;
+  }
+
   /* "dump: 41 files (6 with a first-write copy), 187.5 MB; 2 subresources left out (budget)" */
   std::string
   summary() const {
@@ -384,6 +426,8 @@ private:
   std::map<FrameDumpKey, Entry> entries_;
   uint64_t last_bytes_ = 0;
   uint64_t first_bytes_ = 0;
+  unsigned srv_readbacks_ = 0;
+  unsigned srv_skipped_ = 0;
   uint64_t refused_bytes_ = 0;
   unsigned files_ = 0;
   unsigned first_files_ = 0;

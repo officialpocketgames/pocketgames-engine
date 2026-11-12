@@ -37,7 +37,9 @@ extern "C" {
 enum ios_wow_native_kind
 {
     IOS_WOW_NATIVE_RET_EAX = 0,   /* eax = ret.eax */
-    IOS_WOW_NATIVE_RET_ST0 = 1,   /* a float pushed on the x87 stack as st(0); eax undefined */
+    IOS_WOW_NATIVE_RET_ST0 = 1,   /* a float pushed on the x87 stack as st(0); eax undefined.
+                                     The app's gate (FXN32, FXW) does not support it: it logs once
+                                     and gives eax (spec 33 clarification 3). */
 };
 
 struct ios_wow_native_ret
@@ -64,9 +66,12 @@ uint32_t ios_wow_native_register( uint32_t lib, ios_wow_native_fn fn ) __attribu
 
 /* (Guest address a is host ios_wow_base() + a: the engine's own function, spec 06.) */
 
-/* Copies n bytes between host memory and the calling process's guest memory without faulting:
- * returns 1 on success, 0 if any byte is unmapped or not accessible (nothing is guaranteed
- * about dst then). guest is a guest address. Usable from a gate call only. */
+/* Copies n bytes between host memory and the calling process's guest memory: returns 1 on
+ * success, 0 for a range that cannot be valid (it starts below 64 KB or goes past 4 GB; nothing
+ * is copied then). Any other inaccessible byte faults, and a fault inside a gate call is the
+ * program's access violation at the gate, as a bad pointer handed to a Windows system DLL is
+ * (spec 33 clarification 4). guest is a guest address. Usable from a gate call only: on any other
+ * thread they return 0. */
 int ios_wow_native_read( void *dst, uint32_t guest, size_t n ) __attribute__((weak));
 int ios_wow_native_write( uint32_t guest, const void *src, size_t n ) __attribute__((weak));
 

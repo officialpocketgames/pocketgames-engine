@@ -17,6 +17,7 @@
 
 #include <cstdint>
 #include <cstdio>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -305,6 +306,10 @@ struct FrameTraceReadback {
   /* spec 05 clarification 27: a UAV read-back after dispatch #k, of slot u<slot> */
   bool uav = false;
   unsigned slot = 0;
+  /* spec 05 clarification 50: a vertex-shader buffer SRV t<slot> read before the frame's draw
+     number `serial` */
+  bool srv = false;
+  unsigned serial = 0;
 };
 
 /* Spec 05 clarification 27: "dxmt-frame 1800: uav #4 u0 00000003 0000001a ..." (the first
@@ -337,13 +342,39 @@ TraceIndirectArgs(uint64_t present, unsigned k, const uint32_t *values, unsigned
   return line;
 }
 
-/* the read-back's line, either kind (spec 05 clarifications 24 and 27) */
+/* Spec 05 clarification 50: "srv vs t3 00000000 3f800000 ..." (the draw's "pass N draw k" is put
+   in front when it is placed) */
+inline std::string
+TraceSrvReadbackText(unsigned slot, const uint32_t *values, unsigned count) {
+  std::string line = "srv vs t" + std::to_string(slot);
+  for (unsigned i = 0; i < count; i++) {
+    char hex[16];
+    std::snprintf(hex, sizeof(hex), " %08x", values[i]);
+    line += hex;
+  }
+  return line;
+}
+
+/* the read-back's line, any kind (spec 05 clarifications 24, 27 and 50) */
 inline std::string
 TraceReadbackLine(const FrameTraceReadback &readback) {
   auto values = (const uint32_t *)readback.data;
+  if (readback.srv)
+    return "dxmt-frame " + std::to_string(readback.present) + ": " +
+           TraceSrvReadbackText(readback.slot, values, readback.count);
   if (readback.uav)
     return TraceUAVReadback(readback.present, readback.k, readback.slot, values, readback.count);
   return TraceIndirectArgs(readback.present, readback.k, values, readback.count, readback.indexed);
+}
+
+/* spec 05 clarification 50: uints read per vertex-shader buffer SRV, and read-backs per frame */
+constexpr unsigned kFrameTraceSrvReadbackValues = 64;
+constexpr unsigned kFrameTraceMaxSrvReadbacks = 300;
+
+/* the note at the end of a dumped frame's trace when some were left out */
+inline std::string
+TraceSrvLeftOut(unsigned count) {
+  return "vertex-shader buffer read-backs left out: " + std::to_string(count) + " (300 a frame, 64 MB share)";
 }
 
 /* ---- one process's trace ---- */
@@ -453,7 +484,9 @@ private:
 struct FrameTraceReadbackText {
   bool uav;
   unsigned k;
-  std::string text; // "uav #4 u0 …" or "indirect #3 args …"
+  std::string text; // "uav #4 u0 …", "indirect #3 args …" or "srv vs t3 …"
+  bool srv = false; // clarification 50: placed by its draw's serial
+  unsigned serial = 0;
 };
 
 inline FrameTraceReadbackText
@@ -462,7 +495,31 @@ TraceReadbackText(const FrameTraceReadback &readback) {
   std::string prefix = "dxmt-frame " + std::to_string(readback.present) + ": ";
   if (line.compare(0, prefix.size(), prefix) == 0)
     line.erase(0, prefix.size());
-  return {readback.uav, readback.k, line};
+  return {readback.uav, readback.k, line, readback.srv, readback.serial};
+}
+
+/* Spec 05 clarification 50: where a draw's lines end in the frame's lines, and its name
+   ("pass 14 draw 3"), by the draw's serial number in the frame. */
+struct FrameTraceDrawAnchor {
+  size_t last_line;
+  std::string name;
+};
+
+/* Spec 05 clarification 48: the k of an indirect draw's line ("... draw instanced indirect #5;
+   ..."), or 0 */
+inline unsigned
+TraceDrawIndirectNumber(const std::string &line) {
+  size_t at = line.find(" indirect #");
+  if (at == std::string::npos || line.compare(0, 5, "pass ") != 0)
+    return 0;
+  at += 11;
+  unsigned k = 0;
+  size_t i = at;
+  for (; i < line.size() && line[i] >= '0' && line[i] <= '9'; i++)
+    k = k * 10 + unsigned(line[i] - '0');
+  if (i == at || i >= line.size() || line[i] != ';')
+    return 0;
+  return k;
 }
 
 /* The number after "dispatch #" or "indirect #" at the start of `line`, or 0. */
@@ -480,33 +537,64 @@ TraceLineNumber(const std::string &line, const char *head) {
   return k;
 }
 
-/* trace.txt's lines: the frame's lines, each read-back right after the line it belongs to (a
-   UAV's after its "dispatch #k" line, indirect arguments after their "indirect #k" line), any
-   read-back without its line at the end. */
+/* trace.txt's lines: the frame's lines, each read-back right after the line it belongs to:
+   - a UAV's after its "dispatch #k" line;
+   - indirect arguments after their indirect draw's line (clarification 48), or else after their
+     "indirect #k" line;
+   - a vertex-shader buffer SRV's after the last line of its draw (clarification 50), named
+     "pass N draw k srv vs t<slot> …".
+   Any read-back without its line goes at the end. */
 inline std::vector<std::string>
-FrameTraceFileLines(const std::vector<std::string> &lines, const std::vector<FrameTraceReadbackText> &readbacks) {
-  std::vector<std::string> out;
+FrameTraceFileLines(const std::vector<std::string> &lines, const std::vector<FrameTraceReadbackText> &readbacks,
+                    const std::map<unsigned, FrameTraceDrawAnchor> &anchors = {}) {
+  std::vector<std::vector<std::string>> after(lines.size());
   std::vector<bool> placed(readbacks.size(), false);
-  out.reserve(lines.size() + readbacks.size());
-  for (auto &line : lines) {
-    out.push_back(line);
-    unsigned dispatch = TraceLineNumber(line, "dispatch #");
-    unsigned indirect = TraceLineNumber(line, "indirect #");
+  // the draw lines' indirect numbers come first, so arguments follow their draw
+  for (size_t l = 0; l < lines.size(); l++) {
+    unsigned draw = TraceDrawIndirectNumber(lines[l]);
+    if (!draw)
+      continue;
+    for (size_t i = 0; i < readbacks.size(); i++)
+      if (!placed[i] && !readbacks[i].uav && !readbacks[i].srv && readbacks[i].k == draw) {
+        after[l].push_back(readbacks[i].text);
+        placed[i] = true;
+      }
+  }
+  for (size_t l = 0; l < lines.size(); l++) {
+    unsigned dispatch = TraceLineNumber(lines[l], "dispatch #");
+    unsigned indirect = TraceLineNumber(lines[l], "indirect #");
     if (!dispatch && !indirect)
       continue;
     for (size_t i = 0; i < readbacks.size(); i++) {
-      if (placed[i])
+      if (placed[i] || readbacks[i].srv)
         continue;
       bool here = readbacks[i].uav ? readbacks[i].k == dispatch : readbacks[i].k == indirect;
       if (here) {
-        out.push_back(readbacks[i].text);
+        after[l].push_back(readbacks[i].text);
         placed[i] = true;
       }
     }
   }
+  for (size_t i = 0; i < readbacks.size(); i++) {
+    if (placed[i] || !readbacks[i].srv)
+      continue;
+    auto anchor = anchors.find(readbacks[i].serial);
+    if (anchor != anchors.end() && anchor->second.last_line < lines.size()) {
+      after[anchor->second.last_line].push_back(anchor->second.name + " " + readbacks[i].text);
+      placed[i] = true;
+    }
+  }
+  std::vector<std::string> out;
+  out.reserve(lines.size() + readbacks.size());
+  for (size_t l = 0; l < lines.size(); l++) {
+    out.push_back(lines[l]);
+    for (auto &text : after[l])
+      out.push_back(text);
+  }
   for (size_t i = 0; i < readbacks.size(); i++)
     if (!placed[i])
-      out.push_back(readbacks[i].text);
+      out.push_back(readbacks[i].srv ? "draw #" + std::to_string(readbacks[i].serial) + " " + readbacks[i].text
+                                     : readbacks[i].text);
   return out;
 }
 
@@ -532,6 +620,7 @@ struct FrameTraceRecord {
   uint64_t draws = 0;
   std::mutex mutex; // guards readbacks
   std::vector<FrameTraceReadbackText> readbacks;
+  std::map<unsigned, FrameTraceDrawAnchor> draw_anchors; // clarification 50 (encode thread)
 };
 
 void WriteFrameTrace(FrameTraceRecord &record);

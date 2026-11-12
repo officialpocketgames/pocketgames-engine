@@ -902,6 +902,7 @@ ArgumentEncodingContext::$$setEncodingContext(uint64_t seq_id, uint64_t frame_id
       // frame's (written by the finish thread then)
       if (dump_active_) {
         log_lines.push_back("dxmt-frame " + std::to_string(dump_present_) + ": " + dump_ledger_.summary());
+        trace_srv_skipped_ = dump_ledger_.srvSkipped(); // clarification 50, for the trace's end
         dump_ready_.push_back({FrameDumpDirectory(dump_present_), std::move(dump_index_), std::move(dump_files_)});
         dump_ledger_ = {};
         dump_buffers_.clear();
@@ -918,11 +919,16 @@ ArgumentEncodingContext::$$setEncodingContext(uint64_t seq_id, uint64_t frame_id
         trace_record_->dispatches = frame_trace_.dispatchCount();
         trace_record_->draws = frame_trace_.draws();
         frame_trace_.finish(closing);
+        if (trace_srv_skipped_) // clarification 50: over the 300 or the share
+          closing.push_back(TraceSrvLeftOut(trace_srv_skipped_));
         for (auto &line : closing)
           trace_record_->lines.push_back(std::move(line));
         trace_ready_.push_back(std::move(trace_record_));
       }
       trace_record_ = nullptr;
+      trace_draw_serial_ = 0; // clarifications 48-50
+      trace_draw_indirect_k_ = 0;
+      trace_srv_skipped_ = 0;
       if (traced) {
         trace_record_ = std::make_shared<FrameTraceRecord>();
         trace_record_->present = present;
@@ -1028,7 +1034,7 @@ WriteFrameTrace(FrameTraceRecord &record) {
   std::vector<std::string> lines;
   {
     std::lock_guard<std::mutex> lock(record.mutex);
-    lines = FrameTraceFileLines(record.lines, record.readbacks);
+    lines = FrameTraceFileLines(record.lines, record.readbacks, record.draw_anchors);
   }
   std::error_code error;
   std::filesystem::create_directories(record.directory, error);
@@ -1533,6 +1539,40 @@ ArgumentEncodingContext::traceAfterDispatch() {
 }
 
 void
+ArgumentEncodingContext::traceSrvReadback(std::vector<TraceSrvBuffer> &&buffers) {
+  // spec 05 clarification 50; runs in the blit pass the context opened before the draw, whose
+  // serial in the frame is the next one
+  if (!trace_active_ || !dump_active_)
+    return;
+  unsigned serial = trace_draw_serial_ + 1;
+  constexpr unsigned bytes = kFrameTraceSrvReadbackValues * 4;
+  for (auto &srv : buffers) {
+    if (!srv.buffer.ptr())
+      continue;
+    unsigned length = std::min<uint32_t>(srv.byte_length, bytes) & ~3u;
+    if (!length)
+      continue;
+    // at most 300 a frame, out of the dump's 64 MB share (clarification 41)
+    if (!dump_ledger_.takeSrvReadback(bytes))
+      continue;
+    auto [src, src_offset] = access(srv.buffer, srv.byte_offset, length, DXMT_ENCODER_RESOURCE_ACESS_READ);
+    auto [mapped, readback, readback_offset] = queue_.AllocateArgumentBuffer(seq_id_, bytes);
+    auto &cmd = encodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
+    cmd.type = WMTBlitCommandCopyFromBufferToBuffer;
+    cmd.src = src->buffer();
+    cmd.src_offset = src_offset + srv.byte_offset;
+    cmd.dst = readback;
+    cmd.dst_offset = readback_offset;
+    cmd.copy_length = length;
+    FrameTraceReadback entry{frame_trace_.present(), 0, length / 4, false, mapped};
+    entry.srv = true;
+    entry.slot = srv.slot;
+    entry.serial = serial;
+    trace_readbacks_.push_back(entry);
+  }
+}
+
+void
 ArgumentEncodingContext::traceIndirectReadback(Rc<Buffer> const &args, unsigned offset, unsigned length, bool indexed) {
   // spec 05 clarification 24; runs in the blit pass the context opened for it
   if (!trace_active_ || trace_readback_count_ >= kFrameTraceMaxReadbacks)
@@ -1560,18 +1600,17 @@ ArgumentEncodingContext::traceIndirect(
   // spec 05 clarification 24
   if (!trace_active_)
     return;
-  unsigned k = trace_pending_indirect_ ? trace_pending_indirect_ : frame_trace_.nextIndirect();
+  // clarification 48: an indirect draw already took its number in traceDraw
+  unsigned k = 0;
+  if (!dispatch && trace_draw_indirect_k_)
+    k = trace_draw_indirect_k_;
+  else if (trace_pending_indirect_)
+    k = trace_pending_indirect_;
+  else
+    k = frame_trace_.nextIndirect();
   trace_pending_indirect_ = 0;
-  // clarification 44: the draw line waiting for its indirect number gets it
-  if (!dispatch && trace_draw_waiting_.encoder == encoder_current) {
-    auto drawn = trace_draw_notes_.find(encoder_current);
-    if (drawn != trace_draw_notes_.end() && trace_draw_waiting_.index < drawn->second.size()) {
-      auto &line = drawn->second[trace_draw_waiting_.index];
-      if (auto at = line.find("#?"); at != std::string::npos)
-        line.replace(at, 2, "#" + std::to_string(k));
-    }
-    trace_draw_waiting_ = {nullptr, 0};
-  }
+  if (!dispatch)
+    trace_draw_indirect_k_ = 0;
   int written = -1;
   if (dispatch) {
     // DXMT's own view: an encoder of this command buffer (the open one included) whose write
@@ -1637,8 +1676,7 @@ ArgumentEncodingContext::traceEncoders(EncoderData **encoders, unsigned count) {
   trace_dispatch_notes_.clear();
   trace_indirect_notes_.clear();
   trace_state_notes_.clear(); // spec 05 clarification 30
-  trace_draw_notes_.clear();  // spec 05 clarification 44
-  trace_draw_waiting_ = {nullptr, 0};
+  trace_draw_notes_.clear(); // spec 05 clarification 44
   // spec 05 clarification 39: into the frame's trace.txt, not the log
   if (trace_record_)
     for (auto &line : out)
@@ -1757,10 +1795,27 @@ ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<st
   if (auto states = trace_state_notes_.find(data); states != trace_state_notes_.end())
     for (auto &state : states->second)
       frame_trace_.line("pass " + std::to_string(index) + " " + state, out);
-  // clarification 44: each draw, in order
-  if (auto drawn = trace_draw_notes_.find(data); drawn != trace_draw_notes_.end())
-    for (size_t k = 0; k < drawn->second.size(); k++)
-      frame_trace_.line("pass " + std::to_string(index) + " draw " + std::to_string(k) + ": " + drawn->second[k], out);
+  // clarifications 44 and 49: each draw, in order: its line, then its bindings' lines; 50: where
+  // its block ends in the frame's lines, for its vertex-shader buffer read-backs
+  if (auto drawn = trace_draw_notes_.find(data); drawn != trace_draw_notes_.end()) {
+    for (size_t k = 0; k < drawn->second.size(); k++) {
+      std::string name = "pass " + std::to_string(index) + " draw " + std::to_string(k);
+      auto &text = drawn->second[k].lines;
+      size_t begin = 0;
+      bool first = true;
+      while (begin <= text.size()) {
+        size_t end = text.find('\n', begin);
+        std::string part = text.substr(begin, end == std::string::npos ? std::string::npos : end - begin);
+        frame_trace_.line(name + (first ? ": " : " ") + part, out);
+        first = false;
+        if (end == std::string::npos)
+          break;
+        begin = end + 1;
+      }
+      if (trace_record_)
+        trace_record_->draw_anchors[drawn->second[k].serial] = {trace_record_->lines.size() + out.size() - 1, name};
+    }
+  }
   for (auto &line : indirect_lines)
     frame_trace_.line(line, out);
 }

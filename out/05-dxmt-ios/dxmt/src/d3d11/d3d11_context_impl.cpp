@@ -1300,9 +1300,10 @@ public:
     uint32_t ControlPointCount;
     if(!to_metal_primitive_type(state_.InputAssembler.Topology, Primitive, ControlPointCount))
       return;
+    TraceVSBufferReadback(); // spec 05 clarification 50
     DrawCallStatus status = PreDraw<false>();
     if (status == DrawCallStatus::Invalid)
-      return;
+      return TraceDrawDropped();
     TraceDraw("draw", false, false, VertexCount, StartVertexLocation, 0, 1, 0); // spec 05 clarification 44
     if (status == DrawCallStatus::Geometry) {
       return GeometryDraw(VertexCount, 1, StartVertexLocation, 0);
@@ -1333,9 +1334,10 @@ public:
     uint32_t ControlPointCount;
     if(!to_metal_primitive_type(state_.InputAssembler.Topology, Primitive, ControlPointCount))
       return;
+    TraceVSBufferReadback(); // spec 05 clarification 50
     DrawCallStatus status = PreDraw<true>();
     if (status == DrawCallStatus::Invalid)
-      return;
+      return TraceDrawDropped();
     TraceDraw("draw indexed", true, false, IndexCount, StartIndexLocation, BaseVertexLocation, 1, 0); // spec 05 cl. 44
     if (status == DrawCallStatus::Geometry) {
       return GeometryDrawIndexed(IndexCount, StartIndexLocation, BaseVertexLocation, 1, 0);
@@ -1374,9 +1376,10 @@ public:
     uint32_t ControlPointCount;
     if (!to_metal_primitive_type(state_.InputAssembler.Topology, Primitive, ControlPointCount))
       return;
+    TraceVSBufferReadback(); // spec 05 clarification 50
     DrawCallStatus status = PreDraw<false>();
     if (status == DrawCallStatus::Invalid)
-      return;
+      return TraceDrawDropped();
     TraceDraw(
         "draw instanced", false, false, VertexCountPerInstance, StartVertexLocation, 0, InstanceCount,
         StartInstanceLocation
@@ -1416,9 +1419,10 @@ public:
     uint32_t ControlPointCount;
     if(!to_metal_primitive_type(state_.InputAssembler.Topology, Primitive, ControlPointCount))
       return;
+    TraceVSBufferReadback(); // spec 05 clarification 50
     DrawCallStatus status = PreDraw<true>();
     if (status == DrawCallStatus::Invalid)
-      return;
+      return TraceDrawDropped();
     TraceDraw(
         "draw indexed instanced", true, false, IndexCountPerInstance, StartIndexLocation, BaseVertexLocation,
         InstanceCount, StartInstanceLocation
@@ -1616,9 +1620,10 @@ public:
     if(!to_metal_primitive_type(state_.InputAssembler.Topology, Primitive, ControlPointCount))
       return;
     TraceIndirectReadback(pBufferForArgs, AlignedByteOffsetForArgs, 20, true); // spec 05 clarification 24
+    TraceVSBufferReadback(); // spec 05 clarification 50
     DrawCallStatus status = PreDraw<true>();
     if (status == DrawCallStatus::Invalid)
-      return;
+      return TraceDrawDropped();
     TraceDraw("draw indexed instanced", true, true, 0, 0, 0, 0, 0); // spec 05 clarification 44
     if (status == DrawCallStatus::Geometry) {
       return GeometryDrawIndexedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
@@ -1658,9 +1663,10 @@ public:
     if(!to_metal_primitive_type(state_.InputAssembler.Topology, Primitive, ControlPointCount))
       return;
     TraceIndirectReadback(pBufferForArgs, AlignedByteOffsetForArgs, 16, false); // spec 05 clarification 24
+    TraceVSBufferReadback(); // spec 05 clarification 50
     DrawCallStatus status = PreDraw<false>();
     if (status == DrawCallStatus::Invalid)
-      return;
+      return TraceDrawDropped();
     TraceDraw("draw instanced", false, true, 0, 0, 0, 0, 0); // spec 05 clarification 44
     if (status == DrawCallStatus::Geometry) {
       return GeometryDrawIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
@@ -5156,9 +5162,106 @@ public:
       draw.gs_writes = TraceShaderOutputWrites(gs);
       draw.gs_folded = gs->reflection().GeometryShader.GSPassThrough != ~0u;
     }
-    EmitST([line = TraceDrawLine(draw), indirect](ArgumentEncodingContext &enc) mutable {
-      enc.traceDraw(std::move(line), indirect);
+    // clarification 49: the vertex and pixel shaders' declared views and constant buffers, one
+    // line each after the draw's own
+    std::string lines = TraceDrawLine(draw);
+    TraceStageBindings<PipelineStage::Vertex>("vs", lines);
+    TraceStageBindings<PipelineStage::Pixel>("ps", lines);
+    EmitST([lines = std::move(lines), indirect](ArgumentEncodingContext &enc) mutable {
+      enc.traceDraw(std::move(lines), indirect);
     });
+  }
+
+  /* spec 05 clarification 49: "\nsrv vs t<slot> ..." per declared shader resource slot and
+     "\ncb vs b<slot> ..." per declared constant buffer slot, `null` for an empty one */
+  template <PipelineStage Stage>
+  void
+  TraceStageBindings(const char *stage_name, std::string &lines) {
+    auto shader = GetManagedShader<Stage>();
+    if (!shader)
+      return;
+    auto &reflection = shader->reflection();
+    auto &stage = state_.ShaderStages[Stage];
+    for (unsigned slot = 0; slot < 128; slot++) {
+      uint64_t mask = slot < 64 ? reflection.SRVSlotMaskLo : reflection.SRVSlotMaskHi;
+      if (!(mask & (1ull << (slot & 63))))
+        continue;
+      D3D11ShaderResourceView *view = stage.SRVs.test_bound(slot) ? stage.SRVs.at(slot).SRV.ptr() : nullptr;
+      if (!view) {
+        lines += "\n" + TraceSrvNull(stage_name, slot);
+        continue;
+      }
+      D3D11_SHADER_RESOURCE_VIEW_DESC desc;
+      view->GetDesc(&desc);
+      TraceSrvResource res;
+      if (auto buffer = view->buffer(); buffer.ptr()) {
+        auto slice = view->bufferSlice();
+        unsigned count = desc.ViewDimension == D3D11_SRV_DIMENSION_BUFFEREX ? desc.BufferEx.NumElements
+                                                                             : desc.Buffer.NumElements;
+        res.stride = count ? slice.byteLength / count : 0;
+      } else if (auto texture = view->texture(); texture.ptr()) {
+        res.width = texture->width();
+        res.height = texture->height();
+        res.depth = texture->depth();
+        res.mips = texture->mipLevelCount();
+      }
+      lines += "\n" + TraceSrvLine(stage_name, slot, desc, res);
+    }
+    for (unsigned slot = 0; slot < 14; slot++) {
+      if (!(reflection.ConstantBufferSlotMask & (1u << slot)))
+        continue;
+      if (!stage.ConstantBuffers.test_bound(slot) || !stage.ConstantBuffers.at(slot).Buffer.ptr()) {
+        lines += "\n" + TraceConstantBufferNull(stage_name, slot);
+        continue;
+      }
+      auto &cb = stage.ConstantBuffers.at(slot);
+      lines += "\n" + TraceConstantBufferLine(
+                          stage_name, slot, cb.Buffer->buffer()->length(), cb.FirstConstant, cb.NumConstants
+                      );
+    }
+  }
+
+  /* MYIOSDECK spec 05 clarification 50: in a dumped frame of the immediate context, a blit pass
+     right before the draw copies the first 64 uints of each vertex-shader buffer view at its
+     first element. The encoder keeps to 300 a frame and to the dump's first-write share. */
+  void
+  TraceVSBufferReadback() {
+    if (!FrameDumped(RecordingPresent()))
+      return;
+    auto shader = GetManagedShader<PipelineStage::Vertex>();
+    if (!shader)
+      return;
+    auto &reflection = shader->reflection();
+    auto &srvs = state_.ShaderStages[PipelineStage::Vertex].SRVs;
+    std::vector<ArgumentEncodingContext::TraceSrvBuffer> buffers;
+    for (unsigned slot = 0; slot < 128; slot++) {
+      uint64_t mask = slot < 64 ? reflection.SRVSlotMaskLo : reflection.SRVSlotMaskHi;
+      if (!(mask & (1ull << (slot & 63))) || !srvs.test_bound(slot))
+        continue;
+      auto view = srvs.at(slot).SRV.ptr();
+      if (!view)
+        continue;
+      auto buffer = view->buffer();
+      if (!buffer.ptr())
+        continue;
+      auto slice = view->bufferSlice();
+      buffers.push_back({slot, std::move(buffer), slice.byteOffset, slice.byteLength});
+    }
+    if (buffers.empty())
+      return;
+    SwitchToBlitEncoder(CommandBufferState::BlitEncoderActive);
+    EmitOP([buffers = std::move(buffers)](ArgumentEncodingContext &enc) mutable {
+      enc.traceSrvReadback(std::move(buffers));
+    });
+  }
+
+  /* spec 05 clarification 50: a draw that PreDraw turned down still takes its number, so a
+     read-back made for it isn't put under the next draw */
+  void
+  TraceDrawDropped() {
+    if (!FrameTraceSwitch() || !FrameTraced(RecordingPresent()))
+      return;
+    EmitST([](ArgumentEncodingContext &enc) { enc.traceDrawDropped(); });
   }
 
   /* spec 05 clarification 44: from the shader's DXBC output signature, kept on iOS (-1 when not) */

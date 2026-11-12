@@ -266,6 +266,150 @@ DxbcOutputWrites(const uint8_t *data, size_t size) {
   return bits;
 }
 
+/* Spec 05 clarification 49: a DXGI format's name without its DXGI_FORMAT_ prefix (values from
+   Microsoft's DXGI_FORMAT documentation, 0-115); "format <n>" past those. */
+inline std::string
+TraceDxgiFormat(DXGI_FORMAT format) {
+  static const char *const names[] = {
+      "UNKNOWN", "R32G32B32A32_TYPELESS", "R32G32B32A32_FLOAT", "R32G32B32A32_UINT", "R32G32B32A32_SINT",
+      "R32G32B32_TYPELESS", "R32G32B32_FLOAT", "R32G32B32_UINT", "R32G32B32_SINT", "R16G16B16A16_TYPELESS",
+      "R16G16B16A16_FLOAT", "R16G16B16A16_UNORM", "R16G16B16A16_UINT", "R16G16B16A16_SNORM", "R16G16B16A16_SINT",
+      "R32G32_TYPELESS", "R32G32_FLOAT", "R32G32_UINT", "R32G32_SINT", "R32G8X24_TYPELESS",
+      "D32_FLOAT_S8X24_UINT", "R32_FLOAT_X8X24_TYPELESS", "X32_TYPELESS_G8X24_UINT", "R10G10B10A2_TYPELESS",
+      "R10G10B10A2_UNORM", "R10G10B10A2_UINT", "R11G11B10_FLOAT", "R8G8B8A8_TYPELESS", "R8G8B8A8_UNORM",
+      "R8G8B8A8_UNORM_SRGB", "R8G8B8A8_UINT", "R8G8B8A8_SNORM", "R8G8B8A8_SINT", "R16G16_TYPELESS",
+      "R16G16_FLOAT", "R16G16_UNORM", "R16G16_UINT", "R16G16_SNORM", "R16G16_SINT", "R32_TYPELESS", "D32_FLOAT",
+      "R32_FLOAT", "R32_UINT", "R32_SINT", "R24G8_TYPELESS", "D24_UNORM_S8_UINT", "R24_UNORM_X8_TYPELESS",
+      "X24_TYPELESS_G8_UINT", "R8G8_TYPELESS", "R8G8_UNORM", "R8G8_UINT", "R8G8_SNORM", "R8G8_SINT",
+      "R16_TYPELESS", "R16_FLOAT", "D16_UNORM", "R16_UNORM", "R16_UINT", "R16_SNORM", "R16_SINT", "R8_TYPELESS",
+      "R8_UNORM", "R8_UINT", "R8_SNORM", "R8_SINT", "A8_UNORM", "R1_UNORM", "R9G9B9E5_SHAREDEXP",
+      "R8G8_B8G8_UNORM", "G8R8_G8B8_UNORM", "BC1_TYPELESS", "BC1_UNORM", "BC1_UNORM_SRGB", "BC2_TYPELESS",
+      "BC2_UNORM", "BC2_UNORM_SRGB", "BC3_TYPELESS", "BC3_UNORM", "BC3_UNORM_SRGB", "BC4_TYPELESS", "BC4_UNORM",
+      "BC4_SNORM", "BC5_TYPELESS", "BC5_UNORM", "BC5_SNORM", "B5G6R5_UNORM", "B5G5R5A1_UNORM", "B8G8R8A8_UNORM",
+      "B8G8R8X8_UNORM", "R10G10B10_XR_BIAS_A2_UNORM", "B8G8R8A8_TYPELESS", "B8G8R8A8_UNORM_SRGB",
+      "B8G8R8X8_TYPELESS", "B8G8R8X8_UNORM_SRGB", "BC6H_TYPELESS", "BC6H_UF16", "BC6H_SF16", "BC7_TYPELESS",
+      "BC7_UNORM", "BC7_UNORM_SRGB", "AYUV", "Y410", "Y416", "NV12", "P010", "P016", "420_OPAQUE", "YUY2", "Y210",
+      "Y216", "NV11", "AI44", "IA44", "P8", "A8P8", "B4G4R4A4_UNORM",
+  };
+  static_assert(sizeof(names) / sizeof(names[0]) == 116, "DXGI formats 0-115");
+  unsigned value = static_cast<unsigned>(format);
+  if (value < sizeof(names) / sizeof(names[0]))
+    return names[value];
+  return "format " + std::to_string(value);
+}
+
+/* Spec 05 clarification 49: the kind of a shader resource view. The spec's seven, plus tex1d,
+   tex1d-array, tex2d-ms and tex2d-ms-array for the dimensions it doesn't name. */
+inline const char *
+TraceSrvKind(const D3D11_SHADER_RESOURCE_VIEW_DESC &view) {
+  switch (view.ViewDimension) {
+  case D3D11_SRV_DIMENSION_BUFFER:
+    return view.Format == DXGI_FORMAT_UNKNOWN ? "buffer-structured" : "buffer-typed";
+  case D3D11_SRV_DIMENSION_BUFFEREX:
+    if (view.BufferEx.Flags & D3D11_BUFFEREX_SRV_FLAG_RAW)
+      return "buffer-raw";
+    return view.Format == DXGI_FORMAT_UNKNOWN ? "buffer-structured" : "buffer-typed";
+  case D3D11_SRV_DIMENSION_TEXTURE1D:
+    return "tex1d";
+  case D3D11_SRV_DIMENSION_TEXTURE1DARRAY:
+    return "tex1d-array";
+  case D3D11_SRV_DIMENSION_TEXTURE2D:
+    return "tex2d";
+  case D3D11_SRV_DIMENSION_TEXTURE2DARRAY:
+    return "tex2d-array";
+  case D3D11_SRV_DIMENSION_TEXTURE2DMS:
+    return "tex2d-ms";
+  case D3D11_SRV_DIMENSION_TEXTURE2DMSARRAY:
+    return "tex2d-ms-array";
+  case D3D11_SRV_DIMENSION_TEXTURE3D:
+    return "tex3d";
+  case D3D11_SRV_DIMENSION_TEXTURECUBE:
+  case D3D11_SRV_DIMENSION_TEXTURECUBEARRAY:
+    return "cube";
+  default:
+    return "unknown";
+  }
+}
+
+/* What a view's line needs from its resource: a texture's top-level size and mip count, or a
+   buffer view's bytes per element (its byte length over its element count). */
+struct TraceSrvResource {
+  unsigned width = 0;
+  unsigned height = 0;
+  unsigned depth = 0;
+  unsigned mips = 0;
+  unsigned stride = 0;
+};
+
+/* "srv vs t3 tex2d-array R16G16B16A16_FLOAT 512x256x4 mips 1",
+   "srv vs t0 buffer-structured UNKNOWN first 0 count 4096 stride 32". A texture's size is at the
+   view's most detailed mip; its third number is an array view's slices, a cube array's cubes or
+   a 3D view's depth. */
+inline std::string
+TraceSrvLine(const char *stage, unsigned slot, const D3D11_SHADER_RESOURCE_VIEW_DESC &view, const TraceSrvResource &res) {
+  std::string line = std::string("srv ") + stage + " t" + std::to_string(slot) + " " + TraceSrvKind(view) + " " +
+                     TraceDxgiFormat(view.Format) + " ";
+  auto size = [&](unsigned most_detailed, unsigned levels, unsigned third) {
+    unsigned shift = most_detailed < 32 ? most_detailed : 31;
+    unsigned w = std::max(res.width >> shift, 1u), h = std::max(res.height >> shift, 1u);
+    unsigned mips = levels == ~0u ? (res.mips > most_detailed ? res.mips - most_detailed : 0) : levels;
+    std::string text = std::to_string(w) + "x" + std::to_string(h);
+    if (third)
+      text += "x" + std::to_string(third);
+    return text + " mips " + std::to_string(mips);
+  };
+  switch (view.ViewDimension) {
+  case D3D11_SRV_DIMENSION_BUFFER:
+    return line + "first " + std::to_string(view.Buffer.FirstElement) + " count " +
+           std::to_string(view.Buffer.NumElements) + " stride " + std::to_string(res.stride);
+  case D3D11_SRV_DIMENSION_BUFFEREX:
+    return line + "first " + std::to_string(view.BufferEx.FirstElement) + " count " +
+           std::to_string(view.BufferEx.NumElements) + " stride " + std::to_string(res.stride);
+  case D3D11_SRV_DIMENSION_TEXTURE1D:
+    return line + size(view.Texture1D.MostDetailedMip, view.Texture1D.MipLevels, 0);
+  case D3D11_SRV_DIMENSION_TEXTURE1DARRAY:
+    return line + size(view.Texture1DArray.MostDetailedMip, view.Texture1DArray.MipLevels,
+                       view.Texture1DArray.ArraySize);
+  case D3D11_SRV_DIMENSION_TEXTURE2D:
+    return line + size(view.Texture2D.MostDetailedMip, view.Texture2D.MipLevels, 0);
+  case D3D11_SRV_DIMENSION_TEXTURE2DARRAY:
+    return line + size(view.Texture2DArray.MostDetailedMip, view.Texture2DArray.MipLevels,
+                       view.Texture2DArray.ArraySize);
+  case D3D11_SRV_DIMENSION_TEXTURE2DMS:
+    return line + size(0, 1, 0);
+  case D3D11_SRV_DIMENSION_TEXTURE2DMSARRAY:
+    return line + size(0, 1, view.Texture2DMSArray.ArraySize);
+  case D3D11_SRV_DIMENSION_TEXTURE3D: {
+    unsigned shift = view.Texture3D.MostDetailedMip < 32 ? view.Texture3D.MostDetailedMip : 31;
+    return line + size(view.Texture3D.MostDetailedMip, view.Texture3D.MipLevels, std::max(res.depth >> shift, 1u));
+  }
+  case D3D11_SRV_DIMENSION_TEXTURECUBE:
+    return line + size(view.TextureCube.MostDetailedMip, view.TextureCube.MipLevels, 0);
+  case D3D11_SRV_DIMENSION_TEXTURECUBEARRAY:
+    return line + size(view.TextureCubeArray.MostDetailedMip, view.TextureCubeArray.MipLevels,
+                       view.TextureCubeArray.NumCubes);
+  default:
+    return line + "?";
+  }
+}
+
+inline std::string
+TraceSrvNull(const char *stage, unsigned slot) {
+  return std::string("srv ") + stage + " t" + std::to_string(slot) + " null";
+}
+
+/* "cb ps b2 4096 bytes first 16 count 64" (first and count in 16-byte constants, as bound) */
+inline std::string
+TraceConstantBufferLine(const char *stage, unsigned slot, uint64_t bytes, unsigned first, unsigned count) {
+  return std::string("cb ") + stage + " b" + std::to_string(slot) + " " + std::to_string(bytes) + " bytes first " +
+         std::to_string(first) + " count " + std::to_string(count);
+}
+
+inline std::string
+TraceConstantBufferNull(const char *stage, unsigned slot) {
+  return std::string("cb ") + stage + " b" + std::to_string(slot) + " null";
+}
+
 inline std::string
 TraceRasterizerState(const D3D11_RASTERIZER_DESC &desc) {
   const char *cull = desc.CullMode == D3D11_CULL_NONE ? "none" : desc.CullMode == D3D11_CULL_FRONT ? "front" : "back";

@@ -213,10 +213,110 @@ TestOutputSignature() {
   CHECK_EQ(DxbcOutputWrites(nullptr, 0), -1);
 }
 
+void
+TestBindingLines() {
+  // spec 05 clarification 49: each kind of view, with its format and size
+  CHECK(TraceDxgiFormat(DXGI_FORMAT_UNKNOWN) == "UNKNOWN");
+  CHECK(TraceDxgiFormat(DXGI_FORMAT_R11G11B10_FLOAT) == "R11G11B10_FLOAT");
+  CHECK(TraceDxgiFormat(DXGI_FORMAT_D24_UNORM_S8_UINT) == "D24_UNORM_S8_UINT");
+  CHECK(TraceDxgiFormat(DXGI_FORMAT_A8_UNORM) == "A8_UNORM");
+  CHECK(TraceDxgiFormat(DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) == "B8G8R8A8_UNORM_SRGB");
+  CHECK(TraceDxgiFormat(DXGI_FORMAT_BC6H_UF16) == "BC6H_UF16");
+  CHECK(TraceDxgiFormat(DXGI_FORMAT_BC7_UNORM_SRGB) == "BC7_UNORM_SRGB");
+  CHECK(TraceDxgiFormat(DXGI_FORMAT_B4G4R4A4_UNORM) == "B4G4R4A4_UNORM");
+  CHECK(TraceDxgiFormat(DXGI_FORMAT(200)) == "format 200");
+
+  D3D11_SHADER_RESOURCE_VIEW_DESC view;
+  TraceSrvResource texture;
+  texture.width = 1024;
+  texture.height = 512;
+  texture.depth = 1;
+  texture.mips = 10;
+
+  std::memset(&view, 0, sizeof(view));
+  view.Format = DXGI_FORMAT_R16G16B16A16_FLOAT;
+  view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+  view.Texture2D.MostDetailedMip = 1;
+  view.Texture2D.MipLevels = UINT(-1); // the rest of the chain
+  CHECK(TraceSrvLine("ps", 3, view, texture) == "srv ps t3 tex2d R16G16B16A16_FLOAT 512x256 mips 9");
+  view.Texture2D.MostDetailedMip = 0;
+  view.Texture2D.MipLevels = 1;
+  CHECK(TraceSrvLine("ps", 3, view, texture) == "srv ps t3 tex2d R16G16B16A16_FLOAT 1024x512 mips 1");
+
+  std::memset(&view, 0, sizeof(view));
+  view.Format = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
+  view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2DARRAY;
+  view.Texture2DArray.MipLevels = 2;
+  view.Texture2DArray.ArraySize = 4;
+  CHECK(TraceSrvLine("vs", 0, view, texture) == "srv vs t0 tex2d-array R8G8B8A8_UNORM_SRGB 1024x512x4 mips 2");
+
+  TraceSrvResource volume;
+  volume.width = 64;
+  volume.height = 64;
+  volume.depth = 32;
+  volume.mips = 7;
+  std::memset(&view, 0, sizeof(view));
+  view.Format = DXGI_FORMAT_R16_FLOAT;
+  view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE3D;
+  view.Texture3D.MostDetailedMip = 1;
+  view.Texture3D.MipLevels = UINT(-1);
+  CHECK(TraceSrvLine("ps", 5, view, volume) == "srv ps t5 tex3d R16_FLOAT 32x32x16 mips 6");
+
+  TraceSrvResource cube;
+  cube.width = cube.height = 128;
+  cube.depth = 1;
+  cube.mips = 8;
+  std::memset(&view, 0, sizeof(view));
+  view.Format = DXGI_FORMAT_BC1_UNORM;
+  view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBE;
+  view.TextureCube.MipLevels = UINT(-1);
+  CHECK(TraceSrvLine("ps", 9, view, cube) == "srv ps t9 cube BC1_UNORM 128x128 mips 8");
+  view.ViewDimension = D3D11_SRV_DIMENSION_TEXTURECUBEARRAY;
+  view.TextureCubeArray.MipLevels = UINT(-1);
+  view.TextureCubeArray.NumCubes = 2;
+  CHECK(TraceSrvLine("ps", 9, view, cube) == "srv ps t9 cube BC1_UNORM 128x128x2 mips 8");
+
+  // buffers: typed, raw and structured, with the first element, count and bytes per element
+  TraceSrvResource buffer;
+  std::memset(&view, 0, sizeof(view));
+  view.Format = DXGI_FORMAT_R32G32B32A32_FLOAT;
+  view.ViewDimension = D3D11_SRV_DIMENSION_BUFFER;
+  view.Buffer.FirstElement = 2;
+  view.Buffer.NumElements = 100;
+  buffer.stride = 16;
+  CHECK(TraceSrvLine("vs", 1, view, buffer) == "srv vs t1 buffer-typed R32G32B32A32_FLOAT first 2 count 100 stride 16");
+  view.Format = DXGI_FORMAT_UNKNOWN;
+  view.Buffer.FirstElement = 0;
+  view.Buffer.NumElements = 4096;
+  buffer.stride = 48;
+  CHECK(TraceSrvLine("vs", 0, view, buffer) == "srv vs t0 buffer-structured UNKNOWN first 0 count 4096 stride 48");
+  std::memset(&view, 0, sizeof(view));
+  view.Format = DXGI_FORMAT_R32_TYPELESS;
+  view.ViewDimension = D3D11_SRV_DIMENSION_BUFFEREX;
+  view.BufferEx.FirstElement = 8;
+  view.BufferEx.NumElements = 64;
+  view.BufferEx.Flags = D3D11_BUFFEREX_SRV_FLAG_RAW;
+  buffer.stride = 4;
+  CHECK(TraceSrvLine("vs", 2, view, buffer) == "srv vs t2 buffer-raw R32_TYPELESS first 8 count 64 stride 4");
+  view.BufferEx.Flags = 0;
+  view.Format = DXGI_FORMAT_UNKNOWN;
+  CHECK(TraceSrvKind(view) == std::string("buffer-structured"));
+  view.Format = DXGI_FORMAT_R32_UINT;
+  CHECK(TraceSrvKind(view) == std::string("buffer-typed"));
+
+  // null views and constant buffers
+  CHECK(TraceSrvNull("vs", 7) == "srv vs t7 null");
+  CHECK(TraceSrvNull("ps", 127) == "srv ps t127 null");
+  CHECK(TraceConstantBufferLine("vs", 0, 4096, 16, 64) == "cb vs b0 4096 bytes first 16 count 64");
+  CHECK(TraceConstantBufferLine("ps", 13, 65536, 0, 4096) == "cb ps b13 65536 bytes first 0 count 4096");
+  CHECK(TraceConstantBufferNull("ps", 2) == "cb ps b2 null");
+}
+
 } // namespace
 
 int
 main() {
+  TestBindingLines();
   TestOutputSignature();
   TestSampler();
   TestBlend();
