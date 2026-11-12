@@ -292,6 +292,25 @@ TestResidencySetTracker() {
   CHECK_EQ(g_metal.released[set_handle], 1);
 }
 
+void
+TestResidencySetOptIn() {
+  // spec 05 clarification 56: the residency set only with DXMT_RESIDENCY_SET=1; otherwise
+  // useResource per encoder, and the log line's reason
+  CHECK(ResidencySetOffReason("1") == nullptr);
+  CHECK(std::string(ResidencySetOffReason(nullptr)) == "DXMT_RESIDENCY_SET unset");
+  CHECK(std::string(ResidencySetOffReason("")) == "DXMT_RESIDENCY_SET unset");
+  CHECK(std::string(ResidencySetOffReason("0")) == "DXMT_RESIDENCY_SET not 1");
+  CHECK(std::string(ResidencySetOffReason("10")) == "DXMT_RESIDENCY_SET not 1");
+  CHECK(std::string(ResidencySetOffReason("yes")) == "DXMT_RESIDENCY_SET not 1");
+  // as the queue reads it: the environment's value, unset in this test
+  unsetenv("DXMT_RESIDENCY_SET");
+  const char *value = getenv("DXMT_RESIDENCY_SET");
+  CHECK(std::string(ResidencySetOffReason(value ? value : "")) == "DXMT_RESIDENCY_SET unset");
+  setenv("DXMT_RESIDENCY_SET", "1", 1);
+  CHECK(ResidencySetOffReason(getenv("DXMT_RESIDENCY_SET")) == nullptr);
+  unsetenv("DXMT_RESIDENCY_SET");
+}
+
 } // namespace
 
 int
@@ -299,5 +318,6 @@ main() {
   TestStagingBlockMapsReturnedMemory();
   TestQueryEndingInEmptySubmission();
   TestResidencySetTracker();
+  TestResidencySetOptIn();
   return TestSummary("test_core_fixes");
 }

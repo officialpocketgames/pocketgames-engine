@@ -11,6 +11,20 @@
 
 namespace dxmt {
 
+/* MYIOSDECK spec 05 clarification 56 (MIT): the residency set only makes resources resident;
+   per-encoder useResource is also what lets Metal order a pass after one that wrote the same
+   resource, and DXMT binds everything through argument buffers. So the set is opt-in: only
+   DXMT_RESIDENCY_SET=1 turns it on. Returns nullptr for "use the set", else the reason the
+   log line gives for useResource. */
+inline const char *
+ResidencySetOffReason(const char *value) {
+  if (value && value[0] == '1' && value[1] == '\0')
+    return nullptr;
+  if (!value || !value[0])
+    return "DXMT_RESIDENCY_SET unset";
+  return "DXMT_RESIDENCY_SET not 1";
+}
+
 /**
 LGPL-2.1-or-later, from steamac's DXMT patch 0023 (Jakey-Jakey): an `MTLResidencySet`
 attached to the command queue, which replaces per-encoder `useResource`. Allocations are

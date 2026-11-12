@@ -48,18 +48,20 @@ CommandQueue::CommandQueue(WMT::Device device) :
   /* LGPL-2.1-or-later, from steamac's DXMT patch 0023 (Jakey-Jakey), fitted for MYIOSDECK
      spec 05 clarification 10: a residency set attached to the queue replaces per-encoder
      useResource. MTLResidencySet needs iOS 18 and the app supports iOS 17, so below 18 the
-     old path stays; so does the i386 build (its unix calls are refused) and
-     DXMT_RESIDENCY_SET=0. One log line says which path is in use. */
+     old path stays; so does the i386 build (its unix calls are refused). Changed for
+     clarification 56: only DXMT_RESIDENCY_SET=1 turns the set on (ResidencySetOffReason).
+     One log line says which path is in use. */
   {
     uint64_t os_major = 0, os_minor = 0, os_patch = 0;
     WMTGetOSVersion(&os_major, &os_minor, &os_patch);
     const char *without = nullptr;
+    std::string residency_switch = env::getEnvVar("DXMT_RESIDENCY_SET");
     if (kI386Build) {
       without = "32-bit program";
     } else if (os_major < 18) {
       without = "iOS below 18";
-    } else if (env::getEnvVar("DXMT_RESIDENCY_SET") == "0") {
-      without = "DXMT_RESIDENCY_SET=0";
+    } else if ((without = ResidencySetOffReason(residency_switch.c_str()))) {
+      // clarification 56: useResource per encoder unless asked for
     } else {
       WMT::Reference<WMT::Error> err;
       auto set = device.newResidencySet(0, err);
