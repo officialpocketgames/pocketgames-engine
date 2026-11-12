@@ -113,6 +113,15 @@ uint64_t pg_gpu_meter_cmdbufs(void);
 /* Spec 34: adds 1 to the count pg_get_present_count() reports (the Vulkan layer's presents) */
 void pg_note_external_present(void);
 
+/* Spec 05 clarification 54: the app calls this with 0 when it resigns active and 1 when it
+   becomes active again (default: active). While inactive, commits wait in
+   dxmt_ios_hold_while_inactive and presents are dropped (app_active.h). */
+void pg_dxmt_set_app_active(int active);
+
+/* Clarification 54: called by _MTLCommandBuffer_commit before it commits; blocks while the app
+   is inactive. */
+void dxmt_ios_hold_while_inactive(void);
+
 /* ---- Spec 06 (32-bit callers) ---- */
 
 /* A: a switch of the unix half, decided per call because one unix half serves

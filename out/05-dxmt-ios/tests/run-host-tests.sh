@@ -85,6 +85,10 @@ $cxx $flags -I"$src/winemetal" -I"$src/dxmt" -o "$build/test_indirect_dispatch" 
 # Spec 05 clarification 28: the frame dump's switch, formats, names and limits.
 $cxx $flags $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
   -o "$build/test_frame_dump" "$here/test_frame_dump.cpp"
+# Spec 05 clarification 54: commits held while the app isn't active (C and C++).
+$cc -std=c11 -O1 -Wall -Wextra -Werror -pthread -I"$src/winemetal/unix" \
+  -o "$build/test_app_active" "$here/test_app_active.c"
+$cxx $flags -Wno-unused-function -pthread -x c++ -fsyntax-only "$src/winemetal/unix/app_active.h"
 # Spec 05 clarification 30: the frame trace's state lines.
 $cxx $flags $native_flags -I"$src/d3d11" -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
   -o "$build/test_trace_state" "$here/test_trace_state.cpp"
@@ -128,6 +132,7 @@ sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_indirect_dispatch" || status=1
 "$build/test_frame_dump" || status=1
 "$build/test_trace_state" || status=1
+"$build/test_app_active" || status=1
 sh "$here/check-shader-fixes.sh" "$src" || status=1
 if [ -n "$sqlite_lib" ]; then
   "$build/test_cache_contents" "$build" || status=1

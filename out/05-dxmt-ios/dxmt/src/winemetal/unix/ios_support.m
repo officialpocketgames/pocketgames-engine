@@ -5,6 +5,7 @@
 // reference counting, like the rest of the unix side.
 
 #include "ios_support.h"
+#include "app_active.h" /* spec 05 clarification 54 */
 #define WINEMETAL_API
 #include "../winemetal.h"
 #include "ios_wow64.h"
@@ -504,10 +505,33 @@ dxmt_ios_present(id<MTLCommandBuffer> cmdbuf, id<MTLDrawable> drawable) {
   atomic_fetch_add(&g_present_count, 1);
 }
 
+/* ---- Spec 05 clarification 54: no GPU work while the app isn't active ---- */
+
+static void
+app_gate_log(const char *line) {
+  fprintf(stderr, "%s\n", line);
+}
+
+static struct dxmt_app_gate g_app_gate = DXMT_APP_GATE_INIT(app_gate_log);
+
+DXMT_IOS_EXPORT void
+pg_dxmt_set_app_active(int active) {
+  dxmt_app_gate_set_active(&g_app_gate, active, ns_from_abs(mach_absolute_time()));
+}
+
+void
+dxmt_ios_hold_while_inactive(void) {
+  dxmt_app_gate_hold(&g_app_gate);
+}
+
 id<CAMetalDrawable>
 dxmt_ios_next_drawable(CAMetalLayer *layer) {
   static _Atomic uint64_t acquires = 0;
   static _Atomic uint64_t slow = 0;
+  /* clarification 54: no drawable while inactive; the presenter drops the frame as for a nil
+     drawable in RAW mode */
+  if (dxmt_app_gate_drop_present(&g_app_gate))
+    return nil;
   if (atomic_load(&g_vsync_mode) == 2) {
     /* RAW: no drawable when less than 18 ms passed since the last real acquire;
        the frame counts as presented. */
@@ -561,7 +585,29 @@ pg_gpu_meter_cmdbufs(void) {
 
 void
 dxmt_ios_will_commit(id<MTLCommandBuffer> cmdbuf) {
-  if (!atomic_load(&g_meter_enabled) || !cmdbuf)
+  if (!cmdbuf)
+    return;
+  /* clarification 54: a command buffer refused for background execution anyway (at the edge
+     of a change) logs the lost line once per period, besides DXMT's device-error line. It is
+     named by its label, else by its number among the commits. */
+  static _Atomic uint64_t commits = 0;
+  uint64_t number = atomic_fetch_add(&commits, 1) + 1;
+  [cmdbuf addCompletedHandler:^(id<MTLCommandBuffer> done) {
+    if (done.status != MTLCommandBufferStatusError || !done.error)
+      return;
+    bool background = done.error.code == MTLCommandBufferErrorNotPermitted ||
+                      [done.error.localizedDescription rangeOfString:@"BackgroundExecutionNotPermitted"].location !=
+                          NSNotFound;
+    if (!background)
+      return;
+    char what[96];
+    if (done.label.length)
+      snprintf(what, sizeof(what), "%s", done.label.UTF8String);
+    else
+      snprintf(what, sizeof(what), "command buffer #%llu", (unsigned long long)number);
+    dxmt_app_gate_lost(&g_app_gate, what);
+  }];
+  if (!atomic_load(&g_meter_enabled))
     return;
   [cmdbuf addCompletedHandler:^(id<MTLCommandBuffer> done) {
     double start = done.GPUStartTime, end = done.GPUEndTime;

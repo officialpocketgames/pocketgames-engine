@@ -160,7 +160,8 @@ static NTSTATUS
 _MTLCommandBuffer_commit(void *obj) {
   struct unixcall_generic_obj_noret *params = obj;
 #if defined(DXMT_IOS)
-  dxmt_ios_will_commit((id<MTLCommandBuffer>)params->handle); /* E3 GPU meter */
+  dxmt_ios_hold_while_inactive();                             /* spec 05 clarification 54 */
+  dxmt_ios_will_commit((id<MTLCommandBuffer>)params->handle); /* E3 GPU meter; 54's lost line */
 #endif
   [(id<MTLCommandBuffer>)params->handle commit];
   return STATUS_SUCCESS;
