@@ -1303,6 +1303,7 @@ public:
     DrawCallStatus status = PreDraw<false>();
     if (status == DrawCallStatus::Invalid)
       return;
+    TraceDraw("draw", false, false, VertexCount, StartVertexLocation, 0, 1, 0); // spec 05 clarification 44
     if (status == DrawCallStatus::Geometry) {
       return GeometryDraw(VertexCount, 1, StartVertexLocation, 0);
     }
@@ -1335,6 +1336,7 @@ public:
     DrawCallStatus status = PreDraw<true>();
     if (status == DrawCallStatus::Invalid)
       return;
+    TraceDraw("draw indexed", true, false, IndexCount, StartIndexLocation, BaseVertexLocation, 1, 0); // spec 05 cl. 44
     if (status == DrawCallStatus::Geometry) {
       return GeometryDrawIndexed(IndexCount, StartIndexLocation, BaseVertexLocation, 1, 0);
     }
@@ -1375,6 +1377,10 @@ public:
     DrawCallStatus status = PreDraw<false>();
     if (status == DrawCallStatus::Invalid)
       return;
+    TraceDraw(
+        "draw instanced", false, false, VertexCountPerInstance, StartVertexLocation, 0, InstanceCount,
+        StartInstanceLocation
+    ); // spec 05 clarification 44
     if (status == DrawCallStatus::Geometry) {
       return GeometryDraw(VertexCountPerInstance, InstanceCount, StartVertexLocation, StartInstanceLocation);
     }
@@ -1413,6 +1419,10 @@ public:
     DrawCallStatus status = PreDraw<true>();
     if (status == DrawCallStatus::Invalid)
       return;
+    TraceDraw(
+        "draw indexed instanced", true, false, IndexCountPerInstance, StartIndexLocation, BaseVertexLocation,
+        InstanceCount, StartInstanceLocation
+    ); // spec 05 clarification 44
     if (status == DrawCallStatus::Geometry) {
       return GeometryDrawIndexed(
           IndexCountPerInstance, StartIndexLocation, BaseVertexLocation, InstanceCount, StartInstanceLocation
@@ -1609,6 +1619,7 @@ public:
     DrawCallStatus status = PreDraw<true>();
     if (status == DrawCallStatus::Invalid)
       return;
+    TraceDraw("draw indexed instanced", true, true, 0, 0, 0, 0, 0); // spec 05 clarification 44
     if (status == DrawCallStatus::Geometry) {
       return GeometryDrawIndexedIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
     }
@@ -1650,6 +1661,7 @@ public:
     DrawCallStatus status = PreDraw<false>();
     if (status == DrawCallStatus::Invalid)
       return;
+    TraceDraw("draw instanced", false, true, 0, 0, 0, 0, 0); // spec 05 clarification 44
     if (status == DrawCallStatus::Geometry) {
       return GeometryDrawIndirect(pBufferForArgs, AlignedByteOffsetForArgs);
     }
@@ -5112,6 +5124,53 @@ public:
         ->GetDesc(&rasterizer);
     lines.push_back(TraceRasterizerState(rasterizer));
     EmitST([lines = std::move(lines)](ArgumentEncodingContext &enc) mutable { enc.traceState(std::move(lines)); });
+  }
+
+  /* MYIOSDECK spec 05 clarification 44: in a traced frame of the immediate context, one line per
+     draw: its arguments (indirect ones get their number from the encoder), the vertex shader's
+     hash and whether its outputs include SV_RenderTargetArrayIndex / SV_ViewportArrayIndex, and
+     any geometry shader, folded into the vertex stage (pass-through) or emulated. */
+  void
+  TraceDraw(
+      const char *kind, bool indexed, bool indirect, uint32_t count, uint32_t start, int32_t base, uint32_t instances,
+      uint32_t start_instance
+  ) {
+    if (!FrameTraceSwitch() || !FrameTraced(RecordingPresent()))
+      return;
+    TraceDrawArgs draw;
+    draw.kind = kind;
+    draw.indexed = indexed;
+    draw.indirect = indirect;
+    draw.count = count;
+    draw.start = start;
+    draw.base = base;
+    draw.instances = instances;
+    draw.start_instance = start_instance;
+    if (auto vs = GetManagedShader<PipelineStage::Vertex>()) {
+      draw.vs_hash = FrameTraceShaderHash(vs->sha1().data);
+      draw.vs_writes = TraceShaderOutputWrites(vs);
+    }
+    if (auto gs = GetManagedShader<PipelineStage::Geometry>()) {
+      draw.gs = true;
+      draw.gs_hash = FrameTraceShaderHash(gs->sha1().data);
+      draw.gs_writes = TraceShaderOutputWrites(gs);
+      draw.gs_folded = gs->reflection().GeometryShader.GSPassThrough != ~0u;
+    }
+    EmitST([line = TraceDrawLine(draw), indirect](ArgumentEncodingContext &enc) mutable {
+      enc.traceDraw(std::move(line), indirect);
+    });
+  }
+
+  /* spec 05 clarification 44: from the shader's DXBC output signature, kept on iOS (-1 when not) */
+  static int
+  TraceShaderOutputWrites(ManagedShader shader) {
+#ifdef DXMT_IOS
+    auto &bytecode = shader->bytecode();
+    if (!bytecode.empty())
+      return DxbcOutputWrites(bytecode.data(), bytecode.size());
+#endif
+    (void)shader;
+    return -1;
   }
 
   /* spec 05 clarification 30: one line per sampler slot the stage's shader declares */

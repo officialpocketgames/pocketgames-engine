@@ -119,12 +119,95 @@ TraceTexture(WMTPixelFormat format, uint64_t width, uint64_t height) {
   return TracePixelFormat(format) + " " + std::to_string(width) + "x" + std::to_string(height);
 }
 
-/* "c0 RGBA16Float 1280x720 mip 0 slice 0 load" */
+/* Spec 05 clarification 44: an attachment's texture type: "3d", "2d-array", "cube", "2d" (and
+   "2d-ms", "2d-ms-array", "1d", "1d-array" for the others) */
+inline const char *
+TraceTextureType(WMTTextureType type) {
+  switch (type) {
+  case WMTTextureType3D: return "3d";
+  case WMTTextureType2DArray: return "2d-array";
+  case WMTTextureTypeCube:
+  case WMTTextureTypeCubeArray: return "cube";
+  case WMTTextureType2D: return "2d";
+  case WMTTextureType2DMultisample: return "2d-ms";
+  case WMTTextureType2DMultisampleArray: return "2d-ms-array";
+  case WMTTextureType1D: return "1d";
+  case WMTTextureType1DArray: return "1d-array";
+  default: return "?";
+  }
+}
+
+/* "c0 RGBA16Float 1280x720 2d mip 0 slice 0 load" (clarification 44: with the texture's type) */
 inline std::string
 TraceAttachment(const std::string &name, WMTPixelFormat format, uint64_t width, uint64_t height, unsigned level,
-                unsigned slice, WMTLoadAction load) {
-  return name + " " + TraceTexture(format, width, height) + " mip " + std::to_string(level) + " slice " +
-         std::to_string(slice) + " " + TraceLoadAction(load);
+                unsigned slice, WMTLoadAction load, const char *type = nullptr) {
+  return name + " " + TraceTexture(format, width, height) + (type ? std::string(" ") + type : std::string()) +
+         " mip " + std::to_string(level) + " slice " + std::to_string(slice) + " " + TraceLoadAction(load);
+}
+
+/* ---- spec 05 clarification 44: one line per draw ---- */
+
+/* what a traced draw was asked and which shaders ran it */
+struct TraceDrawArgs {
+  const char *kind = "draw"; // "draw", "draw indexed", "draw instanced", ...
+  bool indexed = false;
+  bool indirect = false;
+  unsigned indirect_k = 0; // 0: filled in by the encoder ("#?" until then)
+  uint32_t count = 0;
+  uint32_t start = 0;
+  int32_t base = 0;
+  uint32_t instances = 1;
+  uint32_t start_instance = 0;
+  uint32_t vs_hash = 0;
+  int vs_writes = 0; // bit 1: SV_RenderTargetArrayIndex, bit 2: SV_ViewportArrayIndex; -1: unknown
+  bool gs = false;
+  uint32_t gs_hash = 0;
+  int gs_writes = 0;
+  bool gs_folded = false; // a pass-through geometry shader folded into the vertex stage
+};
+
+/* "rtindex", "vpindex", "rtindex,vpindex", "-", or "?" */
+inline std::string
+TraceWritesText(int bits) {
+  if (bits < 0)
+    return "?";
+  if (!bits)
+    return "-";
+  std::string text;
+  if (bits & 1)
+    text = "rtindex";
+  if (bits & 2)
+    text += text.empty() ? "vpindex" : ",vpindex";
+  return text;
+}
+
+inline std::string
+TraceHash(uint32_t hash) {
+  char text[16];
+  std::snprintf(text, sizeof(text), "%08x", hash);
+  return text;
+}
+
+/* "draw indexed instanced indices 36 start 0 base 0 instances 64 start instance 0; vs 1a2b3c4d
+   writes rtindex; gs -" (pass and draw numbers are added by the encoder) */
+inline std::string
+TraceDrawLine(const TraceDrawArgs &draw) {
+  std::string line = draw.kind;
+  if (draw.indirect) {
+    line += " indirect #" + (draw.indirect_k ? std::to_string(draw.indirect_k) : std::string("?"));
+  } else {
+    line += std::string(draw.indexed ? " indices " : " vertices ") + std::to_string(draw.count) + " start " +
+            std::to_string(draw.start) + " base " + (draw.indexed ? std::to_string(draw.base) : std::string("-")) +
+            " instances " + std::to_string(draw.instances) + " start instance " + std::to_string(draw.start_instance);
+  }
+  line += "; vs " + (draw.vs_hash ? TraceHash(draw.vs_hash) : std::string("-")) + " writes " +
+          TraceWritesText(draw.vs_writes);
+  if (draw.gs)
+    line += "; gs " + TraceHash(draw.gs_hash) + " writes " + TraceWritesText(draw.gs_writes) +
+            (draw.gs_folded ? " folded" : " emulated");
+  else
+    line += "; gs -";
+  return line;
 }
 
 /* Adds `item` to `list` unless it is already there (distinct, in first-use order). */
@@ -151,9 +234,12 @@ TraceJoin(const std::vector<std::string> &items, const char *separator) {
    1280x720; scissors 0,0 768x620; PARTIAL" */
 inline std::string
 TraceRenderPass(unsigned index, const std::vector<std::string> &attachments, unsigned draws,
-                const std::vector<std::string> &viewports, const std::vector<std::string> &scissors, bool partial) {
+                const std::vector<std::string> &viewports, const std::vector<std::string> &scissors, bool partial,
+                int layers = -1) {
+  // clarification 44: "layers <n>" (0 when not layered); -1 leaves it out
   std::string line = "pass " + std::to_string(index) + ": " +
                      (attachments.empty() ? std::string("no attachments") : TraceJoin(attachments, ", ")) + "; " +
+                     (layers >= 0 ? "layers " + std::to_string(layers) + "; " : std::string()) +
                      std::to_string(draws) + (draws == 1 ? " draw" : " draws");
   if (!viewports.empty())
     line += "; viewports " + TraceJoin(viewports, " | ");

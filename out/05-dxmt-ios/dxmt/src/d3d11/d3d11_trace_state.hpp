@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <cstring>
 #include <cstdio>
 #include <string>
 
@@ -214,6 +215,55 @@ TraceDepthStencilState(const D3D11_DEPTH_STENCIL_DESC &desc, unsigned stencil_re
          "; stencil " + (desc.StencilEnable ? "on" : "off") + " read " + TraceStateHex(desc.StencilReadMask) +
          " write " + TraceStateHex(desc.StencilWriteMask) + " front " + TraceStencilFace(desc.FrontFace) + " back " +
          TraceStencilFace(desc.BackFace) + " ref " + std::to_string(stencil_ref);
+}
+
+/* Spec 05 clarification 44: which of SV_RenderTargetArrayIndex (bit 1) and SV_ViewportArrayIndex
+   (bit 2) a DXBC shader's output signature (OSGN, OSG5 or OSG1 chunk) declares; 0 for neither or
+   no output signature; -1 when the container can't be read. */
+inline int
+DxbcOutputWrites(const uint8_t *data, size_t size) {
+  auto u32 = [&](size_t offset) -> uint32_t {
+    return uint32_t(data[offset]) | uint32_t(data[offset + 1]) << 8 | uint32_t(data[offset + 2]) << 16 |
+           uint32_t(data[offset + 3]) << 24;
+  };
+  if (!data || size < 32 || std::memcmp(data, "DXBC", 4) != 0)
+    return -1;
+  uint32_t chunks = u32(28);
+  if (size < 32 + size_t(chunks) * 4)
+    return -1;
+  int bits = 0;
+  for (uint32_t c = 0; c < chunks; c++) {
+    size_t chunk = u32(32 + c * 4);
+    if (chunk + 8 > size)
+      return -1;
+    size_t element_size = 0, sv_offset = 0;
+    if (std::memcmp(data + chunk, "OSGN", 4) == 0) {
+      element_size = 24; // name, index, system value, component type, register, masks
+      sv_offset = 8;
+    } else if (std::memcmp(data + chunk, "OSG5", 4) == 0) {
+      element_size = 28; // stream first
+      sv_offset = 12;
+    } else if (std::memcmp(data + chunk, "OSG1", 4) == 0) {
+      element_size = 32; // stream first, minimum precision last
+      sv_offset = 12;
+    } else {
+      continue;
+    }
+    size_t body = chunk + 8, body_size = u32(chunk + 4);
+    if (body + body_size > size || body_size < 8)
+      return -1;
+    uint32_t count = u32(body);
+    if (8 + size_t(count) * element_size > body_size)
+      return -1;
+    for (uint32_t e = 0; e < count; e++) {
+      uint32_t system_value = u32(body + 8 + e * element_size + sv_offset);
+      if (system_value == D3D_NAME_RENDER_TARGET_ARRAY_INDEX)
+        bits |= 1;
+      else if (system_value == D3D_NAME_VIEWPORT_ARRAY_INDEX)
+        bits |= 2;
+    }
+  }
+  return bits;
 }
 
 inline std::string

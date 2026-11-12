@@ -155,24 +155,68 @@ TestIndex() {
   CHECK(std::string(FrameDumpReasonText(FrameDumpReason::Type)) == "type");
   CHECK(std::string(FrameDumpReasonText(FrameDumpReason::NotStored)) == "not stored");
   CHECK(std::string(FrameDumpReasonText(FrameDumpReason::Budget)) == "budget");
-  CHECK(FrameDumpIndexLine("pass 14", "c0", 7, "RGBA16Float", WMTTextureType2D, 1280, 720, "mip0-slice0",
-                           FrameDumpReason::Dumped, "t0007-RGBA16Float-1280x720-mip0-slice0.raw") ==
+  CHECK(FrameDumpIndexLine("pass 14", "c0", 7, "RGBA16Float", WMTTextureType2D, FrameDumpSizeText(1280, 720),
+                           "mip0-slice0", FrameDumpReason::Dumped, "t0007-RGBA16Float-1280x720-mip0-slice0.raw") ==
         "pass 14 c0: t0007 RGBA16Float 2D 1280x720 mip0-slice0 -> t0007-RGBA16Float-1280x720-mip0-slice0.raw");
-  CHECK(FrameDumpIndexLine("pass 3", "c1", 2, "RGBA16Float", WMTTextureType2DMultisample, 1280, 720, "mip0-slice0",
-                           FrameDumpReason::Type, "") ==
+  CHECK(FrameDumpIndexLine("pass 3", "c1", 2, "RGBA16Float", WMTTextureType2DMultisample, FrameDumpSizeText(1280, 720),
+                           "mip0-slice0", FrameDumpReason::Type, "") ==
         "pass 3 c1: t0002 RGBA16Float 2DMS 1280x720 mip0-slice0 not dumped (type)");
-  CHECK(FrameDumpIndexLine("dispatch #4 cs7041a1e5", "u0", 5, "R32Uint", WMTTextureType2D, 640, 360, "mip0-slice0",
-                           FrameDumpReason::Format, "") ==
+  CHECK(FrameDumpIndexLine("dispatch #4 cs7041a1e5", "u0", 5, "R32Uint", WMTTextureType2D, FrameDumpSizeText(640, 360),
+                           "mip0-slice0", FrameDumpReason::Format, "") ==
         "dispatch #4 cs7041a1e5 u0: t0005 R32Uint 2D 640x360 mip0-slice0 not dumped (format)");
-  CHECK(FrameDumpIndexLine("pass 9", "depth", 3, "Depth32Float", WMTTextureType2D, 2048, 2048, "mip0-slice0",
-                           FrameDumpReason::NotStored, "") ==
+  CHECK(FrameDumpIndexLine("pass 9", "depth", 3, "Depth32Float", WMTTextureType2D, FrameDumpSizeText(2048, 2048),
+                           "mip0-slice0", FrameDumpReason::NotStored, "") ==
         "pass 9 depth: t0003 Depth32Float 2D 2048x2048 mip0-slice0 not dumped (not stored)");
-  CHECK(FrameDumpIndexLine("copy", "", 9, "RGBA8Unorm", WMTTextureType2D, 512, 512, "mip0-slice0",
+  CHECK(FrameDumpIndexLine("copy", "", 9, "RGBA8Unorm", WMTTextureType2D, FrameDumpSizeText(512, 512), "mip0-slice0",
                            FrameDumpReason::Budget, "") ==
         "copy: t0009 RGBA8Unorm 2D 512x512 mip0-slice0 not dumped (budget)");
-  CHECK(FrameDumpIndexLine("pass 2", "c0", 1, "RGBA16Float", WMTTextureType3D, 32, 32, "mip0-z0",
-                           FrameDumpReason::Dumped, "t0001-RGBA16Float-32x32-mip0-z0.raw") ==
-        "pass 2 c0: t0001 RGBA16Float 3D 32x32 mip0-z0 -> t0001-RGBA16Float-32x32-mip0-z0.raw (3D: slice 0 only)");
+  // clarification 42: a whole 3D mip, and a fallback slice with its note
+  CHECK(FrameDumpIndexLine("pass 2", "c0", 1, "RGBA16Float", WMTTextureType3D, FrameDumpSizeText(64, 64, 64),
+                           "mip0-3d", FrameDumpReason::Dumped, "t0001-RGBA16Float-64x64x64-mip0-3d.raw") ==
+        "pass 2 c0: t0001 RGBA16Float 3D 64x64x64 mip0-3d -> t0001-RGBA16Float-64x64x64-mip0-3d.raw");
+  CHECK(FrameDumpIndexLine("pass 5", "c0", 4, "RGBA16Float", WMTTextureType3D, FrameDumpSizeText(512, 512, 64),
+                           "mip0-z32 (slices 0, 32, 63 of 64)", FrameDumpReason::Dumped,
+                           "t0004-RGBA16Float-512x512-mip0-z32.raw") ==
+        "pass 5 c0: t0004 RGBA16Float 3D 512x512x64 mip0-z32 (slices 0, 32, 63 of 64) -> "
+        "t0004-RGBA16Float-512x512-mip0-z32.raw");
+}
+
+void
+TestVolumes() {
+  // clarification 42: a 64^3 RGBA16Float mip is 2 MB: dumped whole, one file
+  auto whole = FrameDumpPlan3D(64, 64, 64, 8);
+  CHECK(whole.whole);
+  CHECK_EQ(64ull * 64 * 64 * 8, 2ull << 20);
+  CHECK(FrameDumpVolumeName(7, "RGBA16Float", 64, 64, 64, 0, false) == "t0007-RGBA16Float-64x64x64-mip0-3d.raw");
+  CHECK(FrameDumpVolumeName(7, "RGBA16Float", 64, 64, 64, 0, true) == "t0007-RGBA16Float-64x64x64-mip0-3d-first.raw");
+  // exactly 16 MB fits: 128^3 RGBA8 is 8 MB, 256x256x64 RGBA8 16 MB
+  CHECK(FrameDumpPlan3D(256, 256, 64, 4).whole);
+  // larger: slices 0, d/2 and d-1
+  auto large = FrameDumpPlan3D(512, 512, 64, 8);
+  CHECK(!large.whole);
+  CHECK_EQ(large.count, 3);
+  CHECK_EQ(large.slices[0], 0);
+  CHECK_EQ(large.slices[1], 32);
+  CHECK_EQ(large.slices[2], 63);
+  // distinct ones only: a 2-deep volume has slices 0 and 1
+  auto shallow = FrameDumpPlan3D(4096, 4096, 2, 8);
+  CHECK(!shallow.whole);
+  CHECK_EQ(shallow.count, 2);
+  CHECK_EQ(shallow.slices[0], 0);
+  CHECK_EQ(shallow.slices[1], 1);
+  CHECK(FrameDumpDepthSliceName(0, 32) == "mip0-z32");
+  CHECK(FrameDumpSubresourceName(4, "RGBA16Float", 512, 512, FrameDumpDepthSliceName(0, 63), false) ==
+        "t0004-RGBA16Float-512x512-mip0-z63.raw");
+  // the budget counts the whole mip once; a 64^3 volume rewritten four times costs 2 MB
+  FrameDumpLedger ledger;
+  FrameDumpKey volume{0x40, 0, kFrameDumpWholeVolume, 0};
+  CHECK(ledger.write(volume, 2ull << 20) == FrameDumpAction::CopyNew);
+  CHECK(ledger.write(volume, 2ull << 20) == FrameDumpAction::CopyWithFirst);
+  CHECK(ledger.write(volume, 2ull << 20) == FrameDumpAction::Copy);
+  CHECK(ledger.write(volume, 2ull << 20) == FrameDumpAction::Copy);
+  CHECK_EQ(ledger.lastBytes(), 2ull << 20);
+  CHECK(FrameDumpSizeText(64, 64, 64) == "64x64x64");
+  CHECK(FrameDumpSizeText(64, 64) == "64x64");
 }
 
 /* clarification 40: a fake request file that counts what the policy did with it */
@@ -282,6 +326,7 @@ TestRequests() {
 
 int
 main() {
+  TestVolumes();
   TestRequests();
   TestPresents();
   TestFormats();

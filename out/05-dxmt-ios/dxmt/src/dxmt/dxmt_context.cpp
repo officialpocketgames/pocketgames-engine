@@ -1147,13 +1147,23 @@ ArgumentEncodingContext::dumpCopyTexture(
     obj_handle_t texture, unsigned mip, unsigned slice, uint64_t width, uint64_t height, unsigned texel,
     WMTBlitOption option, obj_handle_t buffer
 ) {
+  dumpCopyTexture3D(texture, mip, slice, 0, width, height, 1, texel, option, buffer);
+}
+
+/* spec 05 clarification 42: `depth` depth slices from `z` of a 3D mip (1 and 0 otherwise),
+   slices one after the other in the buffer */
+void
+ArgumentEncodingContext::dumpCopyTexture3D(
+    obj_handle_t texture, unsigned mip, unsigned slice, unsigned z, uint64_t width, uint64_t height, uint64_t depth,
+    unsigned texel, WMTBlitOption option, obj_handle_t buffer
+) {
   auto &cmd = encodeBlitCommand<wmtcmd_blit_copy_from_texture_to_buffer>();
   cmd.type = WMTBlitCommandCopyFromTextureToBuffer;
   cmd.src = texture;
   cmd.slice = slice;
   cmd.level = mip;
-  cmd.origin = {0, 0, 0};
-  cmd.size = {width, height, 1};
+  cmd.origin = {0, 0, z};
+  cmd.size = {width, height, depth};
   cmd.dst = buffer;
   cmd.offset = 0;
   cmd.bytes_per_row = width * texel;
@@ -1178,20 +1188,26 @@ void
 ArgumentEncodingContext::dumpWrites(const std::string &writer, std::vector<DumpWrite> &writes, EncoderData *source) {
   struct Copy {
     obj_handle_t texture;
-    unsigned mip, slice;
-    uint64_t width, height;
+    unsigned mip, slice, z;
+    uint64_t width, height, depth;
     unsigned texel;
     WMTBlitOption option;
     int last;
     int first; // -1 unless this write takes the first-write copy
     TextureAllocation *allocation;
   };
+  /* one file's worth of a write: a layer, a whole 3D mip, or one depth slice of a large one */
+  struct Part {
+    unsigned key_slice; // the ledger key's slice: the layer, kFrameDumpWholeVolume, or the z
+    unsigned slice, z;
+    uint64_t depth;
+    std::string layer; // for the index
+    bool volume;       // named as a whole 3D mip
+  };
   std::vector<Copy> copies;
   for (auto &write : writes) {
     auto type = write.type;
     auto layers = FrameDumpLayersOf(type);
-    unsigned slice = layers == FrameDumpLayers::Z0 ? 0 : write.slice;
-    std::string layer = FrameDumpLayerName(layers, type == WMTTextureTypeCubeArray, write.mip, slice);
     unsigned id = dumpTextureId(write.texture);
     FrameDumpPlane planes[2];
     unsigned plane_count = FrameDumpDepthPlanes(write.format, planes);
@@ -1203,54 +1219,88 @@ ArgumentEncodingContext::dumpWrites(const std::string &writer, std::vector<DumpW
       auto &plane = planes[p];
       std::string label = plane.format_label ? plane.format_label : TracePixelFormat(write.format);
       std::string slot = write.slot + (plane.slot[0] ? std::string(write.slot.empty() ? "" : " ") + plane.slot : "");
-      FrameDumpReason reason = write.reason;
-      if (reason == FrameDumpReason::Dumped && layers == FrameDumpLayers::NotDumped)
-        reason = FrameDumpReason::Type;
-      if (reason == FrameDumpReason::Dumped && !plane.bytes_per_texel)
-        reason = FrameDumpReason::Format;
-      std::string name = FrameDumpSubresourceName(id, label, write.width, write.height, layer, false);
-      if (reason == FrameDumpReason::Dumped) {
-        uint64_t bytes = write.width * write.height * plane.bytes_per_texel;
-        FrameDumpKey key{write.texture, write.mip, slice, p};
-        auto action = dump_ledger_.write(key, bytes);
-        switch (action) {
-        case FrameDumpAction::Skip:
-          reason = FrameDumpReason::Budget;
-          break;
-        case FrameDumpAction::CopyNew: {
-          int last = dumpNewBuffer(name, bytes);
-          if (last < 0) {
-            reason = FrameDumpReason::Budget;
-            break;
-          }
-          dump_buffers_[key] = last;
-          copies.push_back(
-              {write.texture, write.mip, slice, write.width, write.height, plane.bytes_per_texel, plane.option, last, -1,
-               write.allocation}
-          );
-          break;
+      FrameDumpReason write_reason = write.reason;
+      if (write_reason == FrameDumpReason::Dumped && layers == FrameDumpLayers::NotDumped)
+        write_reason = FrameDumpReason::Type;
+      if (write_reason == FrameDumpReason::Dumped && !plane.bytes_per_texel)
+        write_reason = FrameDumpReason::Format;
+      // clarification 42: a 3D mip whole when it fits 16 MB, else depth slices 0, d/2, d-1
+      std::vector<Part> parts;
+      std::string size = FrameDumpSizeText(write.width, write.height);
+      if (layers == FrameDumpLayers::Z0) {
+        uint64_t depth = std::max<uint64_t>(write.depth, 1);
+        size = FrameDumpSizeText(write.width, write.height, depth);
+        auto plan = FrameDumpPlan3D(write.width, write.height, depth, std::max(plane.bytes_per_texel, 1u));
+        if (plan.whole) {
+          parts.push_back({kFrameDumpWholeVolume, 0, 0, depth, "mip" + std::to_string(write.mip) + "-3d", true});
+        } else {
+          std::string note = " (slices";
+          for (unsigned i = 0; i < plan.count; i++)
+            note += (i ? ", " : " ") + std::to_string(plan.slices[i]);
+          note += " of " + std::to_string(depth) + ")";
+          for (unsigned i = 0; i < plan.count; i++)
+            parts.push_back(
+                {plan.slices[i], 0, plan.slices[i], 1, FrameDumpDepthSliceName(write.mip, plan.slices[i]) + note, false}
+            );
         }
-        case FrameDumpAction::Copy:
-        case FrameDumpAction::CopyWithFirst: {
-          auto found = dump_buffers_.find(key);
-          if (found == dump_buffers_.end()) {
-            reason = FrameDumpReason::Budget;
-            break;
-          }
-          int first = -1;
-          if (action == FrameDumpAction::CopyWithFirst)
-            first = dumpNewBuffer(FrameDumpSubresourceName(id, label, write.width, write.height, layer, true), bytes);
-          copies.push_back(
-              {write.texture, write.mip, slice, write.width, write.height, plane.bytes_per_texel, plane.option,
-               found->second, first, write.allocation}
-          );
-          name = dump_files_[found->second].name;
-          break;
-        }
-        }
+      } else {
+        parts.push_back(
+            {write.slice, write.slice, 0, 1,
+             FrameDumpLayerName(layers, type == WMTTextureTypeCubeArray, write.mip, write.slice), false}
+        );
       }
-      dump_index_ += FrameDumpIndexLine(writer, slot, id, label, type, write.width, write.height, layer, reason, name);
-      dump_index_ += "\n";
+      for (auto &part : parts) {
+        FrameDumpReason reason = write_reason;
+        auto file_name = [&](bool first) {
+          if (part.volume)
+            return FrameDumpVolumeName(id, label, write.width, write.height, part.depth, write.mip, first);
+          std::string layer = part.layer.substr(0, part.layer.find(' ')); // without the note
+          return FrameDumpSubresourceName(id, label, write.width, write.height, layer, first);
+        };
+        std::string name = file_name(false);
+        if (reason == FrameDumpReason::Dumped) {
+          uint64_t bytes = write.width * write.height * part.depth * plane.bytes_per_texel;
+          FrameDumpKey key{write.texture, write.mip, part.key_slice, p};
+          auto action = dump_ledger_.write(key, bytes);
+          switch (action) {
+          case FrameDumpAction::Skip:
+            reason = FrameDumpReason::Budget;
+            break;
+          case FrameDumpAction::CopyNew: {
+            int last = dumpNewBuffer(name, bytes);
+            if (last < 0) {
+              reason = FrameDumpReason::Budget;
+              break;
+            }
+            dump_buffers_[key] = last;
+            copies.push_back(
+                {write.texture, write.mip, part.slice, part.z, write.width, write.height, part.depth,
+                 plane.bytes_per_texel, plane.option, last, -1, write.allocation}
+            );
+            break;
+          }
+          case FrameDumpAction::Copy:
+          case FrameDumpAction::CopyWithFirst: {
+            auto found = dump_buffers_.find(key);
+            if (found == dump_buffers_.end()) {
+              reason = FrameDumpReason::Budget;
+              break;
+            }
+            int first = -1;
+            if (action == FrameDumpAction::CopyWithFirst)
+              first = dumpNewBuffer(file_name(true), bytes);
+            copies.push_back(
+                {write.texture, write.mip, part.slice, part.z, write.width, write.height, part.depth,
+                 plane.bytes_per_texel, plane.option, found->second, first, write.allocation}
+            );
+            name = dump_files_[found->second].name;
+            break;
+          }
+          }
+        }
+        dump_index_ += FrameDumpIndexLine(writer, slot, id, label, type, size, part.layer, reason, name);
+        dump_index_ += "\n";
+      }
     }
   }
   if (copies.empty())
@@ -1275,7 +1325,10 @@ ArgumentEncodingContext::dumpWrites(const std::string &writer, std::vector<DumpW
       cmd.dst_offset = 0;
       cmd.copy_length = last.bytes;
     }
-    dumpCopyTexture(copy.texture, copy.mip, copy.slice, copy.width, copy.height, copy.texel, copy.option, last.buffer);
+    dumpCopyTexture3D(
+        copy.texture, copy.mip, copy.slice, copy.z, copy.width, copy.height, copy.depth, copy.texel, copy.option,
+        last.buffer
+    );
   }
   if (own_pass) {
     endPass();
@@ -1296,10 +1349,19 @@ ArgumentEncodingContext::dumpViewWrites(
   dump_texture_types_[handle] = texture->textureType();
   uint64_t width = std::max(texture->width() >> mip, 1u);
   uint64_t height = std::max(texture->height() >> mip, 1u);
+  uint64_t depth = std::max(texture->depth() >> mip, 1u);
+  // clarification 42: a 3D texture is one write of its whole mip, whatever W slices the view had
+  if (texture->textureType() == WMTTextureType3D) {
+    writes.push_back(
+        {handle, view->allocation, texture->pixelFormat(), texture->textureType(), width, height, depth, mip, 0, slot,
+         reason}
+    );
+    return;
+  }
   for (unsigned s = 0; s < std::max(slices, 1u); s++)
     writes.push_back(
-        {handle, view->allocation, texture->pixelFormat(), texture->textureType(), width, height, mip, first + s, slot,
-         reason}
+        {handle, view->allocation, texture->pixelFormat(), texture->textureType(), width, height, 1, mip, first + s,
+         slot, reason}
     );
 }
 
@@ -1317,8 +1379,10 @@ ArgumentEncodingContext::dumpHandleWrite(
     type = WMTTextureType2DArray;
   uint64_t width = std::max<uint64_t>(MTLTexture_width(texture) >> mip, 1);
   uint64_t height = std::max<uint64_t>(MTLTexture_height(texture) >> mip, 1);
+  uint64_t depth = type == WMTTextureType3D ? std::max<uint64_t>(MTLTexture_depth(texture) >> mip, 1) : 1;
   writes.push_back(
-      {texture, nullptr, MTLTexture_pixelFormat(texture), type, width, height, mip, slice, "", FrameDumpReason::Dumped}
+      {texture, nullptr, MTLTexture_pixelFormat(texture), type, width, height, depth, mip,
+       type == WMTTextureType3D ? 0u : slice, "", FrameDumpReason::Dumped}
   );
 }
 
@@ -1498,6 +1562,16 @@ ArgumentEncodingContext::traceIndirect(
     return;
   unsigned k = trace_pending_indirect_ ? trace_pending_indirect_ : frame_trace_.nextIndirect();
   trace_pending_indirect_ = 0;
+  // clarification 44: the draw line waiting for its indirect number gets it
+  if (!dispatch && trace_draw_waiting_.encoder == encoder_current) {
+    auto drawn = trace_draw_notes_.find(encoder_current);
+    if (drawn != trace_draw_notes_.end() && trace_draw_waiting_.index < drawn->second.size()) {
+      auto &line = drawn->second[trace_draw_waiting_.index];
+      if (auto at = line.find("#?"); at != std::string::npos)
+        line.replace(at, 2, "#" + std::to_string(k));
+    }
+    trace_draw_waiting_ = {nullptr, 0};
+  }
   int written = -1;
   if (dispatch) {
     // DXMT's own view: an encoder of this command buffer (the open one included) whose write
@@ -1563,6 +1637,8 @@ ArgumentEncodingContext::traceEncoders(EncoderData **encoders, unsigned count) {
   trace_dispatch_notes_.clear();
   trace_indirect_notes_.clear();
   trace_state_notes_.clear(); // spec 05 clarification 30
+  trace_draw_notes_.clear();  // spec 05 clarification 44
+  trace_draw_waiting_ = {nullptr, 0};
   // spec 05 clarification 39: into the frame's trace.txt, not the log
   if (trace_record_)
     for (auto &line : out)
@@ -1580,6 +1656,11 @@ void
 ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<std::string> &out) {
   std::vector<std::string> attachments, viewports, scissors;
   uint32_t width = data->render_target_width, height = data->render_target_height;
+  // spec 05 clarification 44: each attachment's texture type, as its view sees it
+  auto type_of = [](const TextureViewRef &ref) {
+    auto *view = ref.ptr();
+    return TraceTextureType(view->allocation->descriptor->textureType(view->key));
+  };
   for (unsigned i = 0; i < data->colors.size(); i++) {
     auto &color = data->colors[i];
     if (!color.attachment)
@@ -1591,21 +1672,21 @@ ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<st
     }
     attachments.push_back(TraceAttachment(
         "c" + std::to_string(i), texture.pixelFormat(), texture.width(), texture.height(), color.level, color.slice,
-        color.load_action
+        color.load_action, type_of(color.attachment)
     ));
   }
   if (data->depth.attachment) {
     auto texture = data->depth.attachment.texture();
     attachments.push_back(TraceAttachment(
         "depth", texture.pixelFormat(), texture.width(), texture.height(), data->depth.level, data->depth.slice,
-        data->depth.load_action
+        data->depth.load_action, type_of(data->depth.attachment)
     ));
   }
   if (data->stencil.attachment) {
     auto texture = data->stencil.attachment.texture();
     attachments.push_back(TraceAttachment(
         "stencil", texture.pixelFormat(), texture.width(), texture.height(), data->stencil.level, data->stencil.slice,
-        data->stencil.load_action
+        data->stencil.load_action, type_of(data->stencil.attachment)
     ));
   }
 
@@ -1668,12 +1749,18 @@ ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<st
     }
   }
   unsigned index = frame_trace_.nextPass();
-  frame_trace_.line(TraceRenderPass(index, attachments, draws, viewports, scissors, partial), out);
+  // clarification 44: the layer count (0 when not layered)
+  int layers = data->render_target_array_length > 1 ? int(data->render_target_array_length) : 0;
+  frame_trace_.line(TraceRenderPass(index, attachments, draws, viewports, scissors, partial, layers), out);
   frame_trace_.countRenderPass(draws); // spec 05 clarification 39
   // spec 05 clarification 30: the distinct states the pass's draws used
   if (auto states = trace_state_notes_.find(data); states != trace_state_notes_.end())
     for (auto &state : states->second)
       frame_trace_.line("pass " + std::to_string(index) + " " + state, out);
+  // clarification 44: each draw, in order
+  if (auto drawn = trace_draw_notes_.find(data); drawn != trace_draw_notes_.end())
+    for (size_t k = 0; k < drawn->second.size(); k++)
+      frame_trace_.line("pass " + std::to_string(index) + " draw " + std::to_string(k) + ": " + drawn->second[k], out);
   for (auto &line : indirect_lines)
     frame_trace_.line(line, out);
 }

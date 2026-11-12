@@ -206,6 +206,62 @@ TestTraceFile() {
 }
 
 void
+TestDrawsAndLayers() {
+  // clarification 44: the pass line's layers and attachment types
+  CHECK(TraceAttachment("c0", WMTPixelFormatRGBA16Float, 64, 64, 0, 0, WMTLoadActionLoad,
+                        TraceTextureType(WMTTextureType3D)) == "c0 RGBA16Float 64x64 3d mip 0 slice 0 load");
+  CHECK(std::string(TraceTextureType(WMTTextureType2DArray)) == "2d-array");
+  CHECK(std::string(TraceTextureType(WMTTextureTypeCube)) == "cube");
+  CHECK(std::string(TraceTextureType(WMTTextureTypeCubeArray)) == "cube");
+  CHECK(std::string(TraceTextureType(WMTTextureType2D)) == "2d");
+  CHECK(TraceRenderPass(7, {"c0 RGBA16Float 64x64 3d mip 0 slice 0 load"}, 1, {"0,0 64x64"}, {}, false, 64) ==
+        "pass 7: c0 RGBA16Float 64x64 3d mip 0 slice 0 load; layers 64; 1 draw; viewports 0,0 64x64");
+  CHECK(TraceRenderPass(8, {"c0 RGBA16Float 1280x720 2d mip 0 slice 0 load"}, 3, {}, {}, false, 0) ==
+        "pass 8: c0 RGBA16Float 1280x720 2d mip 0 slice 0 load; layers 0; 3 draws");
+
+  // a plain draw
+  TraceDrawArgs draw;
+  draw.count = 3;
+  draw.vs_hash = 0x1a2b3c4d;
+  CHECK(TraceDrawLine(draw) ==
+        "draw vertices 3 start 0 base - instances 1 start instance 0; vs 1a2b3c4d writes -; gs -");
+  // indexed and instanced, the vertex shader writing the render-target array index
+  TraceDrawArgs volume;
+  volume.kind = "draw indexed instanced";
+  volume.indexed = true;
+  volume.count = 6;
+  volume.start = 12;
+  volume.base = -4;
+  volume.instances = 64;
+  volume.start_instance = 2;
+  volume.vs_hash = 0xabcdef01;
+  volume.vs_writes = 1;
+  CHECK(TraceDrawLine(volume) == "draw indexed instanced indices 6 start 12 base -4 instances 64 start instance 2; "
+                                 "vs abcdef01 writes rtindex; gs -");
+  // a geometry shader, folded or emulated, writing both indices; an unknown vertex signature
+  volume.vs_writes = -1;
+  volume.gs = true;
+  volume.gs_hash = 0x00000abc;
+  volume.gs_writes = 3;
+  volume.gs_folded = true;
+  CHECK(TraceDrawLine(volume) == "draw indexed instanced indices 6 start 12 base -4 instances 64 start instance 2; "
+                                 "vs abcdef01 writes ?; gs 00000abc writes rtindex,vpindex folded");
+  volume.gs_folded = false;
+  volume.gs_writes = 2;
+  CHECK(TraceDrawLine(volume).find("; gs 00000abc writes vpindex emulated") != std::string::npos);
+  // indirect: the number, or "#?" until the encoder fills it in
+  TraceDrawArgs indirect;
+  indirect.kind = "draw instanced";
+  indirect.indirect = true;
+  indirect.vs_hash = 0x11111111;
+  CHECK(TraceDrawLine(indirect) == "draw instanced indirect #?; vs 11111111 writes -; gs -");
+  indirect.indirect_k = 5;
+  CHECK(TraceDrawLine(indirect) == "draw instanced indirect #5; vs 11111111 writes -; gs -");
+  CHECK(TraceWritesText(0) == "-");
+  CHECK(TraceWritesText(3) == "rtindex,vpindex");
+}
+
+void
 TestSummaryLine() {
   std::string line = FrameTraceSummary(1800, 2425, 160, 141, 3010, "C:\\users\\Public\\pg-dumps\\frame-1800");
   CHECK(line == "dxmt-frame 1800: 2425 lines, 160 render passes, 141 dispatches, 3010 draws; trace in "
@@ -224,6 +280,7 @@ main() {
   TestFormats();
   TestFrameAndCap();
   TestTraceFile();
+  TestDrawsAndLayers();
   TestSummaryLine();
   return TestSummary("test_frame_trace");
 }

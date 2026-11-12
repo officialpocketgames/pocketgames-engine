@@ -878,6 +878,17 @@ public:
     for (auto &line : lines)
       TraceAddDistinct(list, line);
   }
+  /* spec 05 clarification 44: a traced draw's line, in its render pass's order; an indirect
+     one waits for its number from traceIndirect */
+  void
+  traceDraw(std::string &&line, bool indirect) {
+    if (!trace_active_ || !encoder_current)
+      return;
+    auto &list = trace_draw_notes_[encoder_current];
+    list.push_back(std::move(line));
+    if (indirect)
+      trace_draw_waiting_ = {encoder_current, list.size() - 1};
+  }
   /* spec 05 clarification 30: the samplers of the next dispatches */
   void
   traceComputeSamplers(std::vector<std::string> &&lines) {
@@ -1018,6 +1029,13 @@ private:
   };
   /* spec 05 clarification 30 */
   std::map<const void *, std::vector<std::string>> trace_state_notes_; // render encoder -> its distinct states
+  /* spec 05 clarification 44 */
+  std::map<const void *, std::vector<std::string>> trace_draw_notes_; // render encoder -> its draws
+  struct TraceDrawWaiting {
+    const void *encoder;
+    size_t index;
+  };
+  TraceDrawWaiting trace_draw_waiting_ = {nullptr, 0};
   std::vector<std::string> trace_cs_samplers_;
   /* spec 05 clarifications 27 and 28: the UAVs the compute shader bound, as encoded */
   struct TraceUAVBinding {
@@ -1052,6 +1070,7 @@ private:
     WMTPixelFormat format;
     WMTTextureType type;
     uint64_t width, height;
+    uint64_t depth; // the 3D mip's depth (clarification 42), else 1
     unsigned mip, slice;
     std::string slot;
     FrameDumpReason reason;
@@ -1061,6 +1080,10 @@ private:
       obj_handle_t texture, unsigned mip, unsigned slice, uint64_t width, uint64_t height, unsigned texel,
       WMTBlitOption option, obj_handle_t buffer
   );
+  void dumpCopyTexture3D(
+      obj_handle_t texture, unsigned mip, unsigned slice, unsigned z, uint64_t width, uint64_t height, uint64_t depth,
+      unsigned texel, WMTBlitOption option, obj_handle_t buffer
+  ); // spec 05 clarification 42
   unsigned dumpTextureId(obj_handle_t texture);
   void dumpWrites(const std::string &writer, std::vector<DumpWrite> &writes, EncoderData *source);
   void dumpViewWrites(

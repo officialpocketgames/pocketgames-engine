@@ -165,10 +165,59 @@ TestDistinctPerPass() {
     CHECK(("dxmt-frame 1800: pass 14 " + line).size() <= kFrameTraceMaxLineBytes);
 }
 
+/* A DXBC container with one signature chunk (OSGN, OSG5 or OSG1) listing `values` as system
+   values, as the compiler lays it out. */
+std::vector<uint8_t>
+Dxbc(const char *fourcc, std::vector<uint32_t> values) {
+  size_t element = std::strcmp(fourcc, "OSGN") == 0 ? 24 : std::strcmp(fourcc, "OSG5") == 0 ? 28 : 32;
+  size_t sv_offset = std::strcmp(fourcc, "OSGN") == 0 ? 8 : 12;
+  std::vector<uint8_t> blob(32 + 4 + 8 + 8 + values.size() * element, 0);
+  auto put = [&](size_t at, uint32_t v) {
+    for (int i = 0; i < 4; i++)
+      blob[at + i] = uint8_t(v >> (8 * i));
+  };
+  std::memcpy(blob.data(), "DXBC", 4);
+  put(24, 1);              // version
+  put(28, 1);              // one chunk
+  put(32, 36);             // at offset 36
+  std::memcpy(blob.data() + 36, fourcc, 4);
+  put(40, uint32_t(8 + values.size() * element));
+  put(44, uint32_t(values.size()));
+  put(48, 8);
+  for (size_t e = 0; e < values.size(); e++)
+    put(52 + e * element + sv_offset, values[e]);
+  return blob;
+}
+
+void
+TestOutputSignature() {
+  // clarification 44: SV_RenderTargetArrayIndex (4) and SV_ViewportArrayIndex (5) in the outputs
+  auto position_only = Dxbc("OSGN", {1 /* SV_Position */, 0});
+  CHECK_EQ(DxbcOutputWrites(position_only.data(), position_only.size()), 0);
+  auto rt = Dxbc("OSGN", {1, 0, 4});
+  CHECK_EQ(DxbcOutputWrites(rt.data(), rt.size()), 1);
+  auto vp = Dxbc("OSG5", {1, 5}); // a geometry shader's, with streams
+  CHECK_EQ(DxbcOutputWrites(vp.data(), vp.size()), 2);
+  auto both = Dxbc("OSG1", {4, 5, 1});
+  CHECK_EQ(DxbcOutputWrites(both.data(), both.size()), 3);
+  // an input signature isn't looked at
+  auto input = Dxbc("ISGN", {4});
+  CHECK_EQ(DxbcOutputWrites(input.data(), input.size()), 0);
+  // not a container, cut short, a chunk past the end: unknown
+  uint8_t junk[40] = {'D', 'X', 'B', 'X'};
+  CHECK_EQ(DxbcOutputWrites(junk, sizeof(junk)), -1);
+  CHECK_EQ(DxbcOutputWrites(rt.data(), 20), -1);
+  auto cut = rt;
+  cut.resize(50);
+  CHECK_EQ(DxbcOutputWrites(cut.data(), cut.size()), -1);
+  CHECK_EQ(DxbcOutputWrites(nullptr, 0), -1);
+}
+
 } // namespace
 
 int
 main() {
+  TestOutputSignature();
   TestSampler();
   TestBlend();
   TestDepthStencilAndRasterizer();

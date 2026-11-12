@@ -209,6 +209,12 @@ FrameDumpLayerName(FrameDumpLayers layers, bool cube_array, unsigned mip, unsign
   }
 }
 
+/* clarification 42's fallback: "mip0-z32" for depth slice 32 of a 3D mip */
+inline std::string
+FrameDumpDepthSliceName(unsigned mip, unsigned z) {
+  return "mip" + std::to_string(mip) + "-z" + std::to_string(z);
+}
+
 /* "t0007-RGBA16Float-1280x720-mip0-slice0.raw", with "-first" before ".raw" for the state after
    the first write */
 inline std::string
@@ -216,6 +222,43 @@ FrameDumpSubresourceName(unsigned id, const std::string &format_label, uint64_t 
                          const std::string &layer, bool first) {
   return FrameDumpTextureId(id) + "-" + format_label + "-" + std::to_string(width) + "x" + std::to_string(height) +
          "-" + layer + (first ? "-first" : "") + ".raw";
+}
+
+/* Spec 05 clarification 42: "t0007-RGBA16Float-64x64x64-mip0-3d.raw", every depth slice of a
+   3D texture's mip in order (with "-first" for the state after the first write) */
+inline std::string
+FrameDumpVolumeName(unsigned id, const std::string &format_label, uint64_t width, uint64_t height, uint64_t depth,
+                    unsigned mip, bool first) {
+  return FrameDumpTextureId(id) + "-" + format_label + "-" + std::to_string(width) + "x" + std::to_string(height) +
+         "x" + std::to_string(depth) + "-mip" + std::to_string(mip) + "-3d" + (first ? "-first" : "") + ".raw";
+}
+
+/* How a written 3D mip is dumped (clarification 42): whole when it fits the 16 MB per-file
+   limit, else depth slices 0, d/2 and d-1 (distinct ones) as separate files. */
+struct FrameDump3DPlan {
+  bool whole;
+  unsigned count;
+  unsigned slices[3];
+};
+
+inline FrameDump3DPlan
+FrameDumpPlan3D(uint64_t width, uint64_t height, uint64_t depth, unsigned texel) {
+  FrameDump3DPlan plan{};
+  if (!depth)
+    depth = 1;
+  if (width * height * depth * texel <= kFrameDumpMaxTextureBytes) {
+    plan.whole = true;
+    return plan;
+  }
+  unsigned candidates[3] = {0, unsigned(depth / 2), unsigned(depth - 1)};
+  for (unsigned z : candidates) {
+    bool seen = false;
+    for (unsigned i = 0; i < plan.count; i++)
+      seen = seen || plan.slices[i] == z;
+    if (!seen)
+      plan.slices[plan.count++] = z;
+  }
+  return plan;
 }
 
 /* "present-BGRA8Unorm-1280x720.raw" */
@@ -238,23 +281,29 @@ FrameDumpDispatchTag(uint32_t hash) {
   return text;
 }
 
+/* "1280x720", or "64x64x64" for a 3D mip */
+inline std::string
+FrameDumpSizeText(uint64_t width, uint64_t height, uint64_t depth = 1) {
+  return std::to_string(width) + "x" + std::to_string(height) + (depth > 1 ? "x" + std::to_string(depth) : "");
+}
+
 /* One index line: "pass 14 c0: t0007 RGBA16Float 2D 1280x720 mip0-slice0 -> <file>" or
-   "... not dumped (budget)" */
+   "... not dumped (budget)". `layer` may carry a note (clarification 42's 3D slices). */
 inline std::string
 FrameDumpIndexLine(const std::string &writer, const std::string &slot, unsigned id, const std::string &format_label,
-                   WMTTextureType type, uint64_t width, uint64_t height, const std::string &layer,
-                   FrameDumpReason reason, const std::string &file) {
+                   WMTTextureType type, const std::string &size, const std::string &layer, FrameDumpReason reason,
+                   const std::string &file) {
   std::string line = writer + (slot.empty() ? "" : " " + slot) + ": " + FrameDumpTextureId(id) + " " + format_label +
-                     " " + FrameDumpTypeName(type) + " " + std::to_string(width) + "x" + std::to_string(height) +
-                     " " + layer;
+                     " " + FrameDumpTypeName(type) + " " + size + " " + layer;
   if (reason == FrameDumpReason::Dumped)
     line += " -> " + file;
   else
     line += std::string(" not dumped (") + FrameDumpReasonText(reason) + ")";
-  if (type == WMTTextureType3D && reason == FrameDumpReason::Dumped)
-    line += " (3D: slice 0 only)";
   return line;
 }
+
+/* the key's `slice` for a whole 3D mip (clarification 42) */
+constexpr unsigned kFrameDumpWholeVolume = 0xFFFFFFFFu;
 
 /* ---- clarification 33: one buffer per subresource ---- */
 
