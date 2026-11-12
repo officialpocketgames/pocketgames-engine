@@ -1,4 +1,4 @@
-// Changed for MYIOSDECK (spec 05 clarification 24: RecordingPresent). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 clarification 24: RecordingPresent; 57: SerializeBeforeCpuWrite). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "d3d11_device.hpp"
 #include "d3d11_private.h"
 #include "d3d11_context_impl.cpp"
@@ -63,6 +63,12 @@ uint64_t
 DeferredContextBase::RecordingPresent() {
   return 0;
 }
+
+/* MYIOSDECK spec 05 clarification 57: a deferred context's writes reach the GPU only through
+   the immediate context, which waits when it runs them */
+template <>
+void
+DeferredContextBase::SerializeBeforeCpuWrite() {}
 
 template <>
 void DeferredContextBase::UseCopyDestination(Rc<StagingResource> &staging) {

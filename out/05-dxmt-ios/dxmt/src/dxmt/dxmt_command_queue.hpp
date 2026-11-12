@@ -2,7 +2,8 @@
 // Changed for MYIOSDECK (spec 05 E2, H1, H2, H5; spec 07 A2: LGPL-2.1-or-later blocks from
 // dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10:
 // an LGPL-2.1-or-later member from steamac's DXMT patch 0023, marked inline; spec 05 clarification
-// 24 and 28: the frame trace's read-backs and the frame dump's copies). Upstream: DXMT a3a6e8f, MIT.
+// 24 and 28: the frame trace's read-backs and the frame dump's copies; clarification 57: the
+// serialize test switch). Upstream: DXMT a3a6e8f, MIT.
 
 #include "Metal.hpp"
 #include "dxmt_allocation.hpp"
@@ -13,6 +14,7 @@
 #include "dxmt_occlusion_query.hpp"
 #include "dxmt_resource_initializer.hpp"
 #include "dxmt_ring_bump_allocator.hpp"
+#include "dxmt_serialize.hpp" // spec 05 clarification 57
 #include "dxmt_statistics.hpp"
 #include "log/log.hpp"
 #include "thread.hpp"
@@ -229,6 +231,9 @@ private:
   uint64_t encoder_seq = 1;
   uint64_t frame_count = 0;
   uint32_t max_latency_ = 3;
+  /* MYIOSDECK spec 05 clarification 57: PG_DXMT_SERIALIZE's level, read once at creation */
+  unsigned serialize_level_ = 0;
+  SerializeStats serialize_stats_;
 
   dxmt::thread encodeThread;
   dxmt::thread finishThread;
@@ -322,6 +327,12 @@ public:
     statistics.compute(frame_count);
     frame_count++;
     FrameDumpCheckRequest(frame_count); // spec 05 clarification 40 (test builds only)
+    if (serialize_level_) { // spec 05 clarification 57: level 2 waits for the present's chunk
+      SerializeAfterPresent(*this, serialize_stats_, serialize_level_);
+      std::string line;
+      if (serialize_stats_.present(line))
+        Logger::info(line);
+    }
     statistics.at(frame_count).reset();
     // After present N-th frame (N starts from 1), wait for (N - max_latency)-th frame to finish rendering 
     if (likely(frame_count > max_latency_)) {
@@ -357,6 +368,20 @@ public:
   WaitCPUFence(uint64_t seq) {
     cpu_coherent.wait(seq);
   };
+
+  /* MYIOSDECK spec 05 clarification 57 */
+  unsigned
+  SerializeLevel() const {
+    return serialize_level_;
+  }
+
+  /* Level 3: before the CPU writes memory the GPU may read, commit the chunk being recorded
+     (`commit`) and wait until the GPU has finished every committed chunk. */
+  template <typename Commit>
+  void
+  SerializeBeforeCpuWrite(Commit &&commit) {
+    dxmt::SerializeBeforeCpuWrite(*this, serialize_stats_, serialize_level_, std::forward<Commit>(commit));
+  }
 
 #ifdef DXMT_IOS
   /**

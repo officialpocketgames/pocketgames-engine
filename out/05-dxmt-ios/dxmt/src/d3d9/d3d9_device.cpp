@@ -10912,6 +10912,13 @@ MTLD3D9Device::forceFlushAndCommit() {
 }
 
 void
+MTLD3D9Device::serializeBeforeLock(DWORD usage, DWORD flags) { // MYIOSDECK spec 05 clarification 57
+  if (!m_dxmtQueue || !(usage & D3DUSAGE_DYNAMIC) || (flags & D3DLOCK_READONLY))
+    return;
+  m_dxmtQueue->SerializeBeforeCpuWrite([this] { forceFlushAndCommit(); });
+}
+
+void
 MTLD3D9Device::refreshSignaledAndTrimRings(bool force) {
   // Post-3.8 old finalize-tail path is dead; without explicit signaledValue refresh,
   // ring reuse predicate never holds, burning fresh placed-buffer blocks per sub-allocate.

@@ -392,6 +392,28 @@ public:
     return true;
   }
 
+  /* Spec 05 clarification 58: the same for a vertex-shader constant buffer's copy of `bytes`
+     (at most 4096): 300 a frame, counted apart from the views', out of the same share. */
+  bool
+  takeCbReadback(uint64_t bytes) {
+    if (cb_readbacks_ >= kFrameTraceMaxCbReadbacks || !takeShare(bytes)) {
+      cb_skipped_++;
+      return false;
+    }
+    cb_readbacks_++;
+    return true;
+  }
+
+  unsigned
+  cbReadbacks() const {
+    return cb_readbacks_;
+  }
+
+  unsigned
+  cbSkipped() const {
+    return cb_skipped_;
+  }
+
   unsigned
   srvReadbacks() const {
     return srv_readbacks_;
@@ -428,6 +450,8 @@ private:
   uint64_t first_bytes_ = 0;
   unsigned srv_readbacks_ = 0;
   unsigned srv_skipped_ = 0;
+  unsigned cb_readbacks_ = 0;
+  unsigned cb_skipped_ = 0;
   uint64_t refused_bytes_ = 0;
   unsigned files_ = 0;
   unsigned first_files_ = 0;

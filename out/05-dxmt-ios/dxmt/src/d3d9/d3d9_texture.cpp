@@ -799,6 +799,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) {
   D9_CALL(IDirect3DTexture9, LockRect);
   D9DeviceLock lock = m_device->LockDevice();
+  m_device->serializeBeforeLock(m_usage, Flags); // MYIOSDECK spec 05 clarification 57
   if (Level >= m_levels.size())
     return D3DERR_INVALIDCALL;
   if ((m_usage & D3DUSAGE_AUTOGENMIPMAP) && Level != 0)

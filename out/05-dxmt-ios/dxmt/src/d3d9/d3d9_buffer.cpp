@@ -280,6 +280,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWORD Flags) {
   D9_CALL(IDirect3DVertexBuffer9, Lock);
   D9DeviceLock lock = m_device->LockDevice();
+  m_device->serializeBeforeLock(m_usage, Flags); // MYIOSDECK spec 05 clarification 57
   if (!ppbData)
     return D3DERR_INVALIDCALL;
   *ppbData = nullptr;
@@ -523,6 +524,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWORD Flags) {
   D9_CALL(IDirect3DIndexBuffer9, Lock);
   D9DeviceLock lock = m_device->LockDevice();
+  m_device->serializeBeforeLock(m_usage, Flags); // MYIOSDECK spec 05 clarification 57
   // Same shape as MTLD3D9VertexBuffer::Lock: see the rationale there
   // for the flag sanitisation, DISCARD / NOOVERWRITE semantics, the
   // plain-map GPU sync, and the mode-aware lockable base.

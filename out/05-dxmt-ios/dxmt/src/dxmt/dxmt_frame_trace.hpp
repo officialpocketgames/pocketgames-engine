@@ -310,7 +310,64 @@ struct FrameTraceReadback {
      number `serial` */
   bool srv = false;
   unsigned serial = 0;
+  /* spec 05 clarification 58: a vertex-shader constant buffer b<slot>, `bytes` bytes read before
+     draw `serial`, with the CPU's hash of the same bytes when the buffer is dynamic */
+  bool cb = false;
+  unsigned bytes = 0;
+  bool cpu_hash_valid = false;
+  uint64_t cpu_hash = 0;
 };
+
+/* Spec 05 clarification 58: FNV-1a, 64-bit (offset basis 0xcbf29ce484222325, prime
+   0x100000001b3) */
+inline uint64_t
+TraceFnv1a64(const void *data, size_t size) {
+  uint64_t hash = 0xcbf29ce484222325ull;
+  auto bytes = static_cast<const uint8_t *>(data);
+  for (size_t i = 0; i < size; i++) {
+    hash ^= bytes[i];
+    hash *= 0x100000001b3ull;
+  }
+  return hash;
+}
+
+/* Spec 05 clarification 58: "cb vs b2 512 bytes gpu 1f2e... cpu 1f2e... 3f800000 ..." with the
+   first 256 bytes as 32-bit words, then " CHANGED" when both hashes exist and differ (the
+   draw's "pass N draw k" is put in front when it is placed) */
+inline std::string
+TraceCbReadbackText(unsigned slot, unsigned bytes, const void *data, bool cpu_hash_valid, uint64_t cpu_hash) {
+  char hash[24];
+  uint64_t gpu_hash = TraceFnv1a64(data, bytes);
+  std::string line = "cb vs b" + std::to_string(slot) + " " + std::to_string(bytes) + " bytes gpu ";
+  std::snprintf(hash, sizeof(hash), "%016llx", (unsigned long long)gpu_hash);
+  line += hash;
+  line += " cpu ";
+  if (cpu_hash_valid) {
+    std::snprintf(hash, sizeof(hash), "%016llx", (unsigned long long)cpu_hash);
+    line += hash;
+  } else {
+    line += "-";
+  }
+  auto words = static_cast<const uint32_t *>(data);
+  unsigned shown = (bytes < 256 ? bytes : 256) / 4;
+  for (unsigned i = 0; i < shown; i++) {
+    char hex[16];
+    std::snprintf(hex, sizeof(hex), " %08x", words[i]);
+    line += hex;
+  }
+  if (cpu_hash_valid && cpu_hash != gpu_hash)
+    line += " CHANGED";
+  return line;
+}
+
+/* at most 4096 bytes per constant buffer, 300 a frame (counted apart from item 50's) */
+constexpr unsigned kFrameTraceCbReadbackMaxBytes = 4096;
+constexpr unsigned kFrameTraceMaxCbReadbacks = 300;
+
+inline std::string
+TraceCbLeftOut(unsigned count) {
+  return "vertex-shader constant-buffer read-backs left out: " + std::to_string(count) + " (300 a frame, 64 MB share)";
+}
 
 /* Spec 05 clarification 27: "dxmt-frame 1800: uav #4 u0 00000003 0000001a ..." (the first
    `count` uints of the UAV at its view's offset, 8 hex digits each) */
@@ -359,6 +416,10 @@ TraceSrvReadbackText(unsigned slot, const uint32_t *values, unsigned count) {
 inline std::string
 TraceReadbackLine(const FrameTraceReadback &readback) {
   auto values = (const uint32_t *)readback.data;
+  if (readback.cb)
+    return "dxmt-frame " + std::to_string(readback.present) + ": " +
+           TraceCbReadbackText(readback.slot, readback.bytes, readback.data, readback.cpu_hash_valid,
+                               readback.cpu_hash);
   if (readback.srv)
     return "dxmt-frame " + std::to_string(readback.present) + ": " +
            TraceSrvReadbackText(readback.slot, values, readback.count);
@@ -495,7 +556,8 @@ TraceReadbackText(const FrameTraceReadback &readback) {
   std::string prefix = "dxmt-frame " + std::to_string(readback.present) + ": ";
   if (line.compare(0, prefix.size(), prefix) == 0)
     line.erase(0, prefix.size());
-  return {readback.uav, readback.k, line, readback.srv, readback.serial};
+  // clarification 58: constant buffers are placed under their draw like item 50's views
+  return {readback.uav, readback.k, line, readback.srv || readback.cb, readback.serial};
 }
 
 /* Spec 05 clarification 50: where a draw's lines end in the frame's lines, and its name

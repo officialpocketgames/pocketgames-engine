@@ -524,6 +524,7 @@ MTLD3D9CubeTexture::LockRect(
 ) {
   D9_CALL(IDirect3DCubeTexture9, LockRect);
   D9DeviceLock lock = m_device->LockDevice();
+  m_device->serializeBeforeLock(m_usage, Flags); // MYIOSDECK spec 05 clarification 57
   if (static_cast<uint32_t>(FaceType) >= 6 || Level >= m_level_count)
     return D3DERR_INVALIDCALL;
   if ((m_usage & D3DUSAGE_AUTOGENMIPMAP) && Level != 0)

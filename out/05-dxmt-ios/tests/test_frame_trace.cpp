@@ -331,6 +331,62 @@ TestDrawReadbacks() {
 }
 
 void
+TestConstantBufferReadbacks() {
+  // clarification 58: FNV-1a 64-bit (the published test vectors)
+  CHECK(TraceFnv1a64("", 0) == 0xcbf29ce484222325ull);
+  CHECK(TraceFnv1a64("a", 1) == 0xaf63dc4c8601ec8cull);
+  CHECK(TraceFnv1a64("foobar", 6) == 0x85944171f73967e8ull);
+
+  uint32_t words[128];
+  for (unsigned i = 0; i < 128; i++)
+    words[i] = 0x3f800000u + i;
+  uint64_t gpu = TraceFnv1a64(words, 32);
+  char hash[24];
+  std::snprintf(hash, sizeof(hash), "%016llx", (unsigned long long)gpu);
+  std::string expected_head = std::string("cb vs b2 32 bytes gpu ") + hash + " cpu ";
+  std::string values = " 3f800000 3f800001 3f800002 3f800003 3f800004 3f800005 3f800006 3f800007";
+
+  // a dynamic buffer the CPU left alone: both hashes, the same, no mark
+  CHECK(TraceCbReadbackText(2, 32, words, true, gpu) == expected_head + hash + values);
+  // changed after the draw was recorded: CHANGED at the end
+  CHECK(TraceCbReadbackText(2, 32, words, true, gpu ^ 1) ==
+        expected_head + [&] {
+          char other[24];
+          std::snprintf(other, sizeof(other), "%016llx", (unsigned long long)(gpu ^ 1));
+          return std::string(other);
+        }() + values + " CHANGED");
+  // not dynamic: no CPU hash, never CHANGED
+  CHECK(TraceCbReadbackText(2, 32, words, false, 0) == expected_head + "-" + values);
+  // only the first 256 bytes are written out, whatever was copied
+  std::string big = TraceCbReadbackText(0, 512, words, false, 0);
+  CHECK(StartsWith(big, "cb vs b0 512 bytes gpu "));
+  CHECK(big.size() == std::string("cb vs b0 512 bytes gpu 0123456789abcdef cpu -").size() + 9 * 64);
+
+  // its readback line, placed under its draw like a view's; one without its draw at the end
+  FrameTraceReadback cb{1800, 0, 8, false, words};
+  cb.cb = true;
+  cb.slot = 2;
+  cb.serial = 1;
+  cb.bytes = 32;
+  cb.cpu_hash_valid = true;
+  cb.cpu_hash = gpu;
+  CHECK(TraceReadbackLine(cb) == "dxmt-frame 1800: " + expected_head + hash + values);
+  FrameTraceReadback lost = cb;
+  lost.serial = 4;
+  lost.cpu_hash_valid = false;
+  std::vector<std::string> lines = {"pass 1: c0 RGBA8Unorm 64x64 mip 0 slice 0 load; 1 draw",
+                                     "pass 1 draw 1: draw indexed indices 6 start 0 base 0; vs 1 writes -; gs -",
+                                     "pass 1 draw 1 cb vs b2 4096 bytes first 0 count 256", "end"};
+  std::map<unsigned, FrameTraceDrawAnchor> anchors = {{1, {2, "pass 1 draw 1"}}};
+  auto file = FrameTraceFileLines(lines, {TraceReadbackText(lost), TraceReadbackText(cb)}, anchors);
+  CHECK_EQ(file.size(), 6u);
+  CHECK(file.size() == 6 && file[3] == "pass 1 draw 1 " + expected_head + hash + values);
+  CHECK(file.size() == 6 && file[4] == "end");
+  CHECK(file.size() == 6 && file[5] == "draw #4 " + expected_head + "-" + values);
+  CHECK(TraceCbLeftOut(7) == "vertex-shader constant-buffer read-backs left out: 7 (300 a frame, 64 MB share)");
+}
+
+void
 TestSummaryLine() {
   std::string line = FrameTraceSummary(1800, 2425, 160, 141, 3010, "C:\\users\\Public\\pg-dumps\\frame-1800");
   CHECK(line == "dxmt-frame 1800: 2425 lines, 160 render passes, 141 dispatches, 3010 draws; trace in "
@@ -351,6 +407,7 @@ main() {
   TestTraceFile();
   TestDrawsAndLayers();
   TestDrawReadbacks();
+  TestConstantBufferReadbacks();
   TestSummaryLine();
   return TestSummary("test_frame_trace");
 }

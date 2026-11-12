@@ -903,6 +903,7 @@ ArgumentEncodingContext::$$setEncodingContext(uint64_t seq_id, uint64_t frame_id
       if (dump_active_) {
         log_lines.push_back("dxmt-frame " + std::to_string(dump_present_) + ": " + dump_ledger_.summary());
         trace_srv_skipped_ = dump_ledger_.srvSkipped(); // clarification 50, for the trace's end
+        trace_cb_skipped_ = dump_ledger_.cbSkipped();   // clarification 58
         dump_ready_.push_back({FrameDumpDirectory(dump_present_), std::move(dump_index_), std::move(dump_files_)});
         dump_ledger_ = {};
         dump_buffers_.clear();
@@ -921,6 +922,8 @@ ArgumentEncodingContext::$$setEncodingContext(uint64_t seq_id, uint64_t frame_id
         frame_trace_.finish(closing);
         if (trace_srv_skipped_) // clarification 50: over the 300 or the share
           closing.push_back(TraceSrvLeftOut(trace_srv_skipped_));
+        if (trace_cb_skipped_) // clarification 58
+          closing.push_back(TraceCbLeftOut(trace_cb_skipped_));
         for (auto &line : closing)
           trace_record_->lines.push_back(std::move(line));
         trace_ready_.push_back(std::move(trace_record_));
@@ -929,6 +932,7 @@ ArgumentEncodingContext::$$setEncodingContext(uint64_t seq_id, uint64_t frame_id
       trace_draw_serial_ = 0; // clarifications 48-50
       trace_draw_indirect_k_ = 0;
       trace_srv_skipped_ = 0;
+      trace_cb_skipped_ = 0;
       if (traced) {
         trace_record_ = std::make_shared<FrameTraceRecord>();
         trace_record_->present = present;
@@ -1573,6 +1577,41 @@ ArgumentEncodingContext::traceSrvReadback(std::vector<TraceSrvBuffer> &&buffers)
 }
 
 void
+ArgumentEncodingContext::traceCbReadback(std::vector<TraceCbBuffer> &&buffers) {
+  // spec 05 clarification 58; the same blit pass as traceSrvReadback, before the same draw
+  if (!trace_active_ || !dump_active_)
+    return;
+  unsigned serial = trace_draw_serial_ + 1;
+  for (auto &cb : buffers) {
+    if (!cb.buffer.ptr())
+      continue;
+    unsigned length = std::min<uint32_t>(cb.byte_length, kFrameTraceCbReadbackMaxBytes) & ~3u;
+    if (!length)
+      continue;
+    // at most 300 a frame (apart from the views'), out of the dump's 64 MB share
+    if (!dump_ledger_.takeCbReadback(length))
+      continue;
+    auto [src, src_offset] = access(cb.buffer, cb.byte_offset, length, DXMT_ENCODER_RESOURCE_ACESS_READ);
+    auto [mapped, readback, readback_offset] = queue_.AllocateArgumentBuffer(seq_id_, length);
+    auto &cmd = encodeBlitCommand<wmtcmd_blit_copy_from_buffer_to_buffer>();
+    cmd.type = WMTBlitCommandCopyFromBufferToBuffer;
+    cmd.src = src->buffer();
+    cmd.src_offset = src_offset + cb.byte_offset;
+    cmd.dst = readback;
+    cmd.dst_offset = readback_offset;
+    cmd.copy_length = length;
+    FrameTraceReadback entry{frame_trace_.present(), 0, length / 4, false, mapped};
+    entry.cb = true;
+    entry.slot = cb.slot;
+    entry.serial = serial;
+    entry.bytes = length;
+    entry.cpu_hash_valid = cb.cpu_hash_valid;
+    entry.cpu_hash = cb.cpu_hash;
+    trace_readbacks_.push_back(entry);
+  }
+}
+
+void
 ArgumentEncodingContext::traceIndirectReadback(Rc<Buffer> const &args, unsigned offset, unsigned length, bool indexed) {
   // spec 05 clarification 24; runs in the blit pass the context opened for it
   if (!trace_active_ || trace_readback_count_ >= kFrameTraceMaxReadbacks)
@@ -1927,6 +1966,47 @@ ArgumentEncodingContext::traceBlitPass(BlitEncoderData *data, std::vector<std::s
 
 constexpr unsigned kEncoderOptimizerThreshold = 64;
 
+/* MYIOSDECK spec 05 clarification 57, level 4: every encoder waits for the fence the encoder
+   before it updated (all stages), so no two passes overlap on the GPU. Present, MetalFX and
+   event encoders aren't DXMT's own encoders and take no fence. */
+void
+ArgumentEncodingContext::serialWait(WMT::RenderCommandEncoder &encoder) {
+  if (serialize_fence_ != nullptr)
+    encoder.waitForFence(
+        serialize_fence_, WMTRenderStages(WMTRenderStageVertex | WMTRenderStageObject | WMTRenderStageMesh)
+    );
+}
+
+void
+ArgumentEncodingContext::serialWait(WMT::ComputeCommandEncoder &encoder) {
+  if (serialize_fence_ != nullptr)
+    encoder.waitForFence(serialize_fence_);
+}
+
+void
+ArgumentEncodingContext::serialWait(WMT::BlitCommandEncoder &encoder) {
+  if (serialize_fence_ != nullptr)
+    encoder.waitForFence(serialize_fence_);
+}
+
+void
+ArgumentEncodingContext::serialUpdate(WMT::RenderCommandEncoder &encoder) {
+  if (serialize_fence_ != nullptr)
+    encoder.updateFence(serialize_fence_, WMTRenderStageFragment);
+}
+
+void
+ArgumentEncodingContext::serialUpdate(WMT::ComputeCommandEncoder &encoder) {
+  if (serialize_fence_ != nullptr)
+    encoder.updateFence(serialize_fence_);
+}
+
+void
+ArgumentEncodingContext::serialUpdate(WMT::BlitCommandEncoder &encoder) {
+  if (serialize_fence_ != nullptr)
+    encoder.updateFence(serialize_fence_);
+}
+
 std::unique_ptr<VisibilityResultReadback>
 ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId, uint64_t event_seq_id) {
   assert(!encoder_current);
@@ -1946,19 +2026,15 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     assert(encoder_index == encoder_count);
   }
 
-  if (encoder_count > 1) {
-    unsigned j, i;
-    for (j = encoder_count - 2; j != ~0u; j--) {
-      if (encoders[j]->type == EncoderType::Null)
-        continue;
-      for (i = j + 1; i < std::min(encoder_count, j + kEncoderOptimizerThreshold); i++) {
-        if (encoders[i]->type == EncoderType::Null)
-          continue;
-        if (checkEncoderRelation(encoders[j], encoders[i]) == DXMT_ENCODER_LIST_OP_SYNCHRONIZE)
-          break;
-      }
-    }
-  }
+  // the upstream loop, moved into dxmt_serialize.hpp unchanged so a host test can drive it
+  // (spec 05 clarification 57; checkEncoderRelation keeps the order from level 1 on)
+  OptimizeEncoderList(
+      encoders, encoder_count, kEncoderOptimizerThreshold,
+      [this](EncoderData *former, EncoderData *latter) {
+        return checkEncoderRelation(former, latter) == DXMT_ENCODER_LIST_OP_SYNCHRONIZE;
+      },
+      [](EncoderData *encoder) { return encoder->type == EncoderType::Null; }
+  );
 
   // MYIOSDECK spec 05 clarification 21: the traced frame's passes, in submission order, after
   // clears were merged into the passes they precede (so their load actions are final)
@@ -2047,6 +2123,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       }
       auto gpu_buffer_ = data->allocated_argbuf;
       auto encoder = cmdbuf.renderCommandEncoder(render_pass_info);
+      serialWait(encoder); // spec 05 clarification 57 (level 4)
       encoder.setVertexBuffer(gpu_buffer_, 0, 16);
       encoder.setVertexBuffer(gpu_buffer_, 0, 29);
       encoder.setVertexBuffer(gpu_buffer_, 0, 30);
@@ -2123,6 +2200,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
         );
       }
       encoder.encodeCommands(&data->cmd_head);
+      serialUpdate(encoder);
       encoder.endEncoding();
       data->~RenderEncoderData();
       break;
@@ -2130,6 +2208,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     case EncoderType::Compute: {
       auto data = static_cast<ComputeEncoderData *>(current);
       auto encoder = cmdbuf.computeCommandEncoder(false);
+      serialWait(encoder); // spec 05 clarification 57 (level 4)
       struct wmtcmd_compute_setbuffer setcmd;
       setcmd.type = WMTComputeCommandSetBuffer;
       setcmd.next.set(nullptr);
@@ -2140,6 +2219,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       setcmd.index = 30;
       encoder.encodeCommands((const wmtcmd_compute_nop *)&setcmd);
       encoder.encodeCommands(&data->cmd_head);
+      serialUpdate(encoder);
       encoder.endEncoding();
       data->~ComputeEncoderData();
       break;
@@ -2147,7 +2227,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
     case EncoderType::Blit: {
       auto data = static_cast<BlitEncoderData *>(current);
       auto encoder = cmdbuf.blitCommandEncoder();
+      serialWait(encoder); // spec 05 clarification 57 (level 4)
       encoder.encodeCommands(&data->cmd_head);
+      serialUpdate(encoder);
       encoder.endEncoding();
       data->~BlitEncoderData();
       break;
@@ -2203,7 +2285,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
         }
         info.render_target_array_length = data->array_length;
         auto encoder = cmdbuf.renderCommandEncoder(info);
+        serialWait(encoder); // spec 05 clarification 57 (level 4)
         encoder.setLabel(WMT::String::string("ClearPass", WMTUTF8StringEncoding));
+        serialUpdate(encoder);
         encoder.endEncoding();
       }
       data->~ClearEncoderData();
@@ -2248,6 +2332,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
         }
 
         auto encoder = cmdbuf.renderCommandEncoder(info);
+        serialWait(encoder); // spec 05 clarification 57 (level 4)
         encoder.setLabel(WMT::String::string("DepthResolvePass", WMTUTF8StringEncoding));
         struct ResolveMetadata {
           uint32_t src_origin[2];
@@ -2269,6 +2354,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
              double(metadata.size[1]), 0.0, 1.0}
         );
         encoder.drawPrimitives(WMTPrimitiveTypeTriangle, 0, 3);
+        serialUpdate(encoder);
         encoder.endEncoding();
         data->~ResolveEncoderData();
         break;
@@ -2283,7 +2369,9 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
         info.colors[0].resolve_texture = data->dst.texture();
 
         auto encoder = cmdbuf.renderCommandEncoder(info);
+        serialWait(encoder); // spec 05 clarification 57 (level 4)
         encoder.setLabel(WMT::String::string("ResolvePass", WMTUTF8StringEncoding));
+        serialUpdate(encoder);
         encoder.endEncoding();
       }
       data->~ResolveEncoderData();
@@ -2315,6 +2403,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
         }
 
         auto encoder = cmdbuf.renderCommandEncoder(info);
+        serialWait(encoder); // spec 05 clarification 57 (level 4)
         encoder.setLabel(WMT::String::string("StretchBlitPass", WMTUTF8StringEncoding));
         if (data->pso && data->sampler) {
           struct {
@@ -2335,6 +2424,7 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
           );
           encoder.drawPrimitives(WMTPrimitiveTypeTriangle, 0, 3);
         }
+        serialUpdate(encoder);
         encoder.endEncoding();
       }
       data->~StretchBlitEncoderData();
@@ -2391,6 +2481,10 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
     return DXMT_ENCODER_LIST_OP_SWAP;
   if (latter->type == EncoderType::Null)
     return DXMT_ENCODER_LIST_OP_SWAP;
+  // MYIOSDECK spec 05 clarification 57: from PG_DXMT_SERIALIZE=1 on, nothing is merged or
+  // moved (a clear stays its own pass)
+  if (SerializeKeepsEncoderOrder(serialize_level_))
+    return DXMT_ENCODER_LIST_OP_SYNCHRONIZE;
   if (former->type == EncoderType::SignalEvent)
     return DXMT_ENCODER_LIST_OP_SYNCHRONIZE;
   if (latter->type == EncoderType::SignalEvent)

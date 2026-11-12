@@ -251,6 +251,11 @@ public:
   // vertex/index buffer Lock helpers so both share one shape.
   void forceFlushAndCommit();
 
+  // MYIOSDECK spec 05 clarification 57: at PG_DXMT_SERIALIZE=3 and above, a write Lock of a
+  // DYNAMIC buffer or texture first commits and waits until the GPU has finished every
+  // committed chunk. Nothing for other usages, READONLY locks or lower levels.
+  void serializeBeforeLock(DWORD usage, DWORD flags);
+
   // Bytes of dynamic-buffer allocations minted since the last commit, and the
   // point at which the next draw submits rather than accumulating further.
   //

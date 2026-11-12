@@ -178,6 +178,26 @@ TestSrvReadbackLimit() {
   CHECK_EQ(nearly.firstBytes(), 64ull << 20);
   // a new frame's ledger starts again
   CHECK((FrameDumpLedger{}).takeSrvReadback(256));
+
+  // clarification 58: constant-buffer copies, 300 a frame counted apart from the views'
+  FrameDumpLedger both;
+  for (unsigned i = 0; i < kFrameTraceMaxSrvReadbacks; i++)
+    CHECK(both.takeSrvReadback(256));
+  CHECK(!both.takeSrvReadback(256));
+  for (unsigned i = 0; i < kFrameTraceMaxCbReadbacks; i++)
+    CHECK(both.takeCbReadback(4096));
+  CHECK(!both.takeCbReadback(16));
+  CHECK_EQ(both.cbReadbacks(), 300u);
+  CHECK_EQ(both.cbSkipped(), 1u);
+  CHECK_EQ(both.srvSkipped(), 1u);
+  CHECK_EQ(both.firstBytes(), 300ull * 256 + 300ull * 4096);
+  // and out of the same 64 MB share
+  FrameDumpLedger tight;
+  CHECK(tight.takeShare((64ull << 20) - 4096));
+  CHECK(tight.takeCbReadback(4096));
+  CHECK(!tight.takeCbReadback(16));
+  CHECK(!tight.takeSrvReadback(256));
+  CHECK_EQ(tight.cbSkipped(), 1u);
 }
 
 void

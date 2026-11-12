@@ -1180,6 +1180,8 @@ public:
     if (!pDstResource)
       return;
 
+    SerializeBeforeCpuWrite(); // spec 05 clarification 57 (level 3): the upload allocations
+
     BlitObject Dst(device, pDstResource);
 
     if (Dst.Dimension == D3D11_RESOURCE_DIMENSION_BUFFER) {
@@ -3061,6 +3063,9 @@ public:
   /* spec 05 clarification 24: the number of the present that ends the frame being recorded
      (immediate context), or 0 (a deferred context records for later) */
   uint64_t RecordingPresent();
+  /* spec 05 clarification 57: at PG_DXMT_SERIALIZE=3 and above, before the CPU is handed memory
+     to write, commit and wait for the GPU (immediate context; a deferred one does nothing) */
+  void SerializeBeforeCpuWrite();
   void UseCopyDestination(Rc<StagingResource> &);
   void UseCopySource(Rc<StagingResource> &);
 
@@ -5223,7 +5228,8 @@ public:
 
   /* MYIOSDECK spec 05 clarification 50: in a dumped frame of the immediate context, a blit pass
      right before the draw copies the first 64 uints of each vertex-shader buffer view at its
-     first element. The encoder keeps to 300 a frame and to the dump's first-write share. */
+     first element. The encoder keeps to 300 a frame and to the dump's first-write share.
+     Clarification 58 adds the vertex shader's constant buffers to the same blit pass. */
   void
   TraceVSBufferReadback() {
     if (!FrameDumped(RecordingPresent()))
@@ -5247,12 +5253,46 @@ public:
       auto slice = view->bufferSlice();
       buffers.push_back({slot, std::move(buffer), slice.byteOffset, slice.byteLength});
     }
-    if (buffers.empty())
+    // clarification 58: each constant buffer the vertex shader declares and has bound, from the
+    // binding's offset, its size, at most 4096 bytes; a dynamic buffer's same bytes hashed from
+    // the CPU's view now, when the draw is recorded
+    std::vector<ArgumentEncodingContext::TraceCbBuffer> cbs;
+    auto &cbuffers = state_.ShaderStages[PipelineStage::Vertex].ConstantBuffers;
+    for (unsigned slot = 0; slot < 14; slot++) {
+      if (!(reflection.ConstantBufferSlotMask & (1u << slot)) || !cbuffers.test_bound(slot))
+        continue;
+      auto &cb = cbuffers.at(slot);
+      if (!cb.Buffer.ptr())
+        continue;
+      auto buffer = cb.Buffer->buffer();
+      if (!buffer.ptr())
+        continue;
+      uint64_t total = buffer->length();
+      uint64_t offset = uint64_t(cb.FirstConstant) * 16;
+      if (offset >= total)
+        continue;
+      uint64_t bound = std::min<uint64_t>(uint64_t(cb.NumConstants) * 16, total - offset);
+      uint32_t length = uint32_t(std::min<uint64_t>(bound, kFrameTraceCbReadbackMaxBytes));
+      if (!length)
+        continue;
+      bool cpu_hash_valid = false;
+      uint64_t cpu_hash = 0;
+      UINT dynamic_length = 0, dynamic_bind = 0;
+      if (auto dynamic = cb.Buffer->dynamicBuffer(&dynamic_length, &dynamic_bind)) {
+        cpu_hash = TraceFnv1a64(static_cast<const char *>(dynamic->immediateMappedMemory()) + offset, length);
+        cpu_hash_valid = true;
+      }
+      cbs.push_back({slot, std::move(buffer), uint32_t(offset), length, cpu_hash_valid, cpu_hash});
+    }
+    if (buffers.empty() && cbs.empty())
       return;
     SwitchToBlitEncoder(CommandBufferState::BlitEncoderActive);
-    EmitOP([buffers = std::move(buffers)](ArgumentEncodingContext &enc) mutable {
-      enc.traceSrvReadback(std::move(buffers));
-    });
+    if (!buffers.empty())
+      EmitOP([buffers = std::move(buffers)](ArgumentEncodingContext &enc) mutable {
+        enc.traceSrvReadback(std::move(buffers));
+      });
+    if (!cbs.empty())
+      EmitOP([cbs = std::move(cbs)](ArgumentEncodingContext &enc) mutable { enc.traceCbReadback(std::move(cbs)); });
   }
 
   /* spec 05 clarification 50: a draw that PreDraw turned down still takes its number, so a

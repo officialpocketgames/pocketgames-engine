@@ -1,6 +1,6 @@
 // Changed for MYIOSDECK (spec 05 D2, D5, E1, E2; dynamic-buffer discard; spec 05 clarification 10:
 // LGPL-2.1-or-later blocks from steamac's DXMT patch 0015, marked inline, see LICENSE-NOTES.md;
-// clarification 24: RecordingPresent). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// clarification 24: RecordingPresent; 57: SerializeBeforeCpuWrite). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "config/config.hpp"
 #include "d3d11_fence.hpp"
 #include "d3d11_private.h"
@@ -61,6 +61,19 @@ template <>
 uint64_t
 ImmediateContextBase::RecordingPresent() {
   return ctx_state.cmd_queue.CurrentFrameSeq();
+}
+
+/* MYIOSDECK spec 05 clarification 57, level 3: commit what was recorded (if anything) and wait
+   until the GPU has finished every committed chunk */
+template <>
+void
+ImmediateContextBase::SerializeBeforeCpuWrite() {
+  ctx_state.cmd_queue.SerializeBeforeCpuWrite([this] {
+    if (cmdbuf_state != CommandBufferState::Idle || ctx_state.has_dirty_op_since_last_event) {
+      if (!InvalidateCurrentPass())
+        Commit();
+    }
+  });
 }
 
 template <>
@@ -185,6 +198,8 @@ public:
 
     if (unlikely(!pResource || !pMappedResource))
       return E_INVALIDARG;
+    if (MapType != D3D11_MAP_READ)
+      SerializeBeforeCpuWrite(); // spec 05 clarification 57 (level 3): dynamic and staging writes
     UINT buffer_length = 0, &row_pitch = buffer_length;
     UINT bind_flag = 0, &depth_pitch = bind_flag;
     auto current_seq_id = cmd_queue.CurrentSeqId();

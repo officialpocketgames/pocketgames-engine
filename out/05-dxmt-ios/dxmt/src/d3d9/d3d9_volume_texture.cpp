@@ -317,6 +317,7 @@ HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::LockBox(UINT Level, D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox, DWORD Flags) {
   D9_CALL(IDirect3DVolumeTexture9, LockBox);
   D9DeviceLock lock = m_device->LockDevice();
+  m_device->serializeBeforeLock(m_usage, Flags); // MYIOSDECK spec 05 clarification 57
   if (Level >= m_levels.size())
     return D3DERR_INVALIDCALL;
   return m_levels[Level]->lockBoxImpl(pLockedVolume, pBox, Flags); // uncounted: MYIOSDECK spec 07 clarification 3

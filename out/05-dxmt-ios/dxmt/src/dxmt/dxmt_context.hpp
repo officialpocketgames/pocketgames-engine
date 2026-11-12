@@ -22,6 +22,7 @@
 #include "dxmt_presenter.hpp"
 #include "dxmt_residency.hpp"
 #include "dxmt_sampler.hpp"
+#include "dxmt_serialize.hpp"
 #include "dxmt_statistics.hpp"
 #include "dxmt_texture.hpp"
 #include "log/log.hpp"
@@ -510,6 +511,16 @@ public:
 
   void retainAllocation(Allocation* allocation);
 
+  /* MYIOSDECK spec 05 clarification 57: PG_DXMT_SERIALIZE's level (set once by the queue). Level
+     1 keeps the encoders in recorded order; level 4 also makes a fence that every encoder waits
+     for and updates. */
+  void
+  setSerializeLevel(unsigned level) {
+    serialize_level_ = level;
+    if (SerializeFencesEncoders(level))
+      serialize_fence_ = device_.newFence();
+  }
+
   /* LGPL-2.1-or-later, from steamac's DXMT patch 0023 (Jakey-Jakey): with a residency set
      (iOS 18 and later, see CommandQueue) an allocation is put in the set instead of being
      declared with useResource per encoder. Returns false if it still needs useResource. */
@@ -907,6 +918,17 @@ public:
     uint32_t byte_length;
   };
   void traceSrvReadback(std::vector<TraceSrvBuffer> &&buffers);
+  /* spec 05 clarification 58, in the same blit pass: up to 4096 bytes of each vertex-shader
+     constant buffer from its binding's offset, with the CPU's hash of them when dynamic */
+  struct TraceCbBuffer {
+    unsigned slot;
+    Rc<Buffer> buffer;
+    uint32_t byte_offset;
+    uint32_t byte_length;
+    bool cpu_hash_valid;
+    uint64_t cpu_hash;
+  };
+  void traceCbReadback(std::vector<TraceCbBuffer> &&buffers);
   /* spec 05 clarification 50: a draw the context turned down after its read-backs: it takes its
      serial (its read-backs then go at the end of trace.txt), and an indirect read-back's
      number isn't handed to the next draw */
@@ -1044,6 +1066,15 @@ private:
 
   WMT::Device device_;
   CommandQueue& queue_;
+  /* spec 05 clarification 57 */
+  unsigned serialize_level_ = 0;
+  WMT::Reference<WMT::Fence> serialize_fence_;
+  void serialWait(WMT::RenderCommandEncoder &encoder);
+  void serialWait(WMT::ComputeCommandEncoder &encoder);
+  void serialWait(WMT::BlitCommandEncoder &encoder);
+  void serialUpdate(WMT::RenderCommandEncoder &encoder);
+  void serialUpdate(WMT::ComputeCommandEncoder &encoder);
+  void serialUpdate(WMT::BlitCommandEncoder &encoder);
   /* spec 05 clarification 17: this device's format capabilities, for noteReadWriteUAV */
   FormatCapabilityInspector uav_format_caps_;
   bool uav_format_caps_ready_ = false;
@@ -1066,6 +1097,7 @@ private:
   unsigned trace_draw_serial_ = 0;     // draws in this traced frame
   unsigned trace_draw_indirect_k_ = 0; // the k the last indirect draw took, for its traceIndirect
   unsigned trace_srv_skipped_ = 0; // clarification 50: the dumped frame's, for its trace's end
+  unsigned trace_cb_skipped_ = 0;  // clarification 58: the same for constant buffers
   std::vector<std::string> trace_cs_samplers_;
   /* spec 05 clarifications 27 and 28: the UAVs the compute shader bound, as encoded */
   struct TraceUAVBinding {

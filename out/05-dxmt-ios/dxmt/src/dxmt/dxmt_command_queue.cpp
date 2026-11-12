@@ -1,7 +1,8 @@
 // Changed for MYIOSDECK (spec 05 B9, D2, H2, H5; spec 06 D; spec 07 A2: LGPL-2.1-or-later blocks
 // from dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10:
 // LGPL-2.1-or-later blocks from steamac's DXMT patches 0019 and 0023, marked inline; spec 05
-// clarifications 24, 27 and 28: logging the frame trace's read-backs, writing the frame dump).
+// clarifications 24, 27 and 28: logging the frame trace's read-backs, writing the frame dump;
+// clarifications 56 and 57: the residency switch, the serialize switch).
 // Upstream: DXMT a3a6e8f, MIT.
 #include "dxmt_command_queue.hpp"
 #include "Metal.hpp"
@@ -80,6 +81,19 @@ CommandQueue::CommandQueue(WMT::Device device) :
       Logger::info(str::format("residency: MTLResidencySet (iOS ", os_major, ".", os_minor, ")"));
   }
   /* end of LGPL block */
+
+  /* MYIOSDECK spec 05 clarification 57: PG_DXMT_SERIALIZE (test builds set it), read once */
+  {
+    std::string value = env::getEnvVar("PG_DXMT_SERIALIZE");
+    auto setting = SerializeSettingFromValue(value.c_str());
+    serialize_level_ = setting.level;
+    if (setting.ignored)
+      Logger::warn("dxmt: PG_DXMT_SERIALIZE ignored (not 0-4)");
+    if (serialize_level_) {
+      Logger::info(SerializeLevelLine(serialize_level_));
+      argument_encoding_ctx.setSerializeLevel(serialize_level_);
+    }
+  }
 
   for (unsigned i = 0; i < kCommandChunkCount; i++) {
     auto &chunk = chunks[i];
