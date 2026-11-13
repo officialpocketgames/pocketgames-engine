@@ -141,9 +141,131 @@ TraceTextureType(WMTTextureType type) {
 /* "c0 RGBA16Float 1280x720 2d mip 0 slice 0 load" (clarification 44: with the texture's type) */
 inline std::string
 TraceAttachment(const std::string &name, WMTPixelFormat format, uint64_t width, uint64_t height, unsigned level,
-                unsigned slice, WMTLoadAction load, const char *type = nullptr) {
-  return name + " " + TraceTexture(format, width, height) + (type ? std::string(" ") + type : std::string()) +
-         " mip " + std::to_string(level) + " slice " + std::to_string(slice) + " " + TraceLoadAction(load);
+                unsigned slice, WMTLoadAction load, const char *type = nullptr, int texture_number = -1,
+                const char *store = nullptr) {
+  // clarification 64: "c0 t7 RGB10A2Unorm 1920x1080 2d mip 0 slice 0 load store"
+  return name + (texture_number >= 0 ? " t" + std::to_string(texture_number) : std::string()) + " " +
+         TraceTexture(format, width, height) + (type ? std::string(" ") + type : std::string()) + " mip " +
+         std::to_string(level) + " slice " + std::to_string(slice) + " " + TraceLoadAction(load) +
+         (store ? std::string(" ") + store : std::string());
+}
+
+/* Spec 05 clarification 64: an attachment's store action */
+inline const char *
+TraceStoreAction(WMTStoreAction action) {
+  switch (action) {
+  case WMTStoreActionStore: return "store";
+  case WMTStoreActionDontCare: return "dontcare";
+  case WMTStoreActionMultisampleResolve: return "resolve";
+  case WMTStoreActionStoreAndMultisampleResolve: return "store+resolve";
+  default: return "?";
+  }
+}
+
+/* "depth", "stencil", "depth+stencil" or "-" (bit 1 depth, bit 2 stencil) */
+inline const char *
+TracePlanes(unsigned planes) {
+  switch (planes & 3) {
+  case 1: return "depth";
+  case 2: return "stencil";
+  case 3: return "depth+stencil";
+  default: return "-";
+  }
+}
+
+/* attachments by bit (0-7 c0-c7, 8 depth, 9 stencil), joined with "+" */
+inline std::string
+TraceAttachmentNames(unsigned bits) {
+  std::string names;
+  for (unsigned i = 0; i < 10; i++) {
+    if (!(bits & (1u << i)))
+      continue;
+    if (!names.empty())
+      names += "+";
+    names += i < 8 ? "c" + std::to_string(i) : (i == 8 ? std::string("depth") : std::string("stencil"));
+  }
+  return names;
+}
+
+/* Spec 05 clarification 64: a pass's "cuts" field: what items 69-72 did, or ("would ...") would
+   have done with their switch on; "-" for none. */
+inline std::string
+TraceCutList(uint32_t keep_draws, bool keep, bool keep_would, unsigned ro_store, unsigned ro_store_would,
+             unsigned discard_load, unsigned discard_load_would, unsigned discard_store, unsigned discard_store_would,
+             unsigned overwrite_load, unsigned overwrite_load_would) {
+  std::vector<std::string> entries;
+  if (keep)
+    entries.push_back("keep-dsv " + std::to_string(keep_draws));
+  if (keep_would)
+    entries.push_back("would keep-dsv " + std::to_string(keep_draws));
+  if (ro_store)
+    entries.push_back(std::string("ro-store ") + TracePlanes(ro_store));
+  if (ro_store_would)
+    entries.push_back(std::string("would ro-store ") + TracePlanes(ro_store_would));
+  if (discard_load)
+    entries.push_back("discard-load " + TraceAttachmentNames(discard_load));
+  if (discard_load_would)
+    entries.push_back("would discard-load " + TraceAttachmentNames(discard_load_would));
+  if (discard_store)
+    entries.push_back("discard-store " + TraceAttachmentNames(discard_store));
+  if (discard_store_would)
+    entries.push_back("would discard-store " + TraceAttachmentNames(discard_store_would));
+  if (overwrite_load)
+    entries.push_back("overwrite-load " + TraceAttachmentNames(overwrite_load));
+  if (overwrite_load_would)
+    entries.push_back("would overwrite-load " + TraceAttachmentNames(overwrite_load_would));
+  if (entries.empty())
+    return "-";
+  std::string list;
+  for (auto &entry : entries)
+    list += (list.empty() ? "" : ", ") + entry;
+  return list;
+}
+
+/* Spec 05 clarification 64: what a traced frame's passes moved, and what the cuts saved, for the
+   closing lines of trace.txt */
+struct TraceCutTotals {
+  uint64_t keep_passes = 0, keep_bytes = 0;
+  uint64_t ro_planes = 0, ro_bytes = 0;
+  uint64_t discard = 0, discard_bytes = 0;
+  uint64_t overwrite = 0, overwrite_bytes = 0;
+};
+
+struct TraceFrameTotals {
+  uint64_t loads = 0, load_bytes = 0;
+  uint64_t stores = 0, store_bytes = 0;
+  uint64_t copies = 0, copy_bytes = 0;
+  TraceCutTotals applied, would;
+  uint64_t merged_compute = 0, merged_blit = 0;
+};
+
+inline std::string
+TraceMegabytes(uint64_t bytes) {
+  char text[32];
+  std::snprintf(text, sizeof(text), "%.1f", double(bytes) / (1024.0 * 1024.0));
+  return text;
+}
+
+/* "loads: 65 attachments, 242.0 MB; stores: 74, 332.0 MB; texture copies: 6, 155.0 MB",
+   "cuts applied: keep-dsv 0 passes 0.0 MB, ro-store 0 planes 0.0 MB, discard 0 0.0 MB,
+   overwrite-load 0 0.0 MB, merged 0 compute 0 blit", "cuts with the switches on: ..." (the
+   would-entries; item 68 has none) */
+inline std::vector<std::string>
+TraceTotalsLines(const TraceFrameTotals &t) {
+  auto cuts = [](const TraceCutTotals &c) {
+    return "keep-dsv " + std::to_string(c.keep_passes) + " passes " + TraceMegabytes(c.keep_bytes) + " MB, ro-store " +
+           std::to_string(c.ro_planes) + " planes " + TraceMegabytes(c.ro_bytes) + " MB, discard " +
+           std::to_string(c.discard) + " " + TraceMegabytes(c.discard_bytes) + " MB, overwrite-load " +
+           std::to_string(c.overwrite) + " " + TraceMegabytes(c.overwrite_bytes) + " MB";
+  };
+  return {
+      "loads: " + std::to_string(t.loads) + " attachments, " + TraceMegabytes(t.load_bytes) + " MB; stores: " +
+          std::to_string(t.stores) + ", " + TraceMegabytes(t.store_bytes) + " MB; texture copies: " +
+          std::to_string(t.copies) + ", " + TraceMegabytes(t.copy_bytes) + " MB",
+      "cuts applied: " + cuts(t.applied) + ", merged " + std::to_string(t.merged_compute) + " compute " +
+          std::to_string(t.merged_blit) + " blit",
+      "cuts with the switches on: " + cuts(t.would),
+  };
 }
 
 /* ---- spec 05 clarification 44: one line per draw ---- */
@@ -236,12 +358,17 @@ TraceJoin(const std::vector<std::string> &items, const char *separator) {
 inline std::string
 TraceRenderPass(unsigned index, const std::vector<std::string> &attachments, unsigned draws,
                 const std::vector<std::string> &viewports, const std::vector<std::string> &scissors, bool partial,
-                int layers = -1) {
+                int layers = -1, const std::string &writes = std::string(), const std::string &cuts = std::string()) {
   // clarification 44: "layers <n>" (0 when not layered); -1 leaves it out
   std::string line = "pass " + std::to_string(index) + ": " +
                      (attachments.empty() ? std::string("no attachments") : TraceJoin(attachments, ", ")) + "; " +
                      (layers >= 0 ? "layers " + std::to_string(layers) + "; " : std::string()) +
                      std::to_string(draws) + (draws == 1 ? " draw" : " draws");
+  // clarification 64: the planes the draws can write, then the cuts (left out when not given)
+  if (!writes.empty())
+    line += "; writes " + writes;
+  if (!cuts.empty())
+    line += "; cuts " + cuts;
   if (!viewports.empty())
     line += "; viewports " + TraceJoin(viewports, " | ");
   if (!scissors.empty())

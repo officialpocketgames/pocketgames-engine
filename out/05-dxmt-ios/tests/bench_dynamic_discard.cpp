@@ -287,6 +287,106 @@ struct Model {
   }
 };
 
+/* ---- spec 05 clarification 67: a deferred context's discards -------------------------------- */
+
+struct RingFrame {
+  uint64_t allocations = 0; // new allocations the list asked for
+  uint64_t new_buffers = 0; // Metal buffers made
+  uint32_t last_slices = 0; // slices of the last allocation handed out
+  bool handed_out_smaller = false;
+};
+
+/* `frames` frames, each recording one command list with `discards` Map(WRITE_DISCARD)s of a
+   `length`-byte dynamic buffer the way d3d11_context_def.cpp's MapDynamicBuffer does; the list
+   runs as chunk f + 1 and is released (its allocations back in the pool) two frames later, when
+   the GPU has finished it. `ring` is DXMT_D11_DEFERRED_RING. */
+std::vector<RingFrame>
+RunDeferredRing(bool ring, uint32_t length, unsigned frames, unsigned discards) {
+  Rc<Buffer> buffer = new Buffer(length, WMT::Device{});
+  Flags<BufferAllocationFlag> flags;
+  flags.set(BufferAllocationFlag::CpuWriteCombined);
+  flags.set(BufferAllocationFlag::SuballocateFromOnePage);
+  auto initial = buffer->rename(buffer->allocate(flags));
+  (void)initial;
+  Rc<DynamicBuffer> dyn = new DynamicBuffer(buffer.ptr(), flags);
+  std::deque<std::pair<uint64_t, std::vector<Rc<BufferAllocation>>>> lists; // (run as chunk, allocations)
+  std::vector<RingFrame> result;
+  uint64_t coherent = 0;
+  for (unsigned f = 0; f < frames; f++) {
+    // the list of two frames ago is released: its allocations go back to the pool
+    while (!lists.empty() && lists.front().first + 2 <= f + 1) {
+      coherent = lists.front().first;
+      for (auto &allocation : lists.front().second)
+        dyn->recycle(lists.front().first, std::move(allocation));
+      lists.pop_front();
+    }
+    RingFrame frame;
+    const uint64_t buffers_before = g_metal.new_buffers;
+    std::vector<Rc<BufferAllocation>> held;
+    BufferAllocation *current = nullptr;
+    uint32_t sub = 0;
+    for (unsigned i = 0; i < discards; i++) {
+      if (current && current->hasSuballocatoin(sub + 1)) {
+        sub++;
+        continue;
+      }
+      bool fresh = false;
+      Rc<BufferAllocation> allocation = ring ? dyn->allocateRing(coherent, &fresh, 0, current != nullptr)
+                                             : dyn->allocate(coherent, &fresh);
+      frame.allocations++;
+      if (!fresh && current && allocation->suballocationCount() < current->suballocationCount())
+        frame.handed_out_smaller = true;
+      frame.last_slices = allocation->suballocationCount();
+      current = allocation.ptr();
+      sub = 0;
+      held.push_back(std::move(allocation));
+    }
+    frame.new_buffers = g_metal.new_buffers - buffers_before;
+    lists.emplace_back(uint64_t(f + 1), std::move(held));
+    result.push_back(frame);
+  }
+  return result;
+}
+
+int
+CheckDeferredRing() {
+  int failures = 0;
+  // 4,000 discards of a 256-byte buffer a frame, 16 slices to a 4 KB page
+  auto on = RunDeferredRing(true, 256, 8, 4000);
+  for (unsigned f = 4; f < on.size(); f++) {
+    if (on[f].new_buffers != 0 || on[f].allocations != 1) {
+      std::printf("FAIL: ring on, frame %u: %llu allocations, %llu new buffers\n", f + 1,
+                  (unsigned long long)on[f].allocations, (unsigned long long)on[f].new_buffers);
+      failures++;
+    }
+  }
+  for (auto &frame : on)
+    if (frame.handed_out_smaller) {
+      std::printf("FAIL: ring on: a smaller finished allocation was handed out\n");
+      failures++;
+      break;
+    }
+  auto off = RunDeferredRing(false, 256, 8, 4000);
+  for (unsigned f = 4; f < off.size(); f++) {
+    if (off[f].allocations != 250 || off[f].new_buffers < 180 || off[f].new_buffers > 190) {
+      std::printf("FAIL: ring off, frame %u: %llu allocations, %llu new buffers (about 250 and 186)\n", f + 1,
+                  (unsigned long long)off[f].allocations, (unsigned long long)off[f].new_buffers);
+      failures++;
+    }
+  }
+  // discarded once per list: the slice count stays the page's 16
+  auto once = RunDeferredRing(true, 256, 8, 1);
+  for (unsigned f = 0; f < once.size(); f++)
+    if (once[f].last_slices != 16) {
+      std::printf("FAIL: discarded once per list, frame %u: %u slices\n", f + 1, once[f].last_slices);
+      failures++;
+    }
+  std::printf("  deferred ring (clarification 67): frame 5 on %llu allocation(s), %llu new buffers; off %llu and %llu\n",
+              (unsigned long long)on[4].allocations, (unsigned long long)on[4].new_buffers,
+              (unsigned long long)off[4].allocations, (unsigned long long)off[4].new_buffers);
+  return failures;
+}
+
 } // namespace
 
 int
@@ -395,6 +495,8 @@ main(int argc, char **argv) {
     std::printf("FAIL: %llu Metal buffers created after the first frame\n", (unsigned long long)steady_new_buffers);
     failures++;
   }
+  if (new_mode)
+    failures += CheckDeferredRing(); // spec 05 clarification 67
   std::printf("bench_dynamic_discard --check: %d failures\n", failures);
   return failures ? 1 : 0;
 }

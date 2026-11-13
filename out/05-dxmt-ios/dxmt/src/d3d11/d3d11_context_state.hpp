@@ -1,6 +1,7 @@
 #pragma once
 // Changed for MYIOSDECK (spec 05 clarification 10: an LGPL-2.1-or-later block from steamac's
 // DXMT patch 0014, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Also changed for MYIOSDECK (spec 05 clarification 63: QueryInterface counted).
 #include "d3d11_device_child.hpp"
 
 #include "com/com_pointer.hpp"
@@ -202,6 +203,7 @@ public:
   /* end of LGPL block */
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid, void **ppvObject) {
+    D11_CHILD_CALL(QueryInterface); // MYIOSDECK spec 05 clarification 63
     if (ppvObject == nullptr)
       return E_POINTER;
 

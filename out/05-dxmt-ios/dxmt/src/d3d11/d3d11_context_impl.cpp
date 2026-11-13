@@ -2,7 +2,8 @@
 // steamac's DXMT patches 0005, 0007 and 0014, marked inline, see LICENSE-NOTES.md; spec 05
 // clarifications 19-21: constant-buffer ranges, compute threadgroup size, frame trace notes;
 // 24-25: indirect read-backs, the barrier before an indirect dispatch; 27-28: the blit pass
-// after a traced dispatch; 30: state lines).
+// after a traced dispatch; 30: state lines; 44-58: draw lines, bindings, read-backs, the serialize switch;
+// 63-73: call statistics and the round-17 cuts).
 // Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 /**
@@ -41,6 +42,11 @@ since it is for internal use only
 #include "dxmt_frame_trace.hpp"           // spec 05 clarification 21
 #include "dxmt_indirect.hpp"              // spec 05 clarification 25
 #include "d3d11_trace_state.hpp"          // spec 05 clarification 30
+#include "d3d11_call_stats.hpp"           // spec 05 clarification 63
+#include "dxmt_cuts.hpp"                  // spec 05 clarification 73
+#include "d3d11_state_filter.hpp"         // spec 05 clarification 65
+#include "d3d11_discard_bound.hpp"        // spec 05 clarification 66
+#include "d3d11_pass_cuts.hpp"            // spec 05 clarifications 69, 70, 72
 #include <cstdlib>
 #endif
 
@@ -630,9 +636,81 @@ template <typename ContextInternalState> class MTLD3D11DeviceContextImplBase : p
 
   using mutex_t = ContextInternalState::device_mutex_t;
 public:
+  /* MYIOSDECK spec 05 clarification 63: the call statistics' range of this kind of context */
+  static constexpr unsigned kD11csBase =
+      ContextInternalState::kD11csDeferred ? d11cs::kD11IdDeferred : d11cs::kD11IdImmediate;
+
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) override {
+    D11_CTX_CALL(QueryInterface);
+    return QueryInterfaceUncounted(riid, ppvObject);
+  }
+
+  /* ID3D11DeviceChild's methods, counted as this context's (spec 05 clarification 63) */
+  void STDMETHODCALLTYPE
+  GetDevice(ID3D11Device **ppDevice) override {
+    D11_CTX_CALL(GetDevice);
+    MTLD3D11DeviceContextBase::GetDevice(ppDevice);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  GetPrivateData(REFGUID guid, UINT *pDataSize, void *pData) override {
+    D11_CTX_CALL(GetPrivateData);
+    return MTLD3D11DeviceContextBase::GetPrivateData(guid, pDataSize, pData);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  SetPrivateData(REFGUID guid, UINT DataSize, const void *pData) override {
+    D11_CTX_CALL(SetPrivateData);
+    return MTLD3D11DeviceContextBase::SetPrivateData(guid, DataSize, pData);
+  }
+
+  HRESULT STDMETHODCALLTYPE
+  SetPrivateDataInterface(REFGUID guid, const IUnknown *pUnknown) override {
+    D11_CTX_CALL(SetPrivateDataInterface);
+    return MTLD3D11DeviceContextBase::SetPrivateDataInterface(guid, pUnknown);
+  }
+
+  /* spec 05 clarification 66: after Map(WRITE_DISCARD) of a dynamic buffer, mark dirty the
+     vertex-buffer, constant-buffer and shader-resource slots that hold it (DXMT_D11_DISCARD_BOUND),
+     or every slot of each kind it can be bound as (switch off, as before) */
+  void
+  DirtyDiscardedBuffer(ID3D11Resource *pResource, UINT bind_flag) {
+    const bool only = CutSettingsOnce()[CutSwitch::DiscardBound];
+    auto *resource = reinterpret_cast<D3D11ResourceCommon *>(pResource);
+    if (bind_flag & D3D11_BIND_VERTEX_BUFFER)
+      DirtyDiscardedSlots(state_.InputAssembler.VertexBuffers, only, [resource](const auto &entry) {
+        return entry.Buffer.ptr() == resource;
+      });
+    if (bind_flag & D3D11_BIND_CONSTANT_BUFFER)
+      for (auto &stage : state_.ShaderStages)
+        DirtyDiscardedSlots(stage.ConstantBuffers, only, [resource](const auto &entry) {
+          return entry.Buffer.ptr() == resource;
+        });
+    if (bind_flag & D3D11_BIND_SHADER_RESOURCE) {
+      Buffer *buffer = only ? resource->buffer().ptr() : nullptr;
+      for (auto &stage : state_.ShaderStages)
+        DirtyDiscardedSlots(stage.SRVs, only, [buffer](const auto &entry) {
+          return entry.SRV->buffer().ptr() == buffer;
+        });
+    }
+  }
+
+  /* the same for a dynamic texture: the shader-resource slots that hold a view of it */
+  void
+  DirtyDiscardedTexture(ID3D11Resource *pResource) {
+    const bool only = CutSettingsOnce()[CutSwitch::DiscardBound];
+    Texture *texture = only ? reinterpret_cast<D3D11ResourceCommon *>(pResource)->texture().ptr() : nullptr;
+    for (auto &stage : state_.ShaderStages)
+      DirtyDiscardedSlots(stage.SRVs, only, [texture](const auto &entry) {
+        return entry.SRV->texture().ptr() == texture;
+      });
+  }
+
+  /* QueryInterface without counting it, for the immediate context's own QueryInterface */
+  HRESULT
+  QueryInterfaceUncounted(REFIID riid, void **ppvObject) {
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -665,6 +743,7 @@ public:
   void
   STDMETHODCALLTYPE
   SetResourceMinLOD(ID3D11Resource *pResource, FLOAT MinLOD) override {
+    D11_CTX_CALL(SetResourceMinLOD);
     if (auto expected = com_cast<IMTLMinLODClampable>(pResource)) {
       expected->SetMinLOD(MinLOD);
     }
@@ -673,6 +752,7 @@ public:
   FLOAT
   STDMETHODCALLTYPE
   GetResourceMinLOD(ID3D11Resource *pResource) override {
+    D11_CTX_CALL(GetResourceMinLOD);
     if (auto expected = com_cast<IMTLMinLODClampable>(pResource)) {
       return expected->GetMinLOD();
     }
@@ -684,6 +764,9 @@ public:
   void
   STDMETHODCALLTYPE
   ClearRenderTargetView(ID3D11RenderTargetView *pRenderTargetView, const FLOAT ColorRGBA[4]) override {
+    D11_CTX_CALL(ClearRenderTargetView);
+    NotePassReason(d11cs::PassStart::Clear); // spec 05 clarification 63
+    D11_WORK(work_.clears++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     ClearRenderTargetView(static_cast<D3D11RenderTargetView *>(pRenderTargetView), ColorRGBA);
@@ -692,6 +775,9 @@ public:
   void
   STDMETHODCALLTYPE
   ClearUnorderedAccessViewUint(ID3D11UnorderedAccessView *pUnorderedAccessView, const UINT Values[4]) override {
+    D11_CTX_CALL(ClearUnorderedAccessViewUint);
+    NotePassReason(d11cs::PassStart::Clear); // spec 05 clarification 63
+    D11_WORK(work_.clears++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     ClearUnorderedAccessViewUint(static_cast<D3D11UnorderedAccessView *>(pUnorderedAccessView), Values);
@@ -762,6 +848,9 @@ public:
   void
   STDMETHODCALLTYPE
   ClearUnorderedAccessViewFloat(ID3D11UnorderedAccessView *pUnorderedAccessView, const FLOAT Values[4]) override {
+    D11_CTX_CALL(ClearUnorderedAccessViewFloat);
+    NotePassReason(d11cs::PassStart::Clear); // spec 05 clarification 63
+    D11_WORK(work_.clears++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     ClearUnorderedAccessViewFloat(static_cast<D3D11UnorderedAccessView *>(pUnorderedAccessView), Values);
@@ -819,6 +908,9 @@ public:
   STDMETHODCALLTYPE
   ClearDepthStencilView(ID3D11DepthStencilView *pDepthStencilView, UINT ClearFlags, FLOAT Depth, UINT8 Stencil)
       override {
+    D11_CTX_CALL(ClearDepthStencilView);
+    NotePassReason(d11cs::PassStart::Clear); // spec 05 clarification 63
+    D11_WORK(work_.clears++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     ClearDepthStencilView(static_cast<D3D11DepthStencilView*>(pDepthStencilView), ClearFlags, Depth, Stencil);
@@ -827,6 +919,9 @@ public:
   void
   STDMETHODCALLTYPE
   ClearView(ID3D11View *pView, const FLOAT Color[4], const D3D11_RECT *pRect, UINT NumRects) override {
+    D11_CTX_CALL(ClearView);
+    NotePassReason(d11cs::PassStart::Clear); // spec 05 clarification 63
+    D11_WORK(work_.clears++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     if (NumRects && !pRect)
@@ -959,6 +1054,8 @@ public:
   void
   STDMETHODCALLTYPE
   GenerateMips(ID3D11ShaderResourceView *pShaderResourceView) override {
+    D11_CTX_CALL(GenerateMips);
+    NotePassReason(d11cs::PassStart::Copy); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     if (auto srv = static_cast<D3D11ShaderResourceView *>(pShaderResourceView)) {
@@ -990,6 +1087,8 @@ public:
       ID3D11Resource *pDstResource, UINT DstSubresource, ID3D11Resource *pSrcResource, UINT SrcSubresource,
       DXGI_FORMAT Format
   ) override {
+    D11_CTX_CALL(ResolveSubresource);
+    NotePassReason(d11cs::PassStart::Copy); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     if (!pDstResource || !pSrcResource)
@@ -1052,6 +1151,9 @@ public:
   void
   STDMETHODCALLTYPE
   CopyResource(ID3D11Resource *pDstResource, ID3D11Resource *pSrcResource) override {
+    D11_CTX_CALL(CopyResource);
+    NotePassReason(d11cs::PassStart::Copy); // spec 05 clarification 63
+    D11_WORK(work_.copies++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     BlitObject Dst(device, pDstResource);
@@ -1099,6 +1201,7 @@ public:
       ID3D11Resource *pDstResource, UINT DstSubresource, UINT DstX, UINT DstY, UINT DstZ, ID3D11Resource *pSrcResource,
       UINT SrcSubresource, const D3D11_BOX *pSrcBox
   ) override {
+    D11_CTX_CALL(CopySubresourceRegion);
     CopySubresourceRegion1(pDstResource, DstSubresource, DstX, DstY, DstZ, pSrcResource, SrcSubresource, pSrcBox, 0);
   }
 
@@ -1108,6 +1211,9 @@ public:
       ID3D11Resource *pDstResource, UINT DstSubresource, UINT DstX, UINT DstY, UINT DstZ, ID3D11Resource *pSrcResource,
       UINT SrcSubresource, const D3D11_BOX *pSrcBox, UINT CopyFlags
   ) override {
+    D11_CTX_CALL(CopySubresourceRegion1);
+    NotePassReason(d11cs::PassStart::Copy); // spec 05 clarification 63
+    D11_WORK(work_.copies++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     if (!pDstResource)
@@ -1140,6 +1246,9 @@ public:
   STDMETHODCALLTYPE
   CopyStructureCount(ID3D11Buffer *pDstBuffer, UINT DstAlignedByteOffset, ID3D11UnorderedAccessView *pSrcView)
       override {
+    D11_CTX_CALL(CopyStructureCount);
+    NotePassReason(d11cs::PassStart::Copy); // spec 05 clarification 63
+    D11_WORK(work_.copies++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     if (auto dst_bind = reinterpret_cast<D3D11ResourceCommon *>(pDstBuffer)) {
@@ -1166,6 +1275,7 @@ public:
       ID3D11Resource *pDstResource, UINT DstSubresource, const D3D11_BOX *pDstBox, const void *pSrcData,
       UINT SrcRowPitch, UINT SrcDepthPitch
   ) override {
+    D11_CTX_CALL(UpdateSubresource);
     UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, 0);
   }
 
@@ -1175,6 +1285,9 @@ public:
       ID3D11Resource *pDstResource, UINT DstSubresource, const D3D11_BOX *pDstBox, const void *pSrcData,
       UINT SrcRowPitch, UINT SrcDepthPitch, UINT CopyFlags
   ) override {
+    D11_CTX_CALL(UpdateSubresource1);
+    NotePassReason(d11cs::PassStart::Copy); // spec 05 clarification 63
+    D11_WORK(work_.updates++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     if (!pDstResource)
@@ -1269,25 +1382,85 @@ public:
   void
   STDMETHODCALLTYPE
   DiscardResource(ID3D11Resource *pResource) override {
-    /*
-    All the Discard* API is not implemented and that's probably fine (as it's
-    more like a hint of optimization, and Metal manages resources on its own)
-    FIXME: for render targets we can use this information: LoadActionDontCare
-    FIXME: A Map with D3D11_MAP_WRITE type could become D3D11_MAP_WRITE_DISCARD?
-    */
-    ERR_ONCE("Not implemented");
+    D11_CTX_CALL(DiscardResource);
+    std::lock_guard<mutex_t> lock(mutex);
+    // MYIOSDECK spec 05 clarification 71: every render-target or depth-stencil subresource of a
+    // texture (DXMT_PASS_DISCARD; noted for the would-entries when counting or tracing)
+    if (!pResource || !DiscardNoting())
+      return;
+    auto texture = static_cast<D3D11ResourceCommon *>(pResource)->texture();
+    if (!texture.ptr())
+      return; // a buffer: nothing to do
+    DiscardSubresources(texture, 0, texture->mipLevelCount(), 0, texture->arrayLength(Texture::fullView));
   }
 
   void
   STDMETHODCALLTYPE
   DiscardView(ID3D11View *pResourceView) override {
-    DiscardView1(pResourceView, 0, 0);
+    D11_CTX_CALL(DiscardView);
+    DiscardViewUncounted(pResourceView, nullptr, 0);
   }
 
   void
   STDMETHODCALLTYPE
   DiscardView1(ID3D11View *pResourceView, const D3D11_RECT *pRects, UINT NumRects) override {
-    ERR_ONCE("Not implemented");
+    D11_CTX_CALL(DiscardView1);
+    DiscardViewUncounted(pResourceView, pRects, NumRects);
+  }
+
+  /* spec 05 clarification 71: a render-target or depth-stencil view's subresources; with
+     rectangles, nothing, as before */
+  void
+  DiscardViewUncounted(ID3D11View *pResourceView, const D3D11_RECT *pRects, UINT NumRects) {
+    std::lock_guard<mutex_t> lock(mutex);
+    if (!pResourceView || DiscardHasRectangles(pRects, NumRects) || !DiscardNoting())
+      return;
+    if (auto rtv = com_cast<ID3D11RenderTargetView>(pResourceView)) {
+      auto *view = static_cast<D3D11RenderTargetView *>(rtv.ptr());
+      auto texture = view->texture();
+      DiscardSubresources(
+          texture, texture->firstMiplevel(view->viewId()), 1, texture->firstArraySlice(view->viewId()),
+          texture->arrayLength(view->viewId())
+      );
+    } else if (auto dsv = com_cast<ID3D11DepthStencilView>(pResourceView)) {
+      auto *view = static_cast<D3D11DepthStencilView *>(dsv.ptr());
+      auto texture = view->texture();
+      DiscardSubresources(
+          texture, texture->firstMiplevel(view->viewId()), 1, texture->firstArraySlice(view->viewId()),
+          texture->arrayLength(view->viewId())
+      );
+    }
+  }
+
+  bool
+  DiscardNoting() {
+    return CutSettingsOnce()[CutSwitch::Discard] || d11cs::g_level || TraceRecording();
+  }
+
+  void
+  DiscardSubresources(Rc<Texture> &texture, unsigned level, unsigned levels, unsigned slice, unsigned slices) {
+    if (!texture.ptr() || !levels || !slices)
+      return;
+    // with the switch on, an open pass that attaches the texture ends first, so that its store
+    // can be dropped and the draws after the discard start a pass that doesn't load it
+    const bool render_pass_open = cmdbuf_state == CommandBufferState::RenderEncoderActive ||
+                                  cmdbuf_state == CommandBufferState::RenderPipelineReady ||
+                                  cmdbuf_state == CommandBufferState::TessellationRenderPipelineReady ||
+                                  cmdbuf_state == CommandBufferState::GeometryRenderPipelineReady;
+    if (CutSettingsOnce()[CutSwitch::Discard] && render_pass_open) { // pass_targets_ is that pass's
+      bool attached = pass_targets_.dsv &&
+                      static_cast<D3D11DepthStencilView *>(const_cast<void *>(pass_targets_.dsv))->texture().ptr() ==
+                          texture.ptr();
+      for (unsigned i = 0; i < pass_targets_.num_rtvs && i < 8; i++)
+        attached |= pass_targets_.rtvs[i] &&
+                    static_cast<D3D11RenderTargetView *>(const_cast<void *>(pass_targets_.rtvs[i]))->texture().ptr() ==
+                        texture.ptr();
+      if (attached)
+        InvalidateCurrentPass();
+    }
+    EmitST([texture, level, levels, slice, slices](ArgumentEncodingContext &enc) {
+      enc.discardTexture(texture, level, levels, slice, slices);
+    });
   }
 #pragma endregion
 
@@ -1296,6 +1469,8 @@ public:
   void
   STDMETHODCALLTYPE
   Draw(UINT VertexCount, UINT StartVertexLocation) override {
+    D11_CTX_CALL(Draw);
+    D11_WORK(work_.draws++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     WMTPrimitiveType Primitive;
@@ -1328,6 +1503,8 @@ public:
   void
   STDMETHODCALLTYPE
   DrawIndexed(UINT IndexCount, UINT StartIndexLocation, INT BaseVertexLocation) override {
+    D11_CTX_CALL(DrawIndexed);
+    D11_WORK(work_.draws++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     if (!IndexCount)
@@ -1372,6 +1549,8 @@ public:
   STDMETHODCALLTYPE
   DrawInstanced(UINT VertexCountPerInstance, UINT InstanceCount, UINT StartVertexLocation, UINT StartInstanceLocation)
       override {
+    D11_CTX_CALL(DrawInstanced);
+    D11_WORK(work_.draws++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     WMTPrimitiveType Primitive;
@@ -1413,6 +1592,8 @@ public:
       UINT IndexCountPerInstance, UINT InstanceCount, UINT StartIndexLocation, INT BaseVertexLocation,
       UINT StartInstanceLocation
   ) override {
+    D11_CTX_CALL(DrawIndexedInstanced);
+    D11_WORK(work_.draws++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     if (!IndexCountPerInstance)
@@ -1615,6 +1796,8 @@ public:
   void
   STDMETHODCALLTYPE
   DrawIndexedInstancedIndirect(ID3D11Buffer *pBufferForArgs, UINT AlignedByteOffsetForArgs) override {
+    D11_CTX_CALL(DrawIndexedInstancedIndirect);
+    D11_WORK(work_.draws++; work_.draws_indirect++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     WMTPrimitiveType Primitive;
@@ -1658,6 +1841,8 @@ public:
   void
   STDMETHODCALLTYPE
   DrawInstancedIndirect(ID3D11Buffer *pBufferForArgs, UINT AlignedByteOffsetForArgs) override {
+    D11_CTX_CALL(DrawInstancedIndirect);
+    D11_WORK(work_.draws++; work_.draws_indirect++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     WMTPrimitiveType Primitive;
@@ -1825,6 +2010,8 @@ public:
   void
   STDMETHODCALLTYPE
   DrawAuto() override {
+    D11_CTX_CALL(DrawAuto);
+    D11_WORK(work_.draws++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     EmitST([](ArgumentEncodingContext &enc) { enc.setCompatibilityFlag(FeatureCompatibility::UnsupportedDrawAuto); });
@@ -1833,6 +2020,9 @@ public:
   void
   STDMETHODCALLTYPE
   Dispatch(UINT ThreadGroupCountX, UINT ThreadGroupCountY, UINT ThreadGroupCountZ) override {
+    D11_CTX_CALL(Dispatch);
+    NotePassReason(d11cs::PassStart::Dispatch); // spec 05 clarification 63
+    D11_WORK(work_.dispatches++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     if (!PreDispatch())
@@ -1860,6 +2050,9 @@ public:
   void
   STDMETHODCALLTYPE
   DispatchIndirect(ID3D11Buffer *pBufferForArgs, UINT AlignedByteOffsetForArgs) override {
+    D11_CTX_CALL(DispatchIndirect);
+    NotePassReason(d11cs::PassStart::Dispatch); // spec 05 clarification 63
+    D11_WORK(work_.dispatches++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
 
     TraceIndirectReadback(pBufferForArgs, AlignedByteOffsetForArgs, 12, false); // spec 05 clarification 24
@@ -1897,6 +2090,7 @@ public:
   void
   STDMETHODCALLTYPE
   GetPredication(ID3D11Predicate **ppPredicate, BOOL *pPredicateValue) override {
+    D11_CTX_CALL(GetPredication);
     std::lock_guard<mutex_t> lock(mutex);
 
 
@@ -1912,6 +2106,7 @@ public:
   void
   STDMETHODCALLTYPE
   SetPredication(ID3D11Predicate *pPredicate, BOOL PredicateValue) override {
+    D11_CTX_CALL(SetPredication);
     std::lock_guard<mutex_t> lock(mutex);
 
 
@@ -1929,6 +2124,7 @@ public:
   void
   STDMETHODCALLTYPE
   SwapDeviceContextState(ID3DDeviceContextState *pState, ID3DDeviceContextState **ppPreviousState) override {
+    D11_CTX_CALL(SwapDeviceContextState);
     /* LGPL-2.1-or-later, from steamac's DXMT patch 0014 (hanzpo) */
     std::lock_guard<mutex_t> lock(mutex);
 
@@ -1965,6 +2161,7 @@ public:
   void
   STDMETHODCALLTYPE
   ClearState() override {
+    D11_CTX_CALL(ClearState);
     std::lock_guard<mutex_t> lock(mutex);
 
     ResetEncodingContextState();
@@ -1976,9 +2173,17 @@ public:
   void
   STDMETHODCALLTYPE
   IASetInputLayout(ID3D11InputLayout *pInputLayout) override {
+    D11_CTX_CALL(IASetInputLayout);
     std::lock_guard<mutex_t> lock(mutex);
 
-    if (auto expected = com_cast<IMTLD3D11InputLayout>(pInputLayout)) {
+    auto expected = com_cast<IMTLD3D11InputLayout>(pInputLayout);
+    // spec 05 clarification 65: the layout already set doesn't invalidate the pipeline
+    if (expected.ptr() == state_.InputAssembler.InputLayout.ptr()) {
+      d11cs::NoteRepeated();
+      if (StateFilterSkips(CutSettingsOnce()[CutSwitch::StateFilter], true))
+        return;
+    }
+    if (expected) {
       state_.InputAssembler.InputLayout = std::move(expected);
     } else {
       state_.InputAssembler.InputLayout = nullptr;
@@ -1988,6 +2193,7 @@ public:
   void
   STDMETHODCALLTYPE
   IAGetInputLayout(ID3D11InputLayout **ppInputLayout) override {
+    D11_CTX_CALL(IAGetInputLayout);
     std::lock_guard<mutex_t> lock(mutex);
 
     if (ppInputLayout) {
@@ -2004,6 +2210,7 @@ public:
   IASetVertexBuffers(
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppVertexBuffers, const UINT *pStrides, const UINT *pOffsets
   ) override {
+    D11_CTX_CALL(IASetVertexBuffers);
     std::lock_guard<mutex_t> lock(mutex);
 
     SetVertexBuffers(StartSlot, NumBuffers, ppVertexBuffers, pStrides, pOffsets);
@@ -2013,6 +2220,7 @@ public:
   STDMETHODCALLTYPE
   IAGetVertexBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppVertexBuffers, UINT *pStrides, UINT *pOffsets)
       override {
+    D11_CTX_CALL(IAGetVertexBuffers);
     std::lock_guard<mutex_t> lock(mutex);
 
     GetVertexBuffers(StartSlot, NumBuffers, ppVertexBuffers, pStrides, pOffsets);
@@ -2021,9 +2229,18 @@ public:
   void
   STDMETHODCALLTYPE
   IASetIndexBuffer(ID3D11Buffer *pIndexBuffer, DXGI_FORMAT Format, UINT Offset) override {
+    D11_CTX_CALL(IASetIndexBuffer);
     std::lock_guard<mutex_t> lock(mutex);
 
-    if (auto expected = reinterpret_cast<D3D11ResourceCommon *>(pIndexBuffer)) {
+    // spec 05 clarification 65: the buffer already set records no command (the format and
+    // offset are stored either way)
+    auto *requested = reinterpret_cast<D3D11ResourceCommon *>(pIndexBuffer);
+    bool same = SameIndexBuffer(state_.InputAssembler.IndexBuffer.ptr(), requested);
+    if (same && state_.InputAssembler.IndexBufferFormat == Format && state_.InputAssembler.IndexBufferOffset == Offset)
+      d11cs::NoteRepeated();
+    if (StateFilterSkips(CutSettingsOnce()[CutSwitch::StateFilter], same)) {
+      // nothing to record
+    } else if (auto expected = requested) {
       state_.InputAssembler.IndexBuffer = expected;
       EmitST([buffer = state_.InputAssembler.IndexBuffer->buffer()](ArgumentEncodingContext &enc) mutable {
         enc.bindIndexBuffer(forward_rc(buffer));
@@ -2038,6 +2255,7 @@ public:
   void
   STDMETHODCALLTYPE
   IAGetIndexBuffer(ID3D11Buffer **pIndexBuffer, DXGI_FORMAT *Format, UINT *Offset) override {
+    D11_CTX_CALL(IAGetIndexBuffer);
     std::lock_guard<mutex_t> lock(mutex);
 
     if (pIndexBuffer) {
@@ -2055,16 +2273,20 @@ public:
   void
   STDMETHODCALLTYPE
   IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY Topology) override {
+    D11_CTX_CALL(IASetPrimitiveTopology);
     std::lock_guard<mutex_t> lock(mutex);
 
     if (state_.InputAssembler.Topology != Topology) {
       state_.InputAssembler.Topology = Topology;
       InvalidateRenderPipeline();
+    } else {
+      d11cs::NoteRepeated(); // spec 05 clarification 63
     }
   }
   void
   STDMETHODCALLTYPE
   IAGetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY *pTopology) override {
+    D11_CTX_CALL(IAGetPrimitiveTopology);
     std::lock_guard<mutex_t> lock(mutex);
 
     if (pTopology) {
@@ -2079,6 +2301,7 @@ public:
   STDMETHODCALLTYPE
   VSSetShader(ID3D11VertexShader *pVertexShader, ID3D11ClassInstance *const *ppClassInstances, UINT NumClassInstances)
       override {
+    D11_CTX_CALL(VSSetShader);
     SetShader<PipelineStage::Vertex, ID3D11VertexShader>(pVertexShader, ppClassInstances, NumClassInstances);
   }
 
@@ -2086,42 +2309,49 @@ public:
   STDMETHODCALLTYPE
   VSGetShader(ID3D11VertexShader **ppVertexShader, ID3D11ClassInstance **ppClassInstances, UINT *pNumClassInstances)
       override {
+    D11_CTX_CALL(VSGetShader);
     GetShader<PipelineStage::Vertex, ID3D11VertexShader>(ppVertexShader, ppClassInstances, pNumClassInstances);
   }
 
   void
   STDMETHODCALLTYPE
   VSSetShaderResources(UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews) override {
+    D11_CTX_CALL(VSSetShaderResources);
     SetShaderResource<PipelineStage::Vertex>(StartSlot, NumViews, ppShaderResourceViews);
   }
 
   void
   STDMETHODCALLTYPE
   VSGetShaderResources(UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView **ppShaderResourceViews) override {
+    D11_CTX_CALL(VSGetShaderResources);
     GetShaderResource<PipelineStage::Vertex>(StartSlot, NumViews, ppShaderResourceViews);
   }
 
   void
   STDMETHODCALLTYPE
   VSSetSamplers(UINT StartSlot, UINT NumSamplers, ID3D11SamplerState *const *ppSamplers) override {
+    D11_CTX_CALL(VSSetSamplers);
     SetSamplers<PipelineStage::Vertex>(StartSlot, NumSamplers, ppSamplers);
   }
 
   void
   STDMETHODCALLTYPE
   VSGetSamplers(UINT StartSlot, UINT NumSamplers, ID3D11SamplerState **ppSamplers) override {
+    D11_CTX_CALL(VSGetSamplers);
     GetSamplers<PipelineStage::Vertex>(StartSlot, NumSamplers, ppSamplers);
   }
 
   void
   STDMETHODCALLTYPE
   VSSetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers) override {
+    D11_CTX_CALL(VSSetConstantBuffers);
     VSSetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, NULL, NULL);
   }
 
   void
   STDMETHODCALLTYPE
   VSGetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppConstantBuffers) override {
+    D11_CTX_CALL(VSGetConstantBuffers);
     VSGetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, NULL, NULL);
   }
 
@@ -2131,6 +2361,7 @@ public:
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers, const UINT *pFirstConstant,
       const UINT *pNumConstants
   ) override {
+    D11_CTX_CALL(VSSetConstantBuffers1);
     SetConstantBuffer<PipelineStage::Vertex>(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
   }
 
@@ -2139,6 +2370,7 @@ public:
   VSGetConstantBuffers1(
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppConstantBuffers, UINT *pFirstConstant, UINT *pNumConstants
   ) override {
+    D11_CTX_CALL(VSGetConstantBuffers1);
     GetConstantBuffer<PipelineStage::Vertex>(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
   }
 
@@ -2150,6 +2382,7 @@ public:
   STDMETHODCALLTYPE
   PSSetShader(ID3D11PixelShader *pPixelShader, ID3D11ClassInstance *const *ppClassInstances, UINT NumClassInstances)
       override {
+    D11_CTX_CALL(PSSetShader);
     SetShader<PipelineStage::Pixel, ID3D11PixelShader>(pPixelShader, ppClassInstances, NumClassInstances);
   }
 
@@ -2157,30 +2390,35 @@ public:
   STDMETHODCALLTYPE
   PSGetShader(ID3D11PixelShader **ppPixelShader, ID3D11ClassInstance **ppClassInstances, UINT *pNumClassInstances)
       override {
+    D11_CTX_CALL(PSGetShader);
     GetShader<PipelineStage::Pixel, ID3D11PixelShader>(ppPixelShader, ppClassInstances, pNumClassInstances);
   }
 
   void
   STDMETHODCALLTYPE
   PSSetShaderResources(UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews) override {
+    D11_CTX_CALL(PSSetShaderResources);
     SetShaderResource<PipelineStage::Pixel>(StartSlot, NumViews, ppShaderResourceViews);
   }
 
   void
   STDMETHODCALLTYPE
   PSGetShaderResources(UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView **ppShaderResourceViews) override {
+    D11_CTX_CALL(PSGetShaderResources);
     GetShaderResource<PipelineStage::Pixel>(StartSlot, NumViews, ppShaderResourceViews);
   }
 
   void
   STDMETHODCALLTYPE
   PSSetSamplers(UINT StartSlot, UINT NumSamplers, ID3D11SamplerState *const *ppSamplers) override {
+    D11_CTX_CALL(PSSetSamplers);
     SetSamplers<PipelineStage::Pixel>(StartSlot, NumSamplers, ppSamplers);
   }
 
   void
   STDMETHODCALLTYPE
   PSGetSamplers(UINT StartSlot, UINT NumSamplers, ID3D11SamplerState **ppSamplers) override {
+    D11_CTX_CALL(PSGetSamplers);
 
     GetSamplers<PipelineStage::Pixel>(StartSlot, NumSamplers, ppSamplers);
   }
@@ -2188,12 +2426,14 @@ public:
   void
   STDMETHODCALLTYPE
   PSSetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers) override {
+    D11_CTX_CALL(PSSetConstantBuffers);
     PSSetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, 0, 0);
   }
 
   void
   STDMETHODCALLTYPE
   PSGetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppConstantBuffers) override {
+    D11_CTX_CALL(PSGetConstantBuffers);
     PSGetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, 0, 0);
   }
 
@@ -2203,6 +2443,7 @@ public:
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers, const UINT *pFirstConstant,
       const UINT *pNumConstants
   ) override {
+    D11_CTX_CALL(PSSetConstantBuffers1);
     SetConstantBuffer<PipelineStage::Pixel>(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
   }
 
@@ -2211,6 +2452,7 @@ public:
   PSGetConstantBuffers1(
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppConstantBuffers, UINT *pFirstConstant, UINT *pNumConstants
   ) override {
+    D11_CTX_CALL(PSGetConstantBuffers1);
     GetConstantBuffer<PipelineStage::Pixel>(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
   }
 
@@ -2222,6 +2464,7 @@ public:
   STDMETHODCALLTYPE
   GSSetShader(ID3D11GeometryShader *pShader, ID3D11ClassInstance *const *ppClassInstances, UINT NumClassInstances)
       override {
+    D11_CTX_CALL(GSSetShader);
     SetShader<PipelineStage::Geometry>(pShader, ppClassInstances, NumClassInstances);
   }
 
@@ -2229,12 +2472,14 @@ public:
   STDMETHODCALLTYPE
   GSGetShader(ID3D11GeometryShader **ppGeometryShader, ID3D11ClassInstance **ppClassInstances, UINT *pNumClassInstances)
       override {
+    D11_CTX_CALL(GSGetShader);
     GetShader<PipelineStage::Geometry>(ppGeometryShader, ppClassInstances, pNumClassInstances);
   }
 
   void
   STDMETHODCALLTYPE
   GSSetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers) override {
+    D11_CTX_CALL(GSSetConstantBuffers);
     GSSetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, NULL, NULL);
   }
 
@@ -2244,12 +2489,14 @@ public:
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers, const UINT *pFirstConstant,
       const UINT *pNumConstants
   ) override {
+    D11_CTX_CALL(GSSetConstantBuffers1);
     SetConstantBuffer<PipelineStage::Geometry>(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
   }
 
   void
   STDMETHODCALLTYPE
   GSGetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppConstantBuffers) override {
+    D11_CTX_CALL(GSGetConstantBuffers);
     GSGetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, NULL, NULL);
   }
 
@@ -2258,36 +2505,42 @@ public:
   GSGetConstantBuffers1(
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppConstantBuffers, UINT *pFirstConstant, UINT *pNumConstants
   ) override {
+    D11_CTX_CALL(GSGetConstantBuffers1);
     GetConstantBuffer<PipelineStage::Geometry>(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
   }
 
   void
   STDMETHODCALLTYPE
   GSSetShaderResources(UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews) override {
+    D11_CTX_CALL(GSSetShaderResources);
     SetShaderResource<PipelineStage::Geometry>(StartSlot, NumViews, ppShaderResourceViews);
   }
 
   void
   STDMETHODCALLTYPE
   GSGetShaderResources(UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView **ppShaderResourceViews) override {
+    D11_CTX_CALL(GSGetShaderResources);
     GetShaderResource<PipelineStage::Geometry>(StartSlot, NumViews, ppShaderResourceViews);
   }
 
   void
   STDMETHODCALLTYPE
   GSSetSamplers(UINT StartSlot, UINT NumSamplers, ID3D11SamplerState *const *ppSamplers) override {
+    D11_CTX_CALL(GSSetSamplers);
     SetSamplers<PipelineStage::Geometry>(StartSlot, NumSamplers, ppSamplers);
   }
 
   void
   STDMETHODCALLTYPE
   GSGetSamplers(UINT StartSlot, UINT NumSamplers, ID3D11SamplerState **ppSamplers) override {
+    D11_CTX_CALL(GSGetSamplers);
     GetSamplers<PipelineStage::Geometry>(StartSlot, NumSamplers, ppSamplers);
   }
 
   void
   STDMETHODCALLTYPE
   SOSetTargets(UINT NumBuffers, ID3D11Buffer *const *ppSOTargets, const UINT *pOffsets) override {
+    D11_CTX_CALL(SOSetTargets);
     std::lock_guard<mutex_t> lock(mutex);
 
     if (NumBuffers == 0) {
@@ -2317,6 +2570,7 @@ public:
   void
   STDMETHODCALLTYPE
   SOGetTargets(UINT NumBuffers, ID3D11Buffer **ppSOTargets) override {
+    D11_CTX_CALL(SOGetTargets);
     std::lock_guard<mutex_t> lock(mutex);
 
     if (!ppSOTargets)
@@ -2356,6 +2610,7 @@ public:
   void
   STDMETHODCALLTYPE
   HSGetShaderResources(UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView **ppShaderResourceViews) override {
+    D11_CTX_CALL(HSGetShaderResources);
     GetShaderResource<PipelineStage::Hull>(StartSlot, NumViews, ppShaderResourceViews);
   }
 
@@ -2363,24 +2618,28 @@ public:
   STDMETHODCALLTYPE
   HSGetShader(ID3D11HullShader **ppHullShader, ID3D11ClassInstance **ppClassInstances, UINT *pNumClassInstances)
       override {
+    D11_CTX_CALL(HSGetShader);
     GetShader<PipelineStage::Hull>(ppHullShader, ppClassInstances, pNumClassInstances);
   }
 
   void
   STDMETHODCALLTYPE
   HSGetSamplers(UINT StartSlot, UINT NumSamplers, ID3D11SamplerState **ppSamplers) override {
+    D11_CTX_CALL(HSGetSamplers);
     GetSamplers<PipelineStage::Hull>(StartSlot, NumSamplers, ppSamplers);
   }
 
   void
   STDMETHODCALLTYPE
   HSGetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppConstantBuffers) override {
+    D11_CTX_CALL(HSGetConstantBuffers);
     HSGetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, NULL, NULL);
   }
 
   void
   STDMETHODCALLTYPE
   HSSetShaderResources(UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews) override {
+    D11_CTX_CALL(HSSetShaderResources);
     SetShaderResource<PipelineStage::Hull>(StartSlot, NumViews, ppShaderResourceViews);
   }
 
@@ -2388,18 +2647,21 @@ public:
   STDMETHODCALLTYPE
   HSSetShader(ID3D11HullShader *pHullShader, ID3D11ClassInstance *const *ppClassInstances, UINT NumClassInstances)
       override {
+    D11_CTX_CALL(HSSetShader);
     SetShader<PipelineStage::Hull>(pHullShader, ppClassInstances, NumClassInstances);
   }
 
   void
   STDMETHODCALLTYPE
   HSSetSamplers(UINT StartSlot, UINT NumSamplers, ID3D11SamplerState *const *ppSamplers) override {
+    D11_CTX_CALL(HSSetSamplers);
     SetSamplers<PipelineStage::Hull>(StartSlot, NumSamplers, ppSamplers);
   }
 
   void
   STDMETHODCALLTYPE
   HSSetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers) override {
+    D11_CTX_CALL(HSSetConstantBuffers);
     HSSetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, NULL, NULL);
   }
 
@@ -2409,6 +2671,7 @@ public:
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers, const UINT *pFirstConstant,
       const UINT *pNumConstants
   ) override {
+    D11_CTX_CALL(HSSetConstantBuffers1);
     SetConstantBuffer<PipelineStage::Hull>(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
   }
 
@@ -2417,6 +2680,7 @@ public:
   HSGetConstantBuffers1(
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppConstantBuffers, UINT *pFirstConstant, UINT *pNumConstants
   ) override {
+    D11_CTX_CALL(HSGetConstantBuffers1);
     GetConstantBuffer<PipelineStage::Hull>(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
   }
 
@@ -2427,12 +2691,14 @@ public:
   void
   STDMETHODCALLTYPE
   DSSetShaderResources(UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews) override {
+    D11_CTX_CALL(DSSetShaderResources);
     SetShaderResource<PipelineStage::Domain>(StartSlot, NumViews, ppShaderResourceViews);
   }
 
   void
   STDMETHODCALLTYPE
   DSGetShaderResources(UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView **ppShaderResourceViews) override {
+    D11_CTX_CALL(DSGetShaderResources);
     GetShaderResource<PipelineStage::Domain>(StartSlot, NumViews, ppShaderResourceViews);
   }
 
@@ -2440,6 +2706,7 @@ public:
   STDMETHODCALLTYPE
   DSSetShader(ID3D11DomainShader *pDomainShader, ID3D11ClassInstance *const *ppClassInstances, UINT NumClassInstances)
       override {
+    D11_CTX_CALL(DSSetShader);
     SetShader<PipelineStage::Domain, ID3D11DomainShader>(pDomainShader, ppClassInstances, NumClassInstances);
   }
 
@@ -2447,24 +2714,28 @@ public:
   STDMETHODCALLTYPE
   DSGetShader(ID3D11DomainShader **ppDomainShader, ID3D11ClassInstance **ppClassInstances, UINT *pNumClassInstances)
       override {
+    D11_CTX_CALL(DSGetShader);
     GetShader<PipelineStage::Domain, ID3D11DomainShader>(ppDomainShader, ppClassInstances, pNumClassInstances);
   }
 
   void
   STDMETHODCALLTYPE
   DSGetSamplers(UINT StartSlot, UINT NumSamplers, ID3D11SamplerState **ppSamplers) override {
+    D11_CTX_CALL(DSGetSamplers);
     GetSamplers<PipelineStage::Domain>(StartSlot, NumSamplers, ppSamplers);
   }
 
   void
   STDMETHODCALLTYPE
   DSSetSamplers(UINT StartSlot, UINT NumSamplers, ID3D11SamplerState *const *ppSamplers) override {
+    D11_CTX_CALL(DSSetSamplers);
     SetSamplers<PipelineStage::Domain>(StartSlot, NumSamplers, ppSamplers);
   }
 
   void
   STDMETHODCALLTYPE
   DSSetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers) override {
+    D11_CTX_CALL(DSSetConstantBuffers);
     return DSSetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, NULL, NULL);
   }
 
@@ -2474,12 +2745,14 @@ public:
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers, const UINT *pFirstConstant,
       const UINT *pNumConstants
   ) override {
+    D11_CTX_CALL(DSSetConstantBuffers1);
     SetConstantBuffer<PipelineStage::Domain>(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
   }
 
   void
   STDMETHODCALLTYPE
   DSGetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppConstantBuffers) override {
+    D11_CTX_CALL(DSGetConstantBuffers);
     UINT *pFirstConstant = 0, *pNumConstants = 0;
     return DSGetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
   }
@@ -2489,6 +2762,7 @@ public:
   DSGetConstantBuffers1(
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppConstantBuffers, UINT *pFirstConstant, UINT *pNumConstants
   ) override {
+    D11_CTX_CALL(DSGetConstantBuffers1);
     GetConstantBuffer<PipelineStage::Domain>(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
   }
 
@@ -2499,12 +2773,14 @@ public:
   void
   STDMETHODCALLTYPE
   CSGetShaderResources(UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView **ppShaderResourceViews) override {
+    D11_CTX_CALL(CSGetShaderResources);
     GetShaderResource<PipelineStage::Compute>(StartSlot, NumViews, ppShaderResourceViews);
   }
 
   void
   STDMETHODCALLTYPE
   CSSetShaderResources(UINT StartSlot, UINT NumViews, ID3D11ShaderResourceView *const *ppShaderResourceViews) override {
+    D11_CTX_CALL(CSSetShaderResources);
     SetShaderResource<PipelineStage::Compute>(StartSlot, NumViews, ppShaderResourceViews);
   }
 
@@ -2514,6 +2790,7 @@ public:
       UINT StartSlot, UINT NumUAVs, ID3D11UnorderedAccessView *const *ppUnorderedAccessViews,
       const UINT *pUAVInitialCounts
   ) override {
+    D11_CTX_CALL(CSSetUnorderedAccessViews);
     std::lock_guard<mutex_t> lock(mutex);
 
     SetUnorderedAccessView<PipelineStage::Compute>(StartSlot, NumUAVs, ppUnorderedAccessViews, pUAVInitialCounts);
@@ -2522,6 +2799,7 @@ public:
   void
   STDMETHODCALLTYPE
   CSGetUnorderedAccessViews(UINT StartSlot, UINT NumUAVs, ID3D11UnorderedAccessView **ppUnorderedAccessViews) override {
+    D11_CTX_CALL(CSGetUnorderedAccessViews);
     std::lock_guard<mutex_t> lock(mutex);
 
     for (auto i = 0u; i < NumUAVs; i++) {
@@ -2539,6 +2817,7 @@ public:
   STDMETHODCALLTYPE
   CSSetShader(ID3D11ComputeShader *pComputeShader, ID3D11ClassInstance *const *ppClassInstances, UINT NumClassInstances)
       override {
+    D11_CTX_CALL(CSSetShader);
     SetShader<PipelineStage::Compute>(pComputeShader, ppClassInstances, NumClassInstances);
   }
 
@@ -2546,30 +2825,35 @@ public:
   STDMETHODCALLTYPE
   CSGetShader(ID3D11ComputeShader **ppComputeShader, ID3D11ClassInstance **ppClassInstances, UINT *pNumClassInstances)
       override {
+    D11_CTX_CALL(CSGetShader);
     GetShader<PipelineStage::Compute>(ppComputeShader, ppClassInstances, pNumClassInstances);
   }
 
   void
   STDMETHODCALLTYPE
   CSSetSamplers(UINT StartSlot, UINT NumSamplers, ID3D11SamplerState *const *ppSamplers) override {
+    D11_CTX_CALL(CSSetSamplers);
     SetSamplers<PipelineStage::Compute>(StartSlot, NumSamplers, ppSamplers);
   }
 
   void
   STDMETHODCALLTYPE
   CSGetSamplers(UINT StartSlot, UINT NumSamplers, ID3D11SamplerState **ppSamplers) override {
+    D11_CTX_CALL(CSGetSamplers);
     GetSamplers<PipelineStage::Compute>(StartSlot, NumSamplers, ppSamplers);
   }
 
   void
   STDMETHODCALLTYPE
   CSSetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers) override {
+    D11_CTX_CALL(CSSetConstantBuffers);
     CSSetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, NULL, NULL);
   }
 
   void
   STDMETHODCALLTYPE
   CSGetConstantBuffers(UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppConstantBuffers) override {
+    D11_CTX_CALL(CSGetConstantBuffers);
     CSGetConstantBuffers1(StartSlot, NumBuffers, ppConstantBuffers, NULL, NULL);
   }
 
@@ -2579,6 +2863,7 @@ public:
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer *const *ppConstantBuffers, const UINT *pFirstConstant,
       const UINT *pNumConstants
   ) override {
+    D11_CTX_CALL(CSSetConstantBuffers1);
     SetConstantBuffer<PipelineStage::Compute>(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
   }
 
@@ -2587,6 +2872,7 @@ public:
   CSGetConstantBuffers1(
       UINT StartSlot, UINT NumBuffers, ID3D11Buffer **ppConstantBuffers, UINT *pFirstConstant, UINT *pNumConstants
   ) override {
+    D11_CTX_CALL(CSGetConstantBuffers1);
     GetConstantBuffer<PipelineStage::Compute>(StartSlot, NumBuffers, ppConstantBuffers, pFirstConstant, pNumConstants);
   }
 
@@ -2599,7 +2885,9 @@ public:
   OMSetRenderTargets(
       UINT NumViews, ID3D11RenderTargetView *const *ppRenderTargetViews, ID3D11DepthStencilView *pDepthStencilView
   ) override {
-    OMSetRenderTargetsAndUnorderedAccessViews(
+    D11_CTX_CALL(OMSetRenderTargets);
+    NotePassReason(d11cs::PassStart::Targets); // spec 05 clarification 63
+    SetRenderTargetsUncounted( // spec 05 clarification 76: counted once, as OMSetRenderTargets
         NumViews, ppRenderTargetViews, pDepthStencilView, 0, D3D11_KEEP_UNORDERED_ACCESS_VIEWS, NULL, NULL
     );
   }
@@ -2609,6 +2897,7 @@ public:
   OMGetRenderTargets(
       UINT NumViews, ID3D11RenderTargetView **ppRenderTargetViews, ID3D11DepthStencilView **ppDepthStencilView
   ) override {
+    D11_CTX_CALL(OMGetRenderTargets);
     OMGetRenderTargetsAndUnorderedAccessViews(NumViews, ppRenderTargetViews, ppDepthStencilView, 0, 0, NULL);
   }
 
@@ -2674,6 +2963,22 @@ public:
       UINT UAVStartSlot, UINT NumUAVs, ID3D11UnorderedAccessView *const *ppUnorderedAccessViews,
       const UINT *pUAVInitialCounts
   ) override {
+    D11_CTX_CALL(OMSetRenderTargetsAndUnorderedAccessViews);
+    NotePassReason(d11cs::PassStart::Targets); // spec 05 clarification 63
+    SetRenderTargetsUncounted(
+        NumRTVs, ppRenderTargetViews, pDepthStencilView, UAVStartSlot, NumUAVs, ppUnorderedAccessViews,
+        pUAVInitialCounts
+    );
+  }
+
+  /* both OMSetRenderTargets calls, counted by the one the application made (spec 05
+     clarifications 63 and 76: a repeat counts against it) */
+  void
+  SetRenderTargetsUncounted(
+      UINT NumRTVs, ID3D11RenderTargetView *const *ppRenderTargetViews, ID3D11DepthStencilView *pDepthStencilView,
+      UINT UAVStartSlot, UINT NumUAVs, ID3D11UnorderedAccessView *const *ppUnorderedAccessViews,
+      const UINT *pUAVInitialCounts
+  ) {
     std::lock_guard<mutex_t> lock(mutex);
 
 
@@ -2715,8 +3020,59 @@ public:
       }
     }
 
+    bool uavs_changed = false;
     if (NumUAVs != D3D11_KEEP_UNORDERED_ACCESS_VIEWS) {
-      SetUnorderedAccessView<PipelineStage::Pixel>(UAVStartSlot, NumUAVs, ppUnorderedAccessViews, pUAVInitialCounts);
+      uavs_changed =
+          SetUnorderedAccessView<PipelineStage::Pixel>(UAVStartSlot, NumUAVs, ppUnorderedAccessViews, pUAVInitialCounts);
+    }
+
+    // spec 05 clarifications 63 and 76: the targets and UAVs already set
+    if (!should_invalidate_pass && !uavs_changed)
+      d11cs::NoteRepeated();
+
+    // spec 05 clarification 69: the depth-stencil view stays attached while the application has
+    // it unbound with the same render targets (DXMT_PASS_KEEP_DSV), or the front end notes where
+    // that would have happened (switch off)
+    const bool render_pass_open = cmdbuf_state == CommandBufferState::RenderEncoderActive ||
+                                  cmdbuf_state == CommandBufferState::RenderPipelineReady ||
+                                  cmdbuf_state == CommandBufferState::TessellationRenderPipelineReady ||
+                                  cmdbuf_state == CommandBufferState::GeometryRenderPipelineReady;
+    if (NumRTVs != D3D11_KEEP_RENDER_TARGETS_AND_DEPTH_STENCIL && (keep_dsv_.active() || KeepDsvNoting())) {
+      KeepDsvTargets call;
+      call.num_rtvs = state_.OutputMerger.NumRTVs;
+      for (unsigned i = 0; i < call.num_rtvs && i < 8; i++)
+        call.rtvs[i] = state_.OutputMerger.RTVs[i].ptr();
+      call.dsv = state_.OutputMerger.DSV.ptr();
+      call.array_length = state_.OutputMerger.ArrayLength; // item 77: the layout the call leaves
+      call.sample_count = state_.OutputMerger.SampleCount;
+      call.width = state_.OutputMerger.RenderTargetWidth;
+      call.height = state_.OutputMerger.RenderTargetHeight;
+      auto *pass_dsv = render_pass_open && !keep_dsv_.active()
+                           ? static_cast<D3D11DepthStencilView *>(const_cast<void *>(keep_dsv_.pass().dsv))
+                           : nullptr;
+      bool srv_views_dsv = pass_dsv && !call.dsv && AnyShaderResourceOf(pass_dsv->texture().ptr());
+      const bool on = CutSettingsOnce()[CutSwitch::KeepDsv];
+      auto r = keep_dsv_.setTargets(render_pass_open, call, uavs_changed, srv_views_dsv, on, KeepDsvNoting());
+      if (r.have_note) {
+        EmitKeepDsvNote(r.note); // into the open pass, before it ends (if it does)
+        if (r.note.applied && !r.keep_pass_open)
+          should_invalidate_pass = true;
+      }
+      // the kept view is held while any keep lasts (a would-keep's too: the hook in
+      // SetShaderResource looks at its texture)
+      if (!keep_dsv_.active()) {
+        keep_dsv_view_ = nullptr;
+      } else if (!keep_dsv_view_) {
+        keep_dsv_view_ = pass_dsv; // a keep started
+        if (keep_dsv_.applied())
+          dirty_state.set(DirtyState::DepthStencilState); // the pass goes on with it: depth off
+      }
+      if (r.keep_pass_open)
+        should_invalidate_pass = false;
+      if (r.end_pass_first && should_invalidate_pass) {
+        InvalidateCurrentPass(); // as before; the would-keep starts with the next pass
+        should_invalidate_pass = false;
+      }
     }
 
     if (should_invalidate_pass) {
@@ -2730,6 +3086,7 @@ public:
       UINT NumRTVs, ID3D11RenderTargetView **ppRenderTargetViews, ID3D11DepthStencilView **ppDepthStencilView,
       UINT UAVStartSlot, UINT NumUAVs, ID3D11UnorderedAccessView **ppUnorderedAccessViews
   ) override {
+    D11_CTX_CALL(OMGetRenderTargetsAndUnorderedAccessViews);
     std::lock_guard<mutex_t> lock(mutex);
 
     if (ppRenderTargetViews) {
@@ -2762,10 +3119,23 @@ public:
   void
   STDMETHODCALLTYPE
   OMSetBlendState(ID3D11BlendState *pBlendState, const FLOAT BlendFactor[4], UINT SampleMask) override {
+    D11_CTX_CALL(OMSetBlendState);
     std::lock_guard<mutex_t> lock(mutex);
 
+    // spec 05 clarification 65: the same state, factors and sample mask mark nothing dirty (item
+    // 76: the state's interface is asked for once)
+    auto expected = com_cast<IMTLD3D11BlendState>(pBlendState);
+    if (SameBlendCall(
+            state_.OutputMerger.BlendState, state_.OutputMerger.BlendFactor, state_.OutputMerger.SampleMask,
+            expected.ptr(), BlendFactor, SampleMask
+        )) {
+      d11cs::NoteRepeated();
+      if (StateFilterSkips(CutSettingsOnce()[CutSwitch::StateFilter], true))
+        return;
+    }
+
     bool should_invalidate_pipeline = false;
-    if (auto expected = com_cast<IMTLD3D11BlendState>(pBlendState)) {
+    if (expected) {
       if (expected.ptr() != state_.OutputMerger.BlendState) {
         state_.OutputMerger.BlendState = expected.ptr();
         should_invalidate_pipeline = true;
@@ -2796,6 +3166,7 @@ public:
   void
   STDMETHODCALLTYPE
   OMGetBlendState(ID3D11BlendState **ppBlendState, FLOAT BlendFactor[4], UINT *pSampleMask) override {
+    D11_CTX_CALL(OMGetBlendState);
     std::lock_guard<mutex_t> lock(mutex);
 
     if (ppBlendState) {
@@ -2816,9 +3187,20 @@ public:
   void
   STDMETHODCALLTYPE
   OMSetDepthStencilState(ID3D11DepthStencilState *pDepthStencilState, UINT StencilRef) override {
+    D11_CTX_CALL(OMSetDepthStencilState);
     std::lock_guard<mutex_t> lock(mutex);
 
-    if (auto expected = com_cast<IMTLD3D11DepthStencilState>(pDepthStencilState)) {
+    auto expected = com_cast<IMTLD3D11DepthStencilState>(pDepthStencilState);
+    // spec 05 clarification 65: the same state (or none both times) and stencil reference mark
+    // nothing dirty
+    if (SameDepthStencilCall(
+            state_.OutputMerger.DepthStencilState, state_.OutputMerger.StencilRef, expected.ptr(), StencilRef
+        )) {
+      d11cs::NoteRepeated();
+      if (StateFilterSkips(CutSettingsOnce()[CutSwitch::StateFilter], true))
+        return;
+    }
+    if (expected) {
       state_.OutputMerger.DepthStencilState = expected.ptr();
     } else {
       state_.OutputMerger.DepthStencilState = nullptr;
@@ -2830,6 +3212,7 @@ public:
   void
   STDMETHODCALLTYPE
   OMGetDepthStencilState(ID3D11DepthStencilState **ppDepthStencilState, UINT *pStencilRef) override {
+    D11_CTX_CALL(OMGetDepthStencilState);
     std::lock_guard<mutex_t> lock(mutex);
 
     if (ppDepthStencilState) {
@@ -2851,6 +3234,7 @@ public:
   void
   STDMETHODCALLTYPE
   RSSetState(ID3D11RasterizerState *pRasterizerState) override {
+    D11_CTX_CALL(RSSetState);
     std::lock_guard<mutex_t> lock(mutex);
 
     if (pRasterizerState) {
@@ -2858,6 +3242,7 @@ public:
         auto current_rs =
             state_.Rasterizer.RasterizerState ? state_.Rasterizer.RasterizerState : default_rasterizer_state;
         if (current_rs == expected.ptr()) {
+          d11cs::NoteRepeated(); // spec 05 clarification 63
           return;
         }
         if (current_rs->IsScissorEnabled() != expected->IsScissorEnabled()) {
@@ -2882,6 +3267,7 @@ public:
   void
   STDMETHODCALLTYPE
   RSGetState(ID3D11RasterizerState **ppRasterizerState) override {
+    D11_CTX_CALL(RSGetState);
     std::lock_guard<mutex_t> lock(mutex);
 
     if (ppRasterizerState) {
@@ -2896,12 +3282,14 @@ public:
   void
   STDMETHODCALLTYPE
   RSSetViewports(UINT NumViewports, const D3D11_VIEWPORT *pViewports) override {
+    D11_CTX_CALL(RSSetViewports);
     std::lock_guard<mutex_t> lock(mutex);
 
     if (NumViewports > 16)
       return;
     if (state_.Rasterizer.NumViewports == NumViewports &&
         memcmp(state_.Rasterizer.viewports, pViewports, NumViewports * sizeof(D3D11_VIEWPORT)) == 0) {
+      d11cs::NoteRepeated(); // spec 05 clarifications 63 and 76
       return;
     }
     state_.Rasterizer.NumViewports = NumViewports;
@@ -2919,6 +3307,7 @@ public:
   void
   STDMETHODCALLTYPE
   RSGetViewports(UINT *pNumViewports, D3D11_VIEWPORT *pViewports) override {
+    D11_CTX_CALL(RSGetViewports);
     std::lock_guard<mutex_t> lock(mutex);
 
     uint32_t num_viewports_available = state_.Rasterizer.NumViewports;
@@ -2940,12 +3329,14 @@ public:
   void
   STDMETHODCALLTYPE
   RSSetScissorRects(UINT NumRects, const D3D11_RECT *pRects) override {
+    D11_CTX_CALL(RSSetScissorRects);
     std::lock_guard<mutex_t> lock(mutex);
 
     if (NumRects > 16)
       return;
     if (state_.Rasterizer.NumScissorRects == NumRects &&
         memcmp(state_.Rasterizer.scissor_rects, pRects, NumRects * sizeof(D3D11_RECT)) == 0) {
+      d11cs::NoteRepeated(); // spec 05 clarifications 63 and 76
       return;
     }
     state_.Rasterizer.NumScissorRects = NumRects;
@@ -2964,6 +3355,7 @@ public:
   void
   STDMETHODCALLTYPE
   RSGetScissorRects(UINT *pNumRects, D3D11_RECT *pRects) override {
+    D11_CTX_CALL(RSGetScissorRects);
     std::lock_guard<mutex_t> lock(mutex);
 
     uint32_t num_rects_available = state_.Rasterizer.NumScissorRects;
@@ -2990,6 +3382,7 @@ public:
       const D3D11_TILE_REGION_SIZE *region_sizes, ID3D11Buffer *pool, UINT range_count, const UINT *range_flags,
       const UINT *pool_start_offsets, const UINT *range_tile_counts, UINT flags
   ) override {
+    D11_CTX_CALL(UpdateTileMappings);
     IMPLEMENT_ME
   };
 
@@ -2998,6 +3391,7 @@ public:
       ID3D11Resource *src_resource, const D3D11_TILED_RESOURCE_COORDINATE *src_start_coordinate,
       const D3D11_TILE_REGION_SIZE *region_size, UINT flags
   ) override {
+    D11_CTX_CALL(CopyTileMappings);
     IMPLEMENT_ME
   };
 
@@ -3005,6 +3399,7 @@ public:
       ID3D11Resource *resource, const D3D11_TILED_RESOURCE_COORDINATE *start_coordinate,
       const D3D11_TILE_REGION_SIZE *size, ID3D11Buffer *buffer, UINT64 start_offset, UINT flags
   ) override {
+    D11_CTX_CALL(CopyTiles);
     IMPLEMENT_ME
   };
 
@@ -3012,23 +3407,40 @@ public:
       ID3D11Resource *dst_resource, const D3D11_TILED_RESOURCE_COORDINATE *dst_start_coordinate,
       const D3D11_TILE_REGION_SIZE *dst_region_size, const void *src_data, UINT flags
   ) override {
+    D11_CTX_CALL(UpdateTiles);
     IMPLEMENT_ME
   };
 
-  HRESULT STDMETHODCALLTYPE ResizeTilePool(ID3D11Buffer *pool, UINT64 size) override { IMPLEMENT_ME };
+  HRESULT STDMETHODCALLTYPE ResizeTilePool(ID3D11Buffer *pool, UINT64 size) override {
+    D11_CTX_CALL(ResizeTilePool);
+    IMPLEMENT_ME
+  }
 
   void STDMETHODCALLTYPE
   TiledResourceBarrier(ID3D11DeviceChild *before_barrier, ID3D11DeviceChild *after_barrier) override {
+    D11_CTX_CALL(TiledResourceBarrier);
     IMPLEMENT_ME
   };
 
-  WINBOOL STDMETHODCALLTYPE IsAnnotationEnabled() override { IMPLEMENT_ME };
+  WINBOOL STDMETHODCALLTYPE IsAnnotationEnabled() override {
+    D11_CTX_CALL(IsAnnotationEnabled);
+    IMPLEMENT_ME
+  }
 
-  void STDMETHODCALLTYPE SetMarkerInt(const WCHAR *label, int data) override { IMPLEMENT_ME };
+  void STDMETHODCALLTYPE SetMarkerInt(const WCHAR *label, int data) override {
+    D11_CTX_CALL(SetMarkerInt);
+    IMPLEMENT_ME
+  }
 
-  void STDMETHODCALLTYPE BeginEventInt(const WCHAR *label, int data) override { IMPLEMENT_ME };
+  void STDMETHODCALLTYPE BeginEventInt(const WCHAR *label, int data) override {
+    D11_CTX_CALL(BeginEventInt);
+    IMPLEMENT_ME
+  }
 
-  void STDMETHODCALLTYPE EndEvent() override { IMPLEMENT_ME };
+  void STDMETHODCALLTYPE EndEvent() override {
+    D11_CTX_CALL(EndEvent);
+    IMPLEMENT_ME
+  }
 
 #pragma endregion
 
@@ -3036,16 +3448,19 @@ public:
 
   void STDMETHODCALLTYPE
   Flush1(D3D11_CONTEXT_TYPE type, HANDLE event) override {
+    D11_CTX_CALL(Flush1);
     IMPLEMENT_ME;
   }
 
   void STDMETHODCALLTYPE
   SetHardwareProtectionState(WINBOOL enable) override {
+    D11_CTX_CALL(SetHardwareProtectionState);
     WARN("SetHardwareProtectionState: stub");
   }
 
   void STDMETHODCALLTYPE
   GetHardwareProtectionState(WINBOOL *enable) override {
+    D11_CTX_CALL(GetHardwareProtectionState);
     *enable = false;
     WARN("GetHardwareProtectionState: stub");
   }
@@ -3107,6 +3522,7 @@ public:
       EmitST([=, cb = managed_shader->constant_buffers_info()](ArgumentEncodingContext &enc) {
         enc.encodeConstantBuffers<stage, kind>(reflection, cb, offset);
       });
+      D11_WORK(work_.tables_cb++); // spec 05 clarification 63
       ShaderStage.ConstantBuffers.clear_dirty();
     }
 
@@ -3116,6 +3532,7 @@ public:
       EmitST([=, arg = managed_shader->arguments_info()](ArgumentEncodingContext &enc) {
         enc.encodeShaderResources<stage, kind>(reflection, arg, offset);
       });
+      D11_WORK(work_.tables_srv++); // spec 05 clarification 63
       ShaderStage.Samplers.clear_dirty();
       ShaderStage.SRVs.clear_dirty();
       if (stage == PipelineStage::Pixel || stage == PipelineStage::Compute) {
@@ -3139,6 +3556,7 @@ public:
 
     uint32_t num_slots = __builtin_popcount(slot_mask);
     auto offset = PreAllocateArgumentBuffer(16 * num_slots, 32);
+    D11_WORK(work_.tables_vb++); // spec 05 clarification 63
 
     if (cmdbuf_state == CommandBufferState::TessellationRenderPipelineReady) {
       EmitST([=](ArgumentEncodingContext &enc) { enc.encodeVertexBuffers<PipelineKind::Tessellation>(slot_mask, offset); });
@@ -3187,6 +3605,7 @@ public:
     if (pShader) {
       if (auto expected = com_cast<IMTLD3D11Shader>(pShader)) {
         if (ShaderStage.Shader.ptr() == expected.ptr()) {
+          d11cs::NoteRepeated(); // spec 05 clarification 63
           return;
         }
         ShaderStage.Shader = std::move(expected);
@@ -3205,6 +3624,8 @@ public:
         D3D11_ASSERT(0 && "unexpected shader object");
       }
     } else {
+      if (!ShaderStage.Shader)
+        d11cs::NoteRepeated(); // spec 05 clarification 63
       ShaderStage.Shader = nullptr;
     }
 
@@ -3254,6 +3675,7 @@ public:
     if (FirstConstantBufferOffsetInUse(pFirstConstant, NumBuffers, ConstantBufferOffsetsSeen()))
       Logger::info("dxmt: constant buffer offsets in use");
 
+    bool changed = false; // spec 05 clarification 63
     for (unsigned slot = StartSlot; slot < StartSlot + NumBuffers; slot++) {
       auto pConstantBuffer = ppConstantBuffers[slot - StartSlot];
       if (pConstantBuffer) {
@@ -3269,6 +3691,7 @@ public:
         auto &entry = ShaderStage.ConstantBuffers.bind(slot, {pConstantBuffer}, replaced);
         if (!replaced) {
           auto changes = ConstantBufferRebindChanges({entry.FirstConstant, entry.NumConstants}, range);
+          changed |= changes.offset_changed || changes.size_changed;
           if (changes.offset_changed) {
             ShaderStage.ConstantBuffers.set_dirty(slot);
             entry.FirstConstant = range.FirstConstant;
@@ -3283,6 +3706,7 @@ public:
           }
           continue;
         }
+        changed = true;
         entry.FirstConstant = range.FirstConstant;
         entry.NumConstants = range.NumConstants;
         entry.Buffer = reinterpret_cast<D3D11ResourceCommon *>(pConstantBuffer);
@@ -3291,10 +3715,13 @@ public:
       } else {
         // BIND NULL
         if (ShaderStage.ConstantBuffers.unbind(slot)) {
+          changed = true;
           EmitST([=](ArgumentEncodingContext &enc) { enc.bindConstantBuffer<Stage>(slot, 0, {}); });
         }
       }
     }
+    if (!changed)
+      d11cs::NoteRepeated(); // spec 05 clarification 63
   }
 
   template <PipelineStage Stage>
@@ -3333,13 +3760,26 @@ public:
 
 
     auto &ShaderStage = state_.ShaderStages[Stage];
+    bool changed = false; // spec 05 clarification 63
     for (unsigned slot = StartSlot; slot < StartSlot + NumViews; slot++) {
       auto pView = static_cast<D3D11ShaderResourceView *>(ppShaderResourceViews[slot - StartSlot]);
+      // spec 05 clarification 69: a view of the kept depth-stencil texture ends the keep, and the
+      // pass with it (switch on)
+      if (pView && unlikely(keep_dsv_.active()) && keep_dsv_view_ &&
+          pView->texture().ptr() == keep_dsv_view_->texture().ptr()) {
+        KeepDsvTracker::Note note;
+        if (keep_dsv_.keptTextureBound(note)) {
+          EmitKeepDsvNote(note);
+          if (note.applied)
+            InvalidateCurrentPass();
+        }
+      }
       if (pView) {
         bool replaced = false;
         auto &entry = ShaderStage.SRVs.bind(slot, {pView}, replaced);
         if (!replaced)
           continue;
+        changed = true;
         entry.SRV = pView;
         if (auto buffer = entry.SRV->buffer()) {
           EmitST([=, buffer = std::move(buffer), viewId = pView->viewId(),
@@ -3354,12 +3794,15 @@ public:
       } else {
         // BIND NULL
         if (ShaderStage.SRVs.unbind(slot)) {
+          changed = true;
           EmitST([=](ArgumentEncodingContext& enc) {
             enc.bindBuffer<Stage>(slot, {}, 0, {});
           });
         }
       }
     }
+    if (!changed)
+      d11cs::NoteRepeated(); // spec 05 clarification 63
   }
 
   template <PipelineStage Stage>
@@ -3386,6 +3829,7 @@ public:
     std::lock_guard<mutex_t> lock(mutex);
 
     auto &ShaderStage = state_.ShaderStages[Stage];
+    bool changed = false; // spec 05 clarification 63
     for (unsigned Slot = StartSlot; Slot < StartSlot + NumSamplers; Slot++) {
       auto pSampler = static_cast<D3D11SamplerState *>(ppSamplers[Slot - StartSlot]);
       if (pSampler) {
@@ -3393,6 +3837,7 @@ public:
         auto &entry = ShaderStage.Samplers.bind(Slot, {pSampler}, replaced);
         if (!replaced)
           continue;
+        changed = true;
         entry.Sampler = pSampler;
         EmitST([=, sampler = pSampler->sampler()](ArgumentEncodingContext &enc) mutable {
           enc.bindSampler<Stage>(Slot, forward_rc(sampler));
@@ -3400,12 +3845,15 @@ public:
       } else {
         // BIND NULL
         if (ShaderStage.Samplers.unbind(Slot)) {
+          changed = true;
           EmitST([=](ArgumentEncodingContext& enc) {
             enc.bindSampler<Stage>(Slot, {});
           });
         }
       }
     }
+    if (!changed)
+      d11cs::NoteRepeated(); // spec 05 clarification 63
   }
 
   template <PipelineStage Stage>
@@ -3440,11 +3888,12 @@ public:
   }
 
   template <PipelineStage Stage>
-  void
+  bool
   SetUnorderedAccessView(
       UINT StartSlot, UINT NumUAVs, ID3D11UnorderedAccessView *const *ppUnorderedAccessViews,
       const UINT *pUAVInitialCounts
   ) {
+    bool changed = false; // spec 05 clarification 69: returned
     auto &binding_set = Stage == PipelineStage::Compute ? state_.ComputeStageUAV.UAVs : state_.OutputMerger.UAVs;
 
     // std::erase_if(state_.ComputeStageUAV.UAVs, [&](const auto &item) -> bool
@@ -3476,6 +3925,7 @@ public:
         if (!replaced) {
           continue;
         }
+        changed = true;
         entry.View = pUAV;
         if (auto buffer = pUAV->buffer()) {
           EmitST([=, buffer = std::move(buffer), viewId = pUAV->viewId(), counter = pUAV->counter(),
@@ -3496,10 +3946,12 @@ public:
         //               });
       } else {
         if (binding_set.unbind(slot)) {
+          changed = true;
           EmitST([=](ArgumentEncodingContext &enc) { enc.bindOutputBuffer<Stage>(slot, {}, 0, {}, {}); });
         }
       }
     }
+    return changed;
   }
 
 #pragma endregion
@@ -3512,6 +3964,7 @@ public:
     std::lock_guard<mutex_t> lock(mutex);
 
     auto &VertexBuffers = state_.InputAssembler.VertexBuffers;
+    bool changed = false; // spec 05 clarification 63
     for (unsigned slot = StartSlot; slot < StartSlot + NumBuffers; slot++) {
       auto pVertexBuffer = ppVertexBuffers[slot - StartSlot];
       if (pVertexBuffer) {
@@ -3521,10 +3974,12 @@ public:
           if (pStrides && pStrides[slot - StartSlot] != entry.Stride) {
             VertexBuffers.set_dirty(slot);
             entry.Stride = pStrides[slot - StartSlot];
+            changed = true;
           }
           if (pOffsets && pOffsets[slot - StartSlot] != entry.Offset) {
             VertexBuffers.set_dirty(slot);
             entry.Offset = pOffsets[slot - StartSlot];
+            changed = true;
           }
           EmitST([=, offset = entry.Offset,
                 stride = entry.Stride](ArgumentEncodingContext &enc) mutable {
@@ -3545,18 +4000,22 @@ public:
           entry.Stride = 0;
         }
         entry.Buffer = reinterpret_cast<D3D11ResourceCommon *>(pVertexBuffer);
+        changed = true;
           EmitST([=, buffer = entry.Buffer->buffer(), offset = entry.Offset,
                 stride = entry.Stride](ArgumentEncodingContext &enc) mutable {
             enc.bindVertexBuffer(slot, offset, stride, forward_rc(buffer));
         });
       } else {
         if (VertexBuffers.unbind(slot)) {
+          changed = true;
           EmitST([=](ArgumentEncodingContext& enc) {
             enc.bindVertexBuffer(slot, 0, 0, {});
           });
         }
       }
     }
+    if (!changed)
+      d11cs::NoteRepeated(); // spec 05 clarification 63
   }
 
   void
@@ -4403,6 +4862,14 @@ public:
   */
   bool
   InvalidateCurrentPass(bool defer_commit = false) {
+    // spec 05 clarification 69: a keep ends with its pass (a pass, if one is open: this is also
+    // called while idle as a pass starts; item 77)
+    {
+      KeepDsvTracker::Note note;
+      if (keep_dsv_.passEnding(cmdbuf_state != CommandBufferState::Idle, note))
+        EmitKeepDsvNote(note);
+    }
+    NotePassEnded(); // spec 05 clarification 63
     switch (cmdbuf_state) {
     case CommandBufferState::Idle:
       break;
@@ -4610,6 +5077,18 @@ public:
         uav_only = true;
       }
 
+      NotePassStarted(); // spec 05 clarification 63
+      // spec 05 clarification 69: what this pass attaches, for a later unbinding of its view
+      pass_targets_ = {};
+      pass_targets_.num_rtvs = state_.OutputMerger.NumRTVs;
+      for (unsigned i = 0; i < state_.OutputMerger.NumRTVs && i < 8; i++)
+        pass_targets_.rtvs[i] = state_.OutputMerger.RTVs[i].ptr();
+      pass_targets_.dsv = state_.OutputMerger.DSV.ptr();
+      pass_targets_.array_length = state_.OutputMerger.ArrayLength; // item 77: the layout
+      pass_targets_.sample_count = state_.OutputMerger.SampleCount;
+      pass_targets_.width = state_.OutputMerger.RenderTargetWidth;
+      pass_targets_.height = state_.OutputMerger.RenderTargetHeight;
+      keep_dsv_.passStarted(pass_targets_); // a would-keep's pass begins
       auto allocated_encoder_argbuf_size = std::make_unique<uint64_t>(0);
       allocated_encoder_argbuf_size_ = allocated_encoder_argbuf_size.get();
 
@@ -4625,29 +5104,44 @@ public:
             continue;
           }
           auto &color = info.colors[rtv.RenderTargetIndex];
+          // spec 05 clarification 71: a discarded subresource isn't loaded (before the access,
+          // which counts as a write and takes the mark away)
+          int discarded = rtv.LoadAction == WMTLoadActionLoad
+                              ? ctx.discardedLoad(rtv.Texture.ptr(), rtv.Texture->firstMiplevel(rtv.viewId),
+                                                  rtv.Texture->firstArraySlice(rtv.viewId))
+                              : 0;
           color.attachment = ctx.access(rtv.Texture, rtv.viewId, DXMT_ENCODER_RESOURCE_ACESS_READWRITE);
           color.depth_plane = rtv.DepthPlane;
-          color.load_action = rtv.LoadAction;
+          color.load_action = discarded == 1 ? WMTLoadActionDontCare : rtv.LoadAction;
           color.store_action = WMTStoreActionStore;
+          ctx.noteDiscardLoad(info, rtv.RenderTargetIndex, color.attachment, 0, discarded);
         };
 
         if (dsv.Texture.ptr()) {
           auto access_flag = ((dsv.ReadOnlyFlags & dsv_planar_flags) == dsv_planar_flags)
                                  ? DXMT_ENCODER_RESOURCE_ACESS_READ
                                  : DXMT_ENCODER_RESOURCE_ACESS_READWRITE;
-          // TODO: ...should know more about store behavior (e.g. DiscardView)
+          // spec 05 clarification 71: the discard marks, checked once for both planes
+          int discarded = dsv.DepthLoadAction == WMTLoadActionLoad || dsv.StencilLoadAction == WMTLoadActionLoad
+                              ? ctx.discardedLoad(dsv.Texture.ptr(), dsv.Texture->firstMiplevel(dsv.viewId),
+                                                  dsv.Texture->firstArraySlice(dsv.viewId))
+                              : 0;
           if (dsv_planar_flags & 1) {
             auto &depth = info.depth;
             depth.attachment = ctx.access(dsv.Texture, dsv.viewId, access_flag);
-            depth.load_action = dsv.DepthLoadAction;
+            int d = dsv.DepthLoadAction == WMTLoadActionLoad ? discarded : 0;
+            depth.load_action = d == 1 ? WMTLoadActionDontCare : dsv.DepthLoadAction;
             depth.store_action = WMTStoreActionStore;
+            ctx.noteDiscardLoad(info, 8, depth.attachment, 1, d);
           }
 
           if (dsv_planar_flags & 2) {
             auto &stencil = info.stencil;
             stencil.attachment = ctx.access(dsv.Texture, dsv.viewId, access_flag);
-            stencil.load_action = dsv.StencilLoadAction;
+            int d = dsv.StencilLoadAction == WMTLoadActionLoad ? discarded : 0;
+            stencil.load_action = d == 1 ? WMTLoadActionDontCare : dsv.StencilLoadAction;
             stencil.store_action = WMTStoreActionStore;
+            ctx.noteDiscardLoad(info, 9, stencil.attachment, 2, d);
           }
         }
         if (effective_render_target == 0) {
@@ -4680,6 +5174,7 @@ public:
      */
     InvalidateCurrentPass(BlitKind != CommandBufferState::BlitEncoderActive);
 
+    NotePassStarted(); // spec 05 clarification 63
     EmitST([](ArgumentEncodingContext &enc) { enc.startBlitPass(); });
 
     cmdbuf_state = BlitKind;
@@ -4705,6 +5200,7 @@ public:
     auto allocated_encoder_argbuf_size = std::make_unique<uint64_t>(0);
     allocated_encoder_argbuf_size_ = allocated_encoder_argbuf_size.get();
 
+    NotePassStarted(); // spec 05 clarification 63
     EmitST([encoder_argbuf_size = std::move(allocated_encoder_argbuf_size)](
                ArgumentEncodingContext &enc) {
       enc.startComputePass(*encoder_argbuf_size.get());
@@ -4753,8 +5249,8 @@ public:
       }
     }
     Desc.BlendState = state_.OutputMerger.BlendState ? state_.OutputMerger.BlendState : default_blend_state;
-    Desc.DepthStencilFormat =
-        state_.OutputMerger.DSV ? state_.OutputMerger.DSV->pixelFormat() : WMTPixelFormatInvalid;
+    // spec 05 clarification 69: the attached view's format, the kept one while it is kept
+    Desc.DepthStencilFormat = AttachedDsv() ? AttachedDsv()->pixelFormat() : WMTPixelFormatInvalid;
     Desc.TopologyClass = to_metal_primitive_topology(state_.InputAssembler.Topology);
     bool ds_enabled =
         (state_.OutputMerger.DepthStencilState ? state_.OutputMerger.DepthStencilState : default_depth_stencil_state)
@@ -4824,6 +5320,7 @@ public:
     MTL_GRAPHICS_PIPELINE_DESC pipelineDesc;
     InitializeGraphicsPipelineDesc<IndexedDraw>(pipelineDesc);
 
+    D11_WORK(work_.pipeline_lookups++); // spec 05 clarification 63
     if (FAILED(device->CreateTessellationMeshPipeline(&pipelineDesc, &pipeline))) {
       return DrawCallStatus::Invalid;
     }
@@ -4876,6 +5373,7 @@ public:
 
     MTL_GRAPHICS_PIPELINE_DESC pipelineDesc;
     InitializeGraphicsPipelineDesc<IndexedDraw>(pipelineDesc);
+    D11_WORK(work_.pipeline_lookups++); // spec 05 clarification 63
     device->CreateGeometryPipeline(&pipelineDesc, &pipeline);
     EmitST([pso = std::move(pipeline)](ArgumentEncodingContext& enc) {
       auto render_encoder = enc.currentRenderEncoder();
@@ -4932,6 +5430,7 @@ public:
     MTL_GRAPHICS_PIPELINE_DESC pipelineDesc;
     InitializeGraphicsPipelineDesc<IndexedDraw>(pipelineDesc);
 
+    D11_WORK(work_.pipeline_lookups++); // spec 05 clarification 63
     device->CreateGraphicsPipeline(&pipelineDesc, &pipeline);
     EmitST([pso = std::move(pipeline)](ArgumentEncodingContext& enc) {
       MTL_COMPILED_GRAPHICS_PIPELINE GraphicsPipeline{};
@@ -4971,14 +5470,32 @@ public:
     if (dirty_state.any(DirtyState::DepthStencilState)) {
       IMTLD3D11DepthStencilState *state =
           state_.OutputMerger.DepthStencilState ? state_.OutputMerger.DepthStencilState : default_depth_stencil_state;
-      EmitST([state, stencil_ref = state_.OutputMerger.StencilRef](ArgumentEncodingContext& enc) {
+      // spec 05 clarification 69: while the view is kept, depth and stencil off (Direct3D 11's
+      // behaviour with no view bound)
+      if (keep_dsv_.applied())
+        if (auto off = KeepDsvOffState())
+          state = off;
+      // spec 05 clarification 70: which planes a draw with this state can write, worked out and
+      // sent only while item 70 is on or noted (item 77); without them a pass keeps its stores
+      const bool note_writes = CutSettingsOnce()[CutSwitch::RoStore] || d11cs::g_level || TraceRecording();
+      uint8_t writes = 0;
+      if (note_writes) {
+        D3D11_DEPTH_STENCIL_DESC ds_desc;
+        state->GetDesc(&ds_desc);
+        writes = DepthStencilWrites(ds_desc);
+      }
+      EmitST([state, stencil_ref = state_.OutputMerger.StencilRef, writes, note_writes](ArgumentEncodingContext& enc) {
         auto encoder = enc.currentRenderEncoder();
         auto &cmd = enc.encodeRenderCommand<wmtcmd_render_setdsso>();
         cmd.type = WMTRenderCommandSetDSSO;
         cmd.dsso = state->GetDepthStencilState(encoder->dsv_planar_flags);
         cmd.stencil_ref = stencil_ref;
+        if (note_writes)
+          enc.noteDepthStencilWrites(writes);
       });
     }
+    if (unlikely(keep_dsv_.active()))
+      keep_dsv_.draw(); // spec 05 clarification 69
     if (dirty_state.any(DirtyState::RasterizerState)) {
       IMTLD3D11RasterizerState *state =
           state_.Rasterizer.RasterizerState ? state_.Rasterizer.RasterizerState : default_rasterizer_state;
@@ -5086,6 +5603,7 @@ public:
     }
     MTLCompiledComputePipeline *pipeline;
     MTL_COMPUTE_PIPELINE_DESC desc{CS};
+    D11_WORK(work_.pipeline_lookups++); // spec 05 clarification 63
     device->CreateComputePipeline(&desc, &pipeline);
 
     // spec 05 clarification 21: the shader's hash for the frame trace (0 when it's off)
@@ -5118,7 +5636,7 @@ public:
      pass by the encoder. Geometry, hull and domain shader samplers aren't listed. */
   void
   TraceDrawState() {
-    if (!FrameTraceSwitch() || !FrameTraced(RecordingPresent()))
+    if (!TraceRecording()) // spec 05 clarification 64: deferred contexts too
       return;
     std::vector<std::string> lines;
     TraceStageSamplers<PipelineStage::Vertex>("vs", lines);
@@ -5146,7 +5664,9 @@ public:
       const char *kind, bool indexed, bool indirect, uint32_t count, uint32_t start, int32_t base, uint32_t instances,
       uint32_t start_instance
   ) {
-    if (!FrameTraceSwitch() || !FrameTraced(RecordingPresent()))
+    NoteCutDraw(indirect, count, instances); // spec 05 clarification 72
+    // spec 05 clarification 64: deferred contexts record their lines too
+    if (!TraceRecording())
       return;
     TraceDrawArgs draw;
     draw.kind = kind;
@@ -5299,9 +5819,79 @@ public:
      read-back made for it isn't put under the next draw */
   void
   TraceDrawDropped() {
-    if (!FrameTraceSwitch() || !FrameTraced(RecordingPresent()))
+    if (!TraceRecording()) // spec 05 clarification 64: deferred contexts too
       return;
     EmitST([](ArgumentEncodingContext &enc) { enc.traceDrawDropped(); });
+  }
+
+  /* MYIOSDECK spec 05 clarification 72: whether the draw overwrites each colour target whole, for
+     the encoder (noted when the switch is on, when counting, or in a traced frame) */
+  void
+  NoteCutDraw(bool indirect, uint32_t count, uint32_t instances) {
+    if (!CutSettingsOnce()[CutSwitch::OverwriteLoad] && !d11cs::g_level && !TraceRecording())
+      return;
+    OverwriteDrawFacts f;
+    f.instanced = instances != 1;
+    f.indirect = indirect;
+    f.geometry_or_tessellation = state_.ShaderStages[PipelineStage::Geometry].Shader ||
+                                 state_.ShaderStages[PipelineStage::Hull].Shader ||
+                                 state_.ShaderStages[PipelineStage::Domain].Shader;
+    auto topology = state_.InputAssembler.Topology;
+    f.triangle_list_of_3 = topology == D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST && count == 3;
+    f.triangle_strip_of_4 = topology == D3D11_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP && count == 4;
+    D3D11_BLEND_DESC1 blend;
+    (state_.OutputMerger.BlendState ? state_.OutputMerger.BlendState : default_blend_state)->GetDesc1(&blend);
+    f.alpha_to_coverage = blend.AlphaToCoverageEnable;
+    f.sample_mask = state_.OutputMerger.SampleMask;
+    for (unsigned i = 0; i < 8; i++) {
+      auto &target = blend.IndependentBlendEnable ? blend.RenderTarget[i] : blend.RenderTarget[0];
+      f.target_plain[i] = !target.BlendEnable && !target.LogicOpEnable &&
+                          (target.RenderTargetWriteMask & D3D11_COLOR_WRITE_ENABLE_ALL) == D3D11_COLOR_WRITE_ENABLE_ALL;
+    }
+    const float width = float(state_.OutputMerger.RenderTargetWidth),
+                height = float(state_.OutputMerger.RenderTargetHeight);
+    if (state_.Rasterizer.NumViewports == 1) {
+      auto &vp = state_.Rasterizer.viewports[0];
+      f.one_viewport_covers = vp.TopLeftX <= 0 && vp.TopLeftY <= 0 && vp.TopLeftX + vp.Width >= width &&
+                              vp.TopLeftY + vp.Height >= height;
+    }
+    D3D11_RASTERIZER_DESC rs;
+    (state_.Rasterizer.RasterizerState ? state_.Rasterizer.RasterizerState : default_rasterizer_state)->GetDesc(&rs);
+    f.solid_fill = rs.FillMode == D3D11_FILL_SOLID;
+    if (!rs.ScissorEnable) {
+      f.scissor_covers = true;
+    } else if (state_.Rasterizer.NumScissorRects >= 1) {
+      auto &r = state_.Rasterizer.scissor_rects[0];
+      f.scissor_covers = r.left <= 0 && r.top <= 0 && float(r.right) >= width && float(r.bottom) >= height;
+    }
+    f.pixel_shader_may_discard = PixelShaderMayDiscard();
+    EmitST([mask = OverwriteTargetMask(f)](ArgumentEncodingContext &enc) { enc.noteCutDraw(mask); });
+  }
+
+  /* clarification 72: the bound pixel shader has a discard (or can't be read, or there is none:
+     then nothing is overwritten); scanned once per shader */
+  const void *ps_discard_shader_ = nullptr;
+  uint32_t ps_discard_hash_ = 0;
+  bool ps_may_discard_ = true;
+
+  bool
+  PixelShaderMayDiscard() {
+    auto ps = GetManagedShader<PipelineStage::Pixel>();
+    if (!ps)
+      return true;
+    const void *key = &*ps;
+    uint32_t hash = FrameTraceShaderHash(ps->sha1().data); // a new shader at the same address
+    if (key != ps_discard_shader_ || hash != ps_discard_hash_) {
+      ps_discard_shader_ = key;
+      ps_discard_hash_ = hash;
+      ps_may_discard_ = true;
+#ifdef DXMT_IOS
+      auto &bytecode = ps->bytecode();
+      if (!bytecode.empty())
+        ps_may_discard_ = DxbcMayDiscard(bytecode.data(), bytecode.size());
+#endif
+    }
+    return ps_may_discard_;
   }
 
   /* spec 05 clarification 44: from the shader's DXBC output signature, kept on iOS (-1 when not) */
@@ -5343,7 +5933,7 @@ public:
     if (!FinalizeCurrentComputePipeline()) {
       return false;
     }
-    if (FrameTraceSwitch() && FrameTraced(RecordingPresent())) { // spec 05 clarification 30
+    if (TraceRecording()) { // spec 05 clarifications 30 and 64
       std::vector<std::string> lines;
       TraceStageSamplers<PipelineStage::Compute>("cs", lines);
       EmitST([lines = std::move(lines)](ArgumentEncodingContext &enc) mutable {
@@ -5498,6 +6088,116 @@ public:
   }
 
 protected:
+  /* spec 05 clarification 63: what is ending the open pass (set by the calls that end passes),
+     and what ended the last one, counted when the next pass starts */
+  d11cs::PassStart pass_reason_ = d11cs::PassStart::Other;
+  d11cs::PassStart pass_ended_by_ = d11cs::PassStart::Other;
+
+  void
+  NotePassReason(d11cs::PassStart reason) {
+    if (unlikely(d11cs::g_level))
+      pass_reason_ = reason;
+  }
+
+  void
+  NotePassEnded() {
+    if (unlikely(d11cs::g_level) && cmdbuf_state != CommandBufferState::Idle) {
+      pass_ended_by_ = pass_reason_;
+      pass_reason_ = d11cs::PassStart::Other;
+    }
+  }
+
+  void
+  NotePassStarted() {
+    if (unlikely(d11cs::g_level)) {
+      d11cs::Work().pass_starts[unsigned(pass_ended_by_)]++;
+      pass_ended_by_ = d11cs::PassStart::Other;
+    }
+  }
+
+  void
+  NotePassEndedByCommit() {
+    if (unlikely(d11cs::g_level))
+      pass_ended_by_ = d11cs::PassStart::Commit;
+  }
+
+  /* ---- spec 05 clarification 69: the depth-stencil view kept while it is unbound ---- */
+
+  /* what the open render pass attached when it started */
+  KeepDsvTargets pass_targets_;
+
+  /* the keep's state machine (d3d11_pass_cuts.hpp), and the kept view, held while kept */
+  KeepDsvTracker keep_dsv_;
+  Com<D3D11DepthStencilView> keep_dsv_view_;
+
+  Com<IMTLD3D11DepthStencilState> keep_dsv_off_state_; // depth and stencil off
+
+  /* whether the keep is noted at all: the switch on, or counting, or a traced frame */
+  bool
+  KeepDsvNoting() {
+    return CutSettingsOnce()[CutSwitch::KeepDsv] || d11cs::g_level || TraceRecording();
+  }
+
+  /* a keep ended: its draws and boundaries go to the open pass (before it ends, if it does) */
+  void
+  EmitKeepDsvNote(const KeepDsvTracker::Note &note) {
+    if (note.applied)
+      dirty_state.set(DirtyState::DepthStencilState); // the application's state again
+    keep_dsv_view_ = nullptr;
+    EmitST([note](ArgumentEncodingContext &enc) { enc.noteKeepDsv(note.draws, note.applied, note.boundaries); });
+  }
+
+  /* the view the pass has: the kept one while the switch keeps it, else the bound one */
+  D3D11DepthStencilView *
+  AttachedDsv() {
+    return keep_dsv_.applied() ? keep_dsv_view_.ptr() : state_.OutputMerger.DSV.ptr();
+  }
+
+  /* depth test and write off and stencil off, for the draws of a keep */
+  IMTLD3D11DepthStencilState *
+  KeepDsvOffState() {
+    if (!keep_dsv_off_state_) {
+      D3D11_DEPTH_STENCIL_DESC desc = {};
+      desc.DepthEnable = FALSE;
+      desc.DepthWriteMask = D3D11_DEPTH_WRITE_MASK_ZERO;
+      desc.DepthFunc = D3D11_COMPARISON_ALWAYS;
+      desc.StencilEnable = FALSE;
+      desc.StencilReadMask = D3D11_DEFAULT_STENCIL_READ_MASK;
+      desc.StencilWriteMask = D3D11_DEFAULT_STENCIL_WRITE_MASK;
+      desc.FrontFace = {D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_STENCIL_OP_KEEP, D3D11_COMPARISON_ALWAYS};
+      desc.BackFace = desc.FrontFace;
+      Com<ID3D11DepthStencilState> state;
+      if (SUCCEEDED(device->CreateDepthStencilState(&desc, &state)))
+        keep_dsv_off_state_ = com_cast<IMTLD3D11DepthStencilState>(state.ptr());
+    }
+    return keep_dsv_off_state_.ptr();
+  }
+
+  /* a view of `texture` bound as a shader resource in any stage */
+  bool
+  AnyShaderResourceOf(Texture *texture) {
+    for (auto &stage : state_.ShaderStages)
+      for (const auto &[slot, entry] : stage.SRVs)
+        if (entry.SRV->texture().ptr() == texture)
+          return true;
+    return false;
+  }
+
+  /* spec 05 clarification 64: whether this context records a traced frame's draw and state lines:
+     the immediate context in a traced frame; a deferred one while the present the immediate
+     context is recording, or the next one, is traced (its lines are dropped unless the command
+     list runs in a traced frame) */
+  bool
+  TraceRecording() {
+    if (!FrameTraceSwitch())
+      return false;
+    uint64_t present = ctx_state.cmd_queue.CurrentFrameSeq();
+    if constexpr (ContextInternalState::kD11csDeferred)
+      return FrameTraced(present) || FrameTraced(present + 1);
+    else
+      return FrameTraced(present);
+  }
+
   MTLD3D11Device *device;
   CommandBufferState cmdbuf_state = CommandBufferState::Idle;
   CommandBufferState previous_render_pipeline_state = CommandBufferState::Idle;
@@ -5834,6 +6534,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) override {
+    D11_CHILD_CALL(QueryInterface); // MYIOSDECK spec 05 clarification 63
     if (ppvObject == nullptr)
       return E_POINTER;
 

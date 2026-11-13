@@ -1,9 +1,10 @@
-// Changed for MYIOSDECK (spec 05; FLIP_SEQUENTIAL accepted, see d3d11_swap_effect.hpp). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05; FLIP_SEQUENTIAL accepted, see d3d11_swap_effect.hpp; clarification 63: Present counted). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "d3d11_swapchain.hpp"
 #include "d3d11_swap_effect.hpp"
 #include "com/com_guid.hpp"
 #include "config/config.hpp"
 #include "d3d11_private.h"
+#include "d3d11_call_stats.hpp" // spec 05 clarification 63
 #include "dxgi_interfaces.h"
 #include "dxgi_object.hpp"
 #include "dxgi_output.hpp"
@@ -248,7 +249,8 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   Present(UINT sync_interval, UINT flags) final {
-    return Present1(sync_interval, flags, nullptr);
+    D11_PRESENT_CALL(Present); // spec 05 clarification 63
+    return PresentUncounted(sync_interval, flags, nullptr);
   };
 
   HRESULT
@@ -734,6 +736,14 @@ public:
   STDMETHODCALLTYPE
   Present1(UINT SyncInterval, UINT PresentFlags,
            const DXGI_PRESENT_PARAMETERS *pPresentParameters) final {
+    D11_PRESENT_CALL(Present1); // spec 05 clarification 63
+    return PresentUncounted(SyncInterval, PresentFlags, pPresentParameters);
+  }
+
+  /* spec 05 clarification 63: both Presents, counted once by the one the application called */
+  HRESULT
+  PresentUncounted(UINT SyncInterval, UINT PresentFlags,
+                   const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
     if (SyncInterval > 4)
       return DXGI_ERROR_INVALID_CALL;
 

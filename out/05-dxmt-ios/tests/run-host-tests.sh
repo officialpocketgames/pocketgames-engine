@@ -91,6 +91,15 @@ $cc -std=c11 -O1 -Wall -Wextra -Werror -pthread -I"$src/winemetal/unix" \
 $cxx $flags -Wno-unused-function -pthread -x c++ -fsyntax-only "$src/winemetal/unix/app_active.h"
 # Spec 05 clarification 57: PG_DXMT_SERIALIZE's levels, the optimiser's loop, the waits.
 $cxx $flags -I"$src/dxmt" -o "$build/test_serialize" "$here/test_serialize.cpp"
+# Spec 05 clarification 63: the Direct3D 11 call statistics' report, the lists against the
+# headers' vtables (C, so the headers declare each vtable as a struct); round 17's cuts.
+$cxx $flags -I"$src/d3d11" -I"$src/util" -o "$build/test_d3d11_call_stats" "$here/test_d3d11_call_stats.cpp"
+$cc -std=c11 -O1 -Wall -Wextra -Werror -I"$native/windows" -I"$native/directx" -I"$src/d3d11" \
+  -o "$build/test_d3d11_call_list" "$here/test_d3d11_call_list.c"
+$cxx $flags $native_flags -I"$src/d3d11" -I"$src/dxmt" -o "$build/test_d3d11_cuts" "$here/test_d3d11_cuts.cpp"
+# Spec 05 round 17, the encoder's side of the cuts (68, 70-72) and the trace's lines (64).
+$cxx $flags $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
+  -o "$build/test_pass_cuts" "$here/test_pass_cuts.cpp"
 # Spec 05 clarification 30: the frame trace's state lines.
 $cxx $flags $native_flags -I"$src/d3d11" -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
   -o "$build/test_trace_state" "$here/test_trace_state.cpp"
@@ -136,6 +145,11 @@ sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_trace_state" || status=1
 "$build/test_app_active" || status=1
 "$build/test_serialize" || status=1
+"$build/test_d3d11_call_stats" || status=1
+"$build/test_d3d11_call_list" || status=1
+sh "$here/check-d3d11-call-sites.sh" "$src/d3d11" || status=1
+"$build/test_d3d11_cuts" || status=1
+"$build/test_pass_cuts" || status=1
 sh "$here/check-shader-fixes.sh" "$src" || status=1
 if [ -n "$sqlite_lib" ]; then
   "$build/test_cache_contents" "$build" || status=1

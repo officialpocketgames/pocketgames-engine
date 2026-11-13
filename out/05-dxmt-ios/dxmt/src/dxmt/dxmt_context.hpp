@@ -4,6 +4,7 @@
 // blocks from steamac's DXMT patch 0023, marked inline; spec 05 clarification 17: the
 // read-write UAV format line; clarifications 21, 24, 27 and 28: the frame trace and dump).
 // Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Also changed for MYIOSDECK (spec 05 round 17: the serialize level and fence, the pass-cut notes and discard marks).
 
 #include "Metal.hpp"
 #include <cstring>
@@ -23,6 +24,9 @@
 #include "dxmt_residency.hpp"
 #include "dxmt_sampler.hpp"
 #include "dxmt_serialize.hpp"
+#include "dxmt_pass_merge.hpp" // spec 05 clarification 68
+#include "dxmt_pass_cuts.hpp"  // spec 05 clarifications 70-72
+#include "dxmt_pass_stats.hpp" // spec 05 clarification 63
 #include "dxmt_statistics.hpp"
 #include "dxmt_texture.hpp"
 #include "log/log.hpp"
@@ -114,6 +118,7 @@ struct EncoderData {
   EncoderDepSet buf_write;
   EncoderDepSet tex_read;
   EncoderDepSet tex_write;
+  unsigned merged_passes = 0; // MYIOSDECK spec 05 clarifications 64 and 68: passes merged into this one
 };
 
 struct GSDispatchArgumentsMarshal {
@@ -169,6 +174,18 @@ struct RenderEncoderStencilAttachmentData {
   uint8_t clear_stencil;
 };
 
+/* MYIOSDECK spec 05 clarification 64: the cuts of items 69-72 a render pass had, or would have
+   had with its switch on, for its trace line. Attachments are bits 0-7 (c0-c7), 8 (depth) and 9
+   (stencil); planes are 1 (depth) and 2 (stencil). */
+struct PassCutNotes {
+  uint32_t keep_dsv_draws = 0;
+  bool keep_dsv = false, keep_dsv_would = false;
+  uint8_t ro_store = 0, ro_store_would = 0;
+  uint16_t discard_load = 0, discard_load_would = 0;
+  uint16_t discard_store = 0, discard_store_would = 0;
+  uint16_t overwrite_load = 0, overwrite_load_would = 0;
+};
+
 struct RenderEncoderData : EncoderData {
   std::array<RenderEncoderColorAttachmentData, 8> colors;
   RenderEncoderDepthAttachmentData depth;
@@ -190,6 +207,12 @@ struct RenderEncoderData : EncoderData {
   bool use_visibility_result = 0;
   bool use_tessellation = 0;
   bool use_geometry = 0;
+  /* MYIOSDECK spec 05 round 17 */
+  uint8_t ds_can_write = 0;      // 70: planes a draw can write (1 depth, 2 stencil), read-only planes out
+  bool ds_writes_known = false;  // 70: false when the front end didn't say (it can write both)
+  uint32_t draw_count = 0;       // 72: draws noted by the front end
+  uint8_t overwrite_mask = 0xff; // 72: colour targets every draw overwrites whole
+  PassCutNotes cut_notes;        // 64: what items 69-72 did (or would do) to this pass
 };
 
 struct ComputeEncoderData : EncoderData {
@@ -395,6 +418,7 @@ public:
   access(Rc<Texture> const &texture, unsigned level, unsigned slice, DXMT_ENCODER_RESOURCE_ACESS flags) {
     auto allocation = texture->current();
     trackTexture<PreRasterStage>(allocation, flags);
+    noteTextureWrite(texture.ptr(), flags); // spec 05 clarification 71
     return allocation->texture();
   }
 
@@ -403,7 +427,38 @@ public:
   access(Rc<Texture> const &texture, unsigned viewId, DXMT_ENCODER_RESOURCE_ACESS flags) {
     auto allocation = texture->current();
     trackTexture<PreRasterStage>(allocation, flags);
+    noteTextureWrite(texture.ptr(), flags); // spec 05 clarification 71
     return texture->view(viewId, allocation);
+  }
+
+  /* MYIOSDECK spec 05 clarification 71: a write takes the texture's discard marks away */
+  void
+  noteTextureWrite(Texture *texture, DXMT_ENCODER_RESOURCE_ACESS flags) {
+    if (unlikely(texture->discardMarks().size()) && (flags & DXMT_ENCODER_RESOURCE_ACESS_WRITE))
+      texture->discardMarks().writtenAll(0); // marks live in the texture (item 77)
+  }
+
+  /* MYIOSDECK spec 05 round 17: what the front end says about the open render pass */
+  void noteDepthStencilWrites(uint8_t writes); // 70: with each depth-stencil state it encodes
+  void noteCutDraw(uint8_t overwrite_mask);    // 72: with each draw
+  /* 69: the depth-stencil view was kept for `draws` draws (applied) or would have been (switch
+     off); `boundaries` pass breaks were (or would be) avoided */
+  void noteKeepDsv(uint32_t draws, bool applied, uint32_t boundaries);
+  /* 71: DiscardView/DiscardResource of `texture`'s levels [level, level + levels) and slices
+     [slice, slice + slices) (a render-target or depth-stencil subresource) */
+  void discardTexture(Rc<Texture> const &texture, unsigned level, unsigned levels, unsigned slice, unsigned slices);
+  /* 71: a render pass is about to attach this subresource with load action load: 1 when a
+     discard mark makes the load don't-care (switch on), 2 when it would (switch off), else 0 */
+  int discardedLoad(Texture *texture, unsigned level, unsigned slice);
+  /* 71: then, once the pass has the attachment (bit: 0-7 colour, 8 depth, 9 stencil) */
+  void noteDiscardLoad(RenderEncoderData &pass, unsigned bit, const TextureViewRef &ref, int plane, int discarded);
+
+  /* the open render pass, or null */
+  RenderEncoderData *
+  openRenderPass() {
+    return encoder_current && encoder_current->type == EncoderType::Render
+               ? static_cast<RenderEncoderData *>(encoder_current)
+               : nullptr;
   }
 
   template <PipelineStage stage>
@@ -996,6 +1051,7 @@ public:
 
 private:
   DXMT_ENCODER_LIST_OP checkEncoderRelation(EncoderData* former, EncoderData* latter);
+  void mergeIndependentPasses(EncoderData **encoders, unsigned count); // spec 05 clarification 68
   bool hasDataDependency(EncoderData* from, EncoderData* to);
   bool isEncoderSignatureMatched(RenderEncoderData* former, RenderEncoderData* latter);
   RenderEncoderColorAttachmentData *isClearColorSignatureMatched(ClearEncoderData* former, RenderEncoderData* latter);
@@ -1066,6 +1122,14 @@ private:
 
   WMT::Device device_;
   CommandQueue& queue_;
+  /* spec 05 round 17 */
+  void applyPassCuts(EncoderData **encoders, unsigned count);    // 70, 72 and the counts of 69-72
+  uint64_t attachmentBytes(const TextureViewRef &ref, int plane); // 63, 64: 0 colour, 1 depth, 2 stencil
+  void countCut(PassCut cut, bool applied, uint64_t count, uint64_t bytes);
+  TraceTextureNumbering trace_texture_numbers_;                 // 64: t<n> outside dumped frames
+  unsigned traceTextureNumber(obj_handle_t texture);
+  void traceCountLoadStore(const TextureViewRef &ref, int plane, WMTLoadAction load, WMTStoreAction store);
+  TraceFrameTotals trace_totals_;                                 // 64: the trace's closing lines
   /* spec 05 clarification 57 */
   unsigned serialize_level_ = 0;
   WMT::Reference<WMT::Fence> serialize_fence_;

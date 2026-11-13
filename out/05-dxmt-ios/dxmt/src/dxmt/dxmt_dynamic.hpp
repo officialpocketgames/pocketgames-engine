@@ -1,5 +1,5 @@
 #pragma once
-// Changed for MYIOSDECK (spec 05 D4; multi-slice discards; spec 07 A2: LGPL-2.1-or-later lines from dxmt-d3d9 v0.4-d3d9,
+// Changed for MYIOSDECK (spec 05 D4; multi-slice discards; clarification 67: allocateRing; spec 07 A2: LGPL-2.1-or-later lines from dxmt-d3d9 v0.4-d3d9,
 // marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "dxmt_buffer.hpp"
 #include "dxmt_dynamic_policy.hpp"
@@ -19,6 +19,10 @@ public:
      MYIOSDECK: current_seq_id (the chunk being recorded; 0 = not known) lets a buffer
      discarded faster than the GPU retires its allocations grow them (dxmt_dynamic_policy.hpp). */
   Rc<BufferAllocation> allocate(uint64_t coherent_seq_id, bool *out_minted_fresh = nullptr, uint64_t current_seq_id = 0);
+  /* MYIOSDECK spec 05 clarification 67 (DXMT_D11_DEFERRED_RING on): `list_holds_one` (a deferred
+     context's command list already holds an allocation of this buffer) doubles the slices of
+     new allocations; a finished allocation smaller than that is released, not handed out. */
+  Rc<BufferAllocation> allocateRing(uint64_t coherent_seq_id, bool *out_minted_fresh, uint64_t current_seq_id, bool list_holds_one);
   void updateImmediateName(uint64_t current_seq_id, Rc<BufferAllocation> &&allocation, uint32_t suballocation, bool owned_by_command_list);
   void recycle(uint64_t current_seq_id, Rc<BufferAllocation> &&allocation);
   uint32_t nextSuballocation();

@@ -1,6 +1,8 @@
+# Changed for MYIOSDECK (spec 05 clarification 63: d3d11_call_stats.cpp). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 d3d11_res = wrc_generator.process('version.rc')
 
 d3d11_src = [
+  'd3d11_call_stats.cpp', # MYIOSDECK spec 05 clarification 63
   'd3d11_class_linkage.cpp',
   'd3d11_device.cpp',
   'd3d11_input_layout.cpp',

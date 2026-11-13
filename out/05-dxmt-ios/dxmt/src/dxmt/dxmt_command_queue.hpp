@@ -4,6 +4,7 @@
 // an LGPL-2.1-or-later member from steamac's DXMT patch 0023, marked inline; spec 05 clarification
 // 24 and 28: the frame trace's read-backs and the frame dump's copies; clarification 57: the
 // serialize test switch). Upstream: DXMT a3a6e8f, MIT.
+// Also changed for MYIOSDECK (spec 05 clarification 63: the encoding time for the call statistics).
 
 #include "Metal.hpp"
 #include "dxmt_allocation.hpp"
@@ -15,6 +16,7 @@
 #include "dxmt_resource_initializer.hpp"
 #include "dxmt_ring_bump_allocator.hpp"
 #include "dxmt_serialize.hpp" // spec 05 clarification 57
+#include "dxmt_pass_stats.hpp" // spec 05 clarification 63
 #include "dxmt_statistics.hpp"
 #include "log/log.hpp"
 #include "thread.hpp"
@@ -137,6 +139,8 @@ public:
     auto t2 = clock::now();
     statistics.encode_prepare_interval += (t1 - t0);
     statistics.encode_flush_interval += (t2 - t1);
+    // spec 05 clarification 63: the encoding thread's time, for the Direct3D 11 call statistics
+    PassStatAdd(g_encoder_pass_stats.encode_ns, uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t0).count()));
   };
 
   /* spec 07: LGPL-2.1-or-later, from dxmt-d3d9 v0.4-d3d9 (e8dd4c6). Notified

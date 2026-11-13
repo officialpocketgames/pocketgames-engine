@@ -2,9 +2,13 @@
 // blocks from dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05
 // clarification 17: the read-write UAV format line; 21, 24, 27, 28: the frame trace and dump).
 // Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Also changed for MYIOSDECK (spec 05 round 17: 63 pass counts, 64 the trace's pass lines, 68 the compute and
+// blit merge, 69-72 the pass cuts, 73 the switches).
 #include "dxmt_context.hpp"
 #include "Metal.hpp"
 #include "dxmt_command_queue.hpp"
+#include "dxmt_cuts.hpp"       // spec 05 clarification 73
+#include "dxmt_pass_stats.hpp" // spec 05 clarification 63
 #include "util_placed_memory.hpp"
 #ifdef DXMT_IOS
 #include "util_bitness.hpp"
@@ -22,6 +26,8 @@
 #include <filesystem>
 
 namespace dxmt {
+
+static std::string TraceTextureHandle(obj_handle_t texture, unsigned number); // spec 05 clarification 64
 
 void
 ArgumentEncodingContext::noteReadWriteUAV(WMTPixelFormat format) {
@@ -919,6 +925,10 @@ ArgumentEncodingContext::$$setEncodingContext(uint64_t seq_id, uint64_t frame_id
         trace_record_->render_passes = frame_trace_.renderPasses();
         trace_record_->dispatches = frame_trace_.dispatchCount();
         trace_record_->draws = frame_trace_.draws();
+        // clarification 64: what the frame loaded, stored and copied, and the cuts, before the
+        // constant-buffer count
+        if (frame_trace_.active())
+          closing = TraceTotalsLines(trace_totals_);
         frame_trace_.finish(closing);
         if (trace_srv_skipped_) // clarification 50: over the 300 or the share
           closing.push_back(TraceSrvLeftOut(trace_srv_skipped_));
@@ -933,6 +943,8 @@ ArgumentEncodingContext::$$setEncodingContext(uint64_t seq_id, uint64_t frame_id
       trace_draw_indirect_k_ = 0;
       trace_srv_skipped_ = 0;
       trace_cb_skipped_ = 0;
+      trace_totals_ = {};             // clarification 64
+      trace_texture_numbers_.clear(); // clarification 64
       if (traced) {
         trace_record_ = std::make_shared<FrameTraceRecord>();
         trace_record_->present = present;
@@ -1071,6 +1083,35 @@ FrameTraceSwitch() {
     return value;
   }();
   return on;
+}
+
+/* spec 05 clarification 73: round 17's switches, read once per process (with PG_DXMT_SERIALIZE,
+   which turns items 68-72 off) */
+const CutSettings &
+CutSettingsOnce() {
+  static const CutSettings settings = [] {
+    std::string serialize = env::getEnvVar("PG_DXMT_SERIALIZE");
+    std::string values[unsigned(CutSwitch::Count)];
+    bool set[unsigned(CutSwitch::Count)] = {};
+    for (unsigned i = 0; i < unsigned(CutSwitch::Count); i++) {
+      values[i] = env::getEnvVar(kCutSwitches[i].variable);
+      set[i] = !values[i].empty();
+    }
+    auto result = CutSettingsFrom(
+        [&](const char *variable) -> const char * {
+          for (unsigned k = 0; k < unsigned(CutSwitch::Count); k++)
+            if (std::string(variable) == kCutSwitches[k].variable)
+              return set[k] ? values[k].c_str() : nullptr;
+          return nullptr;
+        },
+        SerializeSettingFromValue(serialize.c_str()).level
+    );
+    for (unsigned k = 0; k < unsigned(CutSwitch::Count); k++)
+      if (result.ignored[k])
+        Logger::warn(str::format("dxmt: ", kCutSwitches[k].variable, " ignored (not 0 or 1), using its default"));
+    return result;
+  }();
+  return settings;
 }
 
 /* spec 05 clarification 28: the dump switch, read once per process like the trace's */
@@ -1687,7 +1728,8 @@ ArgumentEncodingContext::traceEncoders(EncoderData **encoders, unsigned count) {
       auto texture = data->attachment.texture();
       std::string what = data->clear_dsv ? "clear depth-stencil " : "clear color ";
       frame_trace_.line(
-          what + TraceTexture(texture.pixelFormat(), data->width, data->height) + " slices " +
+          what + "t" + std::to_string(traceTextureNumber(texture.handle)) + " " + // clarification 64
+              TraceTexture(texture.pixelFormat(), data->width, data->height) + " slices " +
               std::to_string(data->array_length) + " rect " + TraceRect(0, 0, data->width, data->height),
           out
       );
@@ -1697,9 +1739,9 @@ ArgumentEncodingContext::traceEncoders(EncoderData **encoders, unsigned count) {
       auto data = static_cast<ResolveEncoderData *>(current);
       auto src = data->src.texture();
       auto dst = data->dst.texture();
-      std::string line = std::string("resolve ") + (data->is_depth ? "depth " : "") +
-                         TraceTexture(src.pixelFormat(), src.width(), src.height()) + " -> " +
-                         TraceTexture(dst.pixelFormat(), dst.width(), dst.height());
+      std::string line = std::string("resolve ") + (data->is_depth ? "depth " : "") + // clarification 64: t<n>
+                         TraceTextureHandle(src.handle, traceTextureNumber(src.handle)) + " -> " +
+                         TraceTextureHandle(dst.handle, traceTextureNumber(dst.handle));
       if (data->src_rect)
         line += " rect " + TraceRect(data->src_rect->x, data->src_rect->y, data->src_rect->width, data->src_rect->height);
       frame_trace_.line(line, out);
@@ -1722,11 +1764,56 @@ ArgumentEncodingContext::traceEncoders(EncoderData **encoders, unsigned count) {
       trace_record_->lines.push_back(std::move(line));
 }
 
+/* clarification 64: "t3 RGBA8Unorm 1920x1080", with the texture's number in the frame */
 static std::string
-TraceTextureHandle(obj_handle_t texture) {
+TraceTextureHandle(obj_handle_t texture, unsigned number) {
   if (!texture)
     return "none";
-  return TraceTexture(MTLTexture_pixelFormat(texture), MTLTexture_width(texture), MTLTexture_height(texture));
+  return "t" + std::to_string(number) + " " +
+         TraceTexture(MTLTexture_pixelFormat(texture), MTLTexture_width(texture), MTLTexture_height(texture));
+}
+
+/* MYIOSDECK spec 05 clarification 64: textures are numbered in the order the frame's trace first
+   names them; a dumped frame uses the dump's numbers, so trace.txt and index.txt agree */
+unsigned
+ArgumentEncodingContext::traceTextureNumber(obj_handle_t texture) {
+  if (dump_active_)
+    return dumpTextureId(texture);
+  return trace_texture_numbers_.number(uint64_t(texture));
+}
+
+/* MYIOSDECK spec 05 clarification 64: bytes one load or store of an attachment moves: its
+   level's width x height x samples x bytes per texel (depth 4 and stencil 1 in
+   Depth32Float_Stencil8, depth 2 in Depth16Unorm) */
+uint64_t
+ArgumentEncodingContext::attachmentBytes(const TextureViewRef &ref, int plane) {
+  auto *view = ref.ptr();
+  if (!view)
+    return 0;
+  auto *texture = view->allocation->descriptor;
+  WMTPixelFormat format = texture->pixelFormat(view->key);
+  uint32_t texel = 0;
+  if (plane == 2)
+    texel = 1;
+  else if (plane == 1)
+    texel = format == WMTPixelFormatDepth16Unorm ? 2 : 4;
+  else
+    texel = MTLGetTexelSize(format);
+  return AttachmentBytes(texture->width(view->key), texture->height(view->key), texture->sampleCount(), texel);
+}
+
+/* clarification 64: an attachment's load and store, into the frame's totals */
+void
+ArgumentEncodingContext::traceCountLoadStore(const TextureViewRef &ref, int plane, WMTLoadAction load, WMTStoreAction store) {
+  uint64_t bytes = attachmentBytes(ref, plane);
+  if (load == WMTLoadActionLoad) {
+    trace_totals_.loads++;
+    trace_totals_.load_bytes += bytes;
+  }
+  if (store == WMTStoreActionStore || store == WMTStoreActionStoreAndMultisampleResolve) {
+    trace_totals_.stores++;
+    trace_totals_.store_bytes += bytes;
+  }
 }
 
 void
@@ -1749,22 +1836,28 @@ ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<st
     }
     attachments.push_back(TraceAttachment(
         "c" + std::to_string(i), texture.pixelFormat(), texture.width(), texture.height(), color.level, color.slice,
-        color.load_action, type_of(color.attachment)
+        color.load_action, type_of(color.attachment), int(traceTextureNumber(texture.handle)),
+        TraceStoreAction(color.store_action)
     ));
+    traceCountLoadStore(color.attachment, 0, color.load_action, color.store_action); // clarification 64
   }
   if (data->depth.attachment) {
     auto texture = data->depth.attachment.texture();
     attachments.push_back(TraceAttachment(
         "depth", texture.pixelFormat(), texture.width(), texture.height(), data->depth.level, data->depth.slice,
-        data->depth.load_action, type_of(data->depth.attachment)
+        data->depth.load_action, type_of(data->depth.attachment), int(traceTextureNumber(texture.handle)),
+        TraceStoreAction(data->depth.store_action)
     ));
+    traceCountLoadStore(data->depth.attachment, 1, data->depth.load_action, data->depth.store_action);
   }
   if (data->stencil.attachment) {
     auto texture = data->stencil.attachment.texture();
     attachments.push_back(TraceAttachment(
         "stencil", texture.pixelFormat(), texture.width(), texture.height(), data->stencil.level, data->stencil.slice,
-        data->stencil.load_action, type_of(data->stencil.attachment)
+        data->stencil.load_action, type_of(data->stencil.attachment), int(traceTextureNumber(texture.handle)),
+        TraceStoreAction(data->stencil.store_action)
     ));
+    traceCountLoadStore(data->stencil.attachment, 2, data->stencil.load_action, data->stencil.store_action);
   }
 
   // the viewports and scissor rectangles in effect at each draw
@@ -1828,7 +1921,19 @@ ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<st
   unsigned index = frame_trace_.nextPass();
   // clarification 44: the layer count (0 when not layered)
   int layers = data->render_target_array_length > 1 ? int(data->render_target_array_length) : 0;
-  frame_trace_.line(TraceRenderPass(index, attachments, draws, viewports, scissors, partial, layers), out);
+  // clarification 64: the planes the draws can write (a front end that doesn't say: both), and
+  // the cuts of items 69-72
+  std::string writes = "-";
+  if (data->depth.attachment || data->stencil.attachment) {
+    unsigned planes = (data->depth.attachment ? 1 : 0) | (data->stencil.attachment ? 2 : 0);
+    writes = TracePlanes(data->ds_writes_known ? (data->ds_can_write & planes) : planes);
+  }
+  auto &n = data->cut_notes;
+  std::string cuts = TraceCutList(
+      n.keep_dsv_draws, n.keep_dsv, n.keep_dsv_would, n.ro_store, n.ro_store_would, n.discard_load,
+      n.discard_load_would, n.discard_store, n.discard_store_would, n.overwrite_load, n.overwrite_load_would
+  );
+  frame_trace_.line(TraceRenderPass(index, attachments, draws, viewports, scissors, partial, layers, writes, cuts), out);
   frame_trace_.countRenderPass(draws); // spec 05 clarification 39
   // spec 05 clarification 30: the distinct states the pass's draws used
   if (auto states = trace_state_notes_.find(data); states != trace_state_notes_.end())
@@ -1861,7 +1966,12 @@ ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<st
 
 void
 ArgumentEncodingContext::traceComputePass(ComputeEncoderData *data, std::vector<std::string> &out) {
-  frame_trace_.line("compute pass " + std::to_string(frame_trace_.nextPass()), out);
+  // clarification 64: a pass item 68 merged others into says how many
+  frame_trace_.line(
+      "compute pass " + std::to_string(frame_trace_.nextPass()) +
+          (data->merged_passes ? " merged " + std::to_string(data->merged_passes) : std::string()),
+      out
+  );
   WMTSize tg{0, 0, 0};
   for (auto cmd = (wmtcmd_base *)&data->cmd_head; cmd; cmd = (wmtcmd_base *)cmd->next.get()) {
     switch ((WMTComputeCommandType)cmd->type) {
@@ -1901,6 +2011,9 @@ ArgumentEncodingContext::traceComputePass(ComputeEncoderData *data, std::vector<
 
 void
 ArgumentEncodingContext::traceBlitPass(BlitEncoderData *data, std::vector<std::string> &out) {
+  // clarification 64: a blit pass item 68 merged others into says so; its copies follow
+  if (data->merged_passes)
+    frame_trace_.line("blit pass merged " + std::to_string(data->merged_passes), out);
   for (auto cmd = (wmtcmd_base *)&data->cmd_head; cmd; cmd = (wmtcmd_base *)cmd->next.get()) {
     switch ((WMTBlitCommandType)cmd->type) {
     case WMTBlitCommandCopyFromBufferToBuffer: {
@@ -1916,7 +2029,7 @@ ArgumentEncodingContext::traceBlitPass(BlitEncoderData *data, std::vector<std::s
       // UpdateSubresource and copies from staging buffers
       auto body = (wmtcmd_blit_copy_from_buffer_to_texture *)cmd;
       frame_trace_.line(
-          "copy buffer -> " + TraceTextureHandle(body->dst) + " mip " + std::to_string(body->level) + " slice " +
+          "copy buffer -> " + TraceTextureHandle(body->dst, traceTextureNumber(body->dst)) + " mip " + std::to_string(body->level) + " slice " +
               std::to_string(body->slice) + " box " +
               TraceBox(body->origin.x, body->origin.y, body->origin.z, body->size.width, body->size.height,
                        body->size.depth),
@@ -1927,7 +2040,7 @@ ArgumentEncodingContext::traceBlitPass(BlitEncoderData *data, std::vector<std::s
     case WMTBlitCommandCopyFromTextureToBuffer: {
       auto body = (wmtcmd_blit_copy_from_texture_to_buffer *)cmd;
       frame_trace_.line(
-          "copy " + TraceTextureHandle(body->src) + " mip " + std::to_string(body->level) + " slice " +
+          "copy " + TraceTextureHandle(body->src, traceTextureNumber(body->src)) + " mip " + std::to_string(body->level) + " slice " +
               std::to_string(body->slice) + " box " +
               TraceBox(body->origin.x, body->origin.y, body->origin.z, body->size.width, body->size.height,
                        body->size.depth) +
@@ -1938,12 +2051,17 @@ ArgumentEncodingContext::traceBlitPass(BlitEncoderData *data, std::vector<std::s
     }
     case WMTBlitCommandCopyFromTextureToTexture: {
       auto body = (wmtcmd_blit_copy_from_texture_to_texture *)cmd;
+      // clarification 64: the frame's texture copies, bytes read and written
+      trace_totals_.copies++;
+      trace_totals_.copy_bytes += 2 * uint64_t(body->src_size.width) * body->src_size.height *
+                                  (body->src_size.depth ? body->src_size.depth : 1) *
+                                  MTLGetTexelSize(MTLTexture_pixelFormat(body->src));
       frame_trace_.line(
-          "copy " + TraceTextureHandle(body->src) + " mip " + std::to_string(body->src_level) + " slice " +
+          "copy " + TraceTextureHandle(body->src, traceTextureNumber(body->src)) + " mip " + std::to_string(body->src_level) + " slice " +
               std::to_string(body->src_slice) + " box " +
               TraceBox(body->src_origin.x, body->src_origin.y, body->src_origin.z, body->src_size.width,
                        body->src_size.height, body->src_size.depth) +
-              " -> " + TraceTextureHandle(body->dst) + " mip " + std::to_string(body->dst_level) + " slice " +
+              " -> " + TraceTextureHandle(body->dst, traceTextureNumber(body->dst)) + " mip " + std::to_string(body->dst_level) + " slice " +
               std::to_string(body->dst_slice) + " at " + std::to_string(body->dst_origin.x) + "," +
               std::to_string(body->dst_origin.y) + "," + std::to_string(body->dst_origin.z),
           out
@@ -1951,7 +2069,7 @@ ArgumentEncodingContext::traceBlitPass(BlitEncoderData *data, std::vector<std::s
       break;
     }
     case WMTBlitCommandGenerateMipmaps:
-      frame_trace_.line("generate mipmaps " + TraceTextureHandle(((wmtcmd_blit_generate_mipmaps *)cmd)->texture), out);
+      frame_trace_.line("generate mipmaps " + TraceTextureHandle(((wmtcmd_blit_generate_mipmaps *)cmd)->texture, traceTextureNumber(((wmtcmd_blit_generate_mipmaps *)cmd)->texture)), out);
       break;
     case WMTBlitCommandFillBuffer: {
       auto body = (wmtcmd_blit_fillbuffer *)cmd;
@@ -2035,6 +2153,36 @@ ArgumentEncodingContext::flushCommands(WMT::CommandBuffer cmdbuf, uint64_t seqId
       },
       [](EncoderData *encoder) { return encoder->type == EncoderType::Null; }
   );
+
+  // MYIOSDECK spec 05 clarification 68: compute passes join earlier compute passes, and blit
+  // passes earlier blit passes, across encoders they don't depend on (DXMT_PASS_MERGE_COMPUTE)
+  if (CutSettingsOnce()[CutSwitch::MergeCompute])
+    mergeIndependentPasses(encoders, encoder_count);
+  // MYIOSDECK spec 05 clarifications 70 and 72 on the passes left, and the counts of 69-72
+  applyPassCuts(encoders, encoder_count);
+
+  // MYIOSDECK spec 05 clarification 63: the encoders left after the optimiser, for the Direct3D 11
+  // call statistics
+  if (EncoderPassStatsOn()) {
+    for (unsigned i = 0; i < encoder_count; i++) {
+      switch (encoders[i]->type) {
+      case EncoderType::Render:
+        PassStatAdd(g_encoder_pass_stats.render);
+        break;
+      case EncoderType::Compute:
+        PassStatAdd(g_encoder_pass_stats.compute);
+        break;
+      case EncoderType::Blit:
+        PassStatAdd(g_encoder_pass_stats.blit);
+        break;
+      case EncoderType::Clear:
+        PassStatAdd(g_encoder_pass_stats.clear);
+        break;
+      default:
+        break;
+      }
+    }
+  }
 
   // MYIOSDECK spec 05 clarification 21: the traced frame's passes, in submission order, after
   // clears were merged into the passes they precede (so their load actions are final)
@@ -2523,6 +2671,7 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
         }
         if (clear->clear_dsv == 0) {
           currentFrameStatistics().clear_pass_optimized++;
+          PassStatAdd(g_encoder_pass_stats.folded_clears); // spec 05 clarification 63
           clear->~ClearEncoderData();
           clear->next = nullptr;
           clear->type = EncoderType::Null;
@@ -2538,6 +2687,7 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
           }
 
           currentFrameStatistics().clear_pass_optimized++;
+          PassStatAdd(g_encoder_pass_stats.folded_clears); // spec 05 clarification 63
           clear->~ClearEncoderData();
           clear->next = nullptr;
           clear->type = EncoderType::Null;
@@ -2621,8 +2771,25 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
       r1->buf_write.merge(r0->buf_write);
       r1->tex_read.merge(r0->tex_read);
       r1->tex_write.merge(r0->tex_write);
+      // MYIOSDECK spec 05 round 17: merged passes add up
+      r1->ds_can_write |= r0->ds_can_write;
+      r1->ds_writes_known = r1->ds_writes_known && r0->ds_writes_known;
+      r1->draw_count += r0->draw_count;
+      r1->overwrite_mask &= r0->overwrite_mask;
+      {
+        auto &a = r1->cut_notes;
+        auto &b = r0->cut_notes;
+        a.keep_dsv_draws += b.keep_dsv_draws;
+        a.keep_dsv |= b.keep_dsv;
+        a.keep_dsv_would |= b.keep_dsv_would;
+        a.discard_load |= b.discard_load;
+        a.discard_load_would |= b.discard_load_would;
+        a.discard_store |= b.discard_store;
+        a.discard_store_would |= b.discard_store_would;
+      }
 
       currentFrameStatistics().render_pass_optimized++;
+      PassStatAdd(g_encoder_pass_stats.merged_render); // spec 05 clarification 63
       r0->~RenderEncoderData();
       r0->next = nullptr;
       r0->type = EncoderType::Null;
@@ -2632,6 +2799,301 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
   }
 
   return hasDataDependency(latter, former) ? DXMT_ENCODER_LIST_OP_SYNCHRONIZE : DXMT_ENCODER_LIST_OP_SWAP;
+}
+
+/* MYIOSDECK spec 05 clarification 68 (dxmt_pass_merge.hpp). A compute pass starts with every
+   binding it uses dirty, so its first dispatch sets them all again (its pipeline, its argument
+   tables, which are offsets into the shared argument buffer at slots 29 and 30). The internal
+   clear and copy kernels (EmulatedCommandContext) set their own pipeline and use slots 0-2 only.
+   So a pass's commands work the same at the end of another pass's encoder, as long as both use
+   the same argument buffer. Blit commands carry everything they need. */
+void
+ArgumentEncodingContext::mergeIndependentPasses(EncoderData **encoders, unsigned count) {
+  struct Ops {
+    ArgumentEncodingContext &ctx;
+
+    MergeKind
+    kind(EncoderData *e) {
+      switch (e->type) {
+      case EncoderType::Null:
+        return MergeKind::Null;
+      case EncoderType::Compute:
+        return MergeKind::Compute;
+      case EncoderType::Blit:
+        return MergeKind::Blit;
+      case EncoderType::Present:
+      case EncoderType::SignalEvent:
+      case EncoderType::WaitForEvent:
+      case EncoderType::SpatialUpscale:
+      case EncoderType::TemporalUpscale:
+        return MergeKind::Barrier;
+      default:
+        return MergeKind::Other;
+      }
+    }
+
+    bool
+    sameArguments(EncoderData *a, EncoderData *b) {
+      return !(static_cast<ComputeEncoderData *>(a)->allocated_argbuf !=
+               static_cast<ComputeEncoderData *>(b)->allocated_argbuf);
+    }
+
+    bool
+    dependent(EncoderData *candidate, EncoderData *between) {
+      // the candidate would move before `between`: any read or write of the one the other writes
+      return ctx.hasDataDependency(candidate, between);
+    }
+
+    void
+    merge(EncoderData *a, EncoderData *b) {
+      auto append = [](auto *a, auto *b) {
+        if ((void *)b->cmd_tail != &b->cmd_head) {
+          a->cmd_tail->next.set(b->cmd_head.next.get());
+          a->cmd_tail = b->cmd_tail;
+          b->cmd_head.next.set(nullptr);
+          b->cmd_tail = (wmtcmd_base *)&b->cmd_head;
+        }
+      };
+      if (a->type == EncoderType::Compute)
+        append(static_cast<ComputeEncoderData *>(a), static_cast<ComputeEncoderData *>(b));
+      else
+        append(static_cast<BlitEncoderData *>(a), static_cast<BlitEncoderData *>(b));
+      a->buf_read.merge(b->buf_read);
+      a->buf_write.merge(b->buf_write);
+      a->tex_read.merge(b->tex_read);
+      a->tex_write.merge(b->tex_write);
+      a->merged_passes += 1 + b->merged_passes; // for the trace (clarification 64)
+      if (b->type == EncoderType::Compute)
+        static_cast<ComputeEncoderData *>(b)->~ComputeEncoderData();
+      else
+        static_cast<BlitEncoderData *>(b)->~BlitEncoderData();
+      b->next = nullptr;
+      b->type = EncoderType::Null;
+    }
+  } ops{*this};
+  auto merged = MergeIndependentPasses(encoders, count, kEncoderOptimizerThreshold, ops);
+  PassStatAdd(g_encoder_pass_stats.merged_compute, merged.compute); // clarification 63
+  PassStatAdd(g_encoder_pass_stats.merged_blit, merged.blit);
+  if (trace_active_) { // clarification 64
+    trace_totals_.merged_compute += merged.compute;
+    trace_totals_.merged_blit += merged.blit;
+  }
+}
+
+/* ---- MYIOSDECK spec 05 round 17: the pass cuts of items 69-72 ---- */
+
+static CutLoad
+CutLoadOf(WMTLoadAction action) {
+  return action == WMTLoadActionLoad ? CutLoad::Load : (action == WMTLoadActionClear ? CutLoad::Clear : CutLoad::DontCare);
+}
+
+static CutStore
+CutStoreOf(WMTStoreAction action) {
+  switch (action) {
+  case WMTStoreActionStore:
+    return CutStore::Store;
+  case WMTStoreActionMultisampleResolve:
+    return CutStore::Resolve;
+  case WMTStoreActionStoreAndMultisampleResolve:
+    return CutStore::StoreAndResolve;
+  default:
+    return CutStore::DontCare;
+  }
+}
+
+/* one cut, applied or (switch off) would apply: into the call statistics and the frame's trace */
+void
+ArgumentEncodingContext::countCut(PassCut cut, bool applied, uint64_t count, uint64_t bytes) {
+  auto &s = g_encoder_pass_stats;
+  PassStatAdd((applied ? s.cut_applied : s.cut_would)[unsigned(cut)], count);
+  PassStatAdd(applied ? s.bytes_avoided : s.bytes_avoidable, bytes);
+  if (!trace_active_)
+    return;
+  auto &t = applied ? trace_totals_.applied : trace_totals_.would;
+  switch (cut) {
+  case PassCut::KeepDsv:
+    t.keep_passes += count;
+    t.keep_bytes += bytes;
+    break;
+  case PassCut::RoStore:
+    t.ro_planes += count;
+    t.ro_bytes += bytes;
+    break;
+  case PassCut::Discard:
+    t.discard += count;
+    t.discard_bytes += bytes;
+    break;
+  case PassCut::OverwriteLoad:
+    t.overwrite += count;
+    t.overwrite_bytes += bytes;
+    break;
+  default:
+    break;
+  }
+}
+
+void
+ArgumentEncodingContext::noteDepthStencilWrites(uint8_t writes) {
+  // clarification 70: a read-only view's planes can't be written (D3D11_DSV_READ_ONLY_DEPTH 1,
+  // _STENCIL 2, as the pass keeps them)
+  auto *pass = openRenderPass();
+  if (!pass)
+    return;
+  pass->ds_writes_known = true;
+  pass->ds_can_write |= uint8_t(writes & ~pass->dsv_readonly_flags);
+}
+
+void
+ArgumentEncodingContext::noteCutDraw(uint8_t overwrite_mask) {
+  auto *pass = openRenderPass();
+  if (!pass)
+    return;
+  pass->draw_count++;
+  pass->overwrite_mask &= overwrite_mask;
+}
+
+void
+ArgumentEncodingContext::noteKeepDsv(uint32_t draws, bool applied, uint32_t boundaries) {
+  auto *pass = openRenderPass();
+  if (!pass)
+    return;
+  auto &n = pass->cut_notes;
+  n.keep_dsv_draws += draws;
+  (applied ? n.keep_dsv : n.keep_dsv_would) = true;
+  // each pass break avoided saves a store and a load of every attachment of the pass
+  uint64_t bytes = 0;
+  for (auto &color : pass->colors)
+    if (color.attachment)
+      bytes += 2 * attachmentBytes(color.attachment, 0);
+  if (pass->depth.attachment)
+    bytes += 2 * attachmentBytes(pass->depth.attachment, 1);
+  if (pass->stencil.attachment)
+    bytes += 2 * attachmentBytes(pass->stencil.attachment, 2);
+  countCut(PassCut::KeepDsv, applied, boundaries, bytes * boundaries);
+}
+
+void
+ArgumentEncodingContext::discardTexture(
+    Rc<Texture> const &texture, unsigned level, unsigned levels, unsigned slice, unsigned slices
+) {
+  // clarification 71: with the switch off, only noted (for the would-entries) when counting or
+  // tracing
+  const bool on = CutSettingsOnce()[CutSwitch::Discard];
+  if (!on && !EncoderPassStatsOn() && !trace_active_)
+    return;
+  // the load side: marks for the next pass that loads one of these subresources
+  for (unsigned l = level; l < level + levels; l++)
+    for (unsigned s = slice; s < slice + slices; s++)
+      texture->discardMarks().mark(0, l, s); // kept with the texture (item 77)
+  // the store side: the last render pass of this command buffer with one of them attached, when
+  // the encoders after it neither read nor write the texture
+  auto matches = [&](const TextureViewRef &ref, unsigned att_level, unsigned att_slice) {
+    auto *view = ref.ptr();
+    return view && view->allocation->descriptor == texture.ptr() && att_level >= level &&
+           att_level < level + levels && att_slice >= slice && att_slice < slice + slices;
+  };
+  EncoderDepSet probe;
+  probe.add(texture->current()->depkey);
+  EncoderData *found = LastPassToDropStore(
+      encoder_head.next,
+      [&](EncoderData *e) {
+        if (e->type != EncoderType::Render)
+          return false;
+        auto *pass = static_cast<RenderEncoderData *>(e);
+        bool attached = matches(pass->depth.attachment, pass->depth.level, pass->depth.slice) ||
+                        matches(pass->stencil.attachment, pass->stencil.level, pass->stencil.slice);
+        for (auto &color : pass->colors)
+          attached |= matches(color.attachment, color.level, color.slice);
+        return attached;
+      },
+      // something after it reads or writes the texture: no change
+      [&](EncoderData *e) { return !probe.isDisjointWith(e->tex_read) || !probe.isDisjointWith(e->tex_write); }
+  );
+  if (!found)
+    return;
+  auto *last = static_cast<RenderEncoderData *>(found);
+  auto &n = last->cut_notes;
+  auto drop = [&](WMTStoreAction &store, const TextureViewRef &ref, int plane, unsigned bit) {
+    if (store != WMTStoreActionStore)
+      return;
+    if (on) {
+      store = WMTStoreActionDontCare;
+      n.discard_store |= uint16_t(1u << bit);
+    } else {
+      n.discard_store_would |= uint16_t(1u << bit);
+    }
+    countCut(PassCut::Discard, on, 1, attachmentBytes(ref, plane));
+  };
+  for (unsigned i = 0; i < last->colors.size(); i++)
+    if (matches(last->colors[i].attachment, last->colors[i].level, last->colors[i].slice))
+      drop(last->colors[i].store_action, last->colors[i].attachment, 0, i);
+  if (matches(last->depth.attachment, last->depth.level, last->depth.slice))
+    drop(last->depth.store_action, last->depth.attachment, 1, 8);
+  if (matches(last->stencil.attachment, last->stencil.level, last->stencil.slice))
+    drop(last->stencil.store_action, last->stencil.attachment, 2, 9);
+}
+
+int
+ArgumentEncodingContext::discardedLoad(Texture *texture, unsigned level, unsigned slice) {
+  if (!texture->discardMarks().size() || !texture->discardMarks().takeForLoad(0, level, slice))
+    return 0;
+  return CutSettingsOnce()[CutSwitch::Discard] ? 1 : 2;
+}
+
+void
+ArgumentEncodingContext::noteDiscardLoad(
+    RenderEncoderData &pass, unsigned bit, const TextureViewRef &ref, int plane, int discarded
+) {
+  if (!discarded)
+    return;
+  (discarded == 1 ? pass.cut_notes.discard_load : pass.cut_notes.discard_load_would) |= uint16_t(1u << bit);
+  countCut(PassCut::Discard, discarded == 1, 1, attachmentBytes(ref, plane));
+}
+
+/* clarifications 70 and 72 on the passes the optimiser left, and their counts with those of 69
+   and 71's notes */
+void
+ArgumentEncodingContext::applyPassCuts(EncoderData **encoders, unsigned count) {
+  const auto &cuts = CutSettingsOnce();
+  const bool ro_on = cuts[CutSwitch::RoStore], overwrite_on = cuts[CutSwitch::OverwriteLoad];
+  const bool noting = ro_on || overwrite_on || EncoderPassStatsOn() || trace_active_;
+  if (!noting)
+    return;
+  for (unsigned i = 0; i < count; i++) {
+    if (encoders[i]->type != EncoderType::Render)
+      continue;
+    auto *pass = static_cast<RenderEncoderData *>(encoders[i]);
+    auto &n = pass->cut_notes;
+    // 70: a depth or stencil plane the pass can't write isn't stored
+    auto ro = [&](WMTLoadAction load, WMTStoreAction &store, const TextureViewRef &ref, uint8_t plane) {
+      if (!ref || !RoStoreApplies(CutLoadOf(load), CutStoreOf(store), pass->ds_writes_known, pass->ds_can_write & plane))
+        return;
+      if (ro_on) {
+        store = WMTStoreActionDontCare;
+        n.ro_store |= plane;
+      } else {
+        n.ro_store_would |= plane;
+      }
+      countCut(PassCut::RoStore, ro_on, 1, attachmentBytes(ref, plane));
+    };
+    ro(pass->depth.load_action, pass->depth.store_action, pass->depth.attachment, 1);
+    ro(pass->stencil.load_action, pass->stencil.store_action, pass->stencil.attachment, 2);
+    // 72: a one-draw pass that overwrites its target doesn't load it
+    const bool has_ds = pass->depth.attachment || pass->stencil.attachment;
+    for (unsigned c = 0; c < pass->colors.size(); c++) {
+      auto &color = pass->colors[c];
+      if (!color.attachment ||
+          !OverwriteLoadApplies(CutLoadOf(color.load_action), pass->draw_count, has_ds, (pass->overwrite_mask >> c) & 1))
+        continue;
+      if (overwrite_on) {
+        color.load_action = WMTLoadActionDontCare;
+        n.overwrite_load |= uint16_t(1u << c);
+      } else {
+        n.overwrite_load_would |= uint16_t(1u << c);
+      }
+      countCut(PassCut::OverwriteLoad, overwrite_on, 1, attachmentBytes(color.attachment, 0));
+    }
+  }
 }
 
 bool

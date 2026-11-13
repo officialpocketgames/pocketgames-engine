@@ -58,6 +58,22 @@ NextDynamicSlices(uint32_t current, bool minted_in_same_chunk, uint64_t length) 
   return std::min(next, cap);
 }
 
+/* Spec 05 clarification 67 (DXMT_D11_DEFERRED_RING): on a deferred context, a new allocation
+   needed while the command list already holds one of the buffer doubles the buffer's slices
+   for new allocations, as NextDynamicSlices does for "the same chunk". */
+inline uint32_t
+NextDeferredDynamicSlices(uint32_t current, bool list_holds_one, uint64_t length) {
+  return NextDynamicSlices(current, list_holds_one, length);
+}
+
+/* Clarification 67: whether a finished allocation of `allocation_slices` slices may be handed
+   out again when the buffer's new allocations get `current_slices` (0: as before); a smaller
+   one is released instead. */
+inline bool
+DynamicPoolHandsOut(uint32_t allocation_slices, uint32_t current_slices) {
+  return allocation_slices >= current_slices;
+}
+
 /* Discarded bytes per command chunk, for the implicit commit and the in-flight
    cap. Used by one context, under its lock. */
 class DynamicDiscardTracker {

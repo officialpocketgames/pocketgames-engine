@@ -1,4 +1,4 @@
-// Changed for MYIOSDECK (spec 05 D4; multi-slice discards; spec 07 A2: LGPL-2.1-or-later lines from dxmt-d3d9 v0.4-d3d9,
+// Changed for MYIOSDECK (spec 05 D4; multi-slice discards; clarification 67: allocateRing; spec 07 A2: LGPL-2.1-or-later lines from dxmt-d3d9 v0.4-d3d9,
 // marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "dxmt_dynamic.hpp"
 #include "dxmt_texture.hpp"
@@ -62,6 +62,50 @@ DynamicBuffer::allocate(uint64_t coherent_seq_id, bool *out_minted_fresh, uint64
     // allocation needed in the same chunk as the previous one doubles the
     // slices of new allocations (dxmt_dynamic_policy.hpp).
     if (current_seq_id != 0) {
+      slices_ = NextDynamicSlices(slices_, current_seq_id == last_mint_seq_, buffer->length());
+      last_mint_seq_ = current_seq_id;
+    }
+    ret = buffer->allocate(flags_, slices_);
+  }
+  return ret;
+}
+
+/* MYIOSDECK spec 05 clarification 67 */
+Rc<BufferAllocation>
+DynamicBuffer::allocateRing(uint64_t coherent_seq_id, bool *out_minted_fresh, uint64_t current_seq_id, bool list_holds_one) {
+  std::lock_guard<dxmt::mutex> lock(mutex_);
+  // a deferred context's command list: grow when it needs a second allocation of the buffer
+  if (list_holds_one)
+    slices_ = NextDeferredDynamicSlices(slices_, true, buffer->length());
+  Rc<BufferAllocation> ret;
+  // the finished entries are the leading run; hand out the first one big enough and release
+  // the smaller ones in front of it
+  while (!fifo.empty() && fifo.front().will_free_at <= coherent_seq_id) {
+    Rc<BufferAllocation> entry = std::move(fifo.front().allocation);
+    fifo.pop_front();
+    if (DynamicPoolHandsOut(entry->suballocationCount(), slices_)) {
+      ret = std::move(entry);
+      break;
+    }
+  }
+#ifdef DXMT_IOS
+  // spec 05 D4's limit stays: at most 64 finished entries
+  constexpr size_t kMaxFinishedEntries = 64;
+  size_t finished = 0;
+  for (auto &entry : fifo) {
+    if (entry.will_free_at > coherent_seq_id)
+      break;
+    finished++;
+  }
+  while (finished > kMaxFinishedEntries) {
+    fifo.pop_front();
+    finished--;
+  }
+#endif
+  if (out_minted_fresh)
+    *out_minted_fresh = !ret.ptr();
+  if (!ret.ptr()) {
+    if (!list_holds_one && current_seq_id != 0) {
       slices_ = NextDynamicSlices(slices_, current_seq_id == last_mint_seq_, buffer->length());
       last_mint_seq_ = current_seq_id;
     }

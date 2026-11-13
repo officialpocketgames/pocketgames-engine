@@ -1,3 +1,4 @@
+// Changed for MYIOSDECK (spec 05 clarification 63: QueryInterface counted). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 #include "Metal.hpp"
 #include "d3d11_device.hpp"
@@ -193,6 +194,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
                                            void **ppvObject) final {
+    D11_CHILD_CALL(QueryInterface); // MYIOSDECK spec 05 clarification 63
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -248,6 +250,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
                                            void **ppvObject) final {
+    D11_CHILD_CALL(QueryInterface); // MYIOSDECK spec 05 clarification 63
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -359,6 +362,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
                                            void **ppvObject) final {
+    D11_CHILD_CALL(QueryInterface); // MYIOSDECK spec 05 clarification 63
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -483,6 +487,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
                                            void **ppvObject) final {
+    D11_CHILD_CALL(QueryInterface); // MYIOSDECK spec 05 clarification 63
     if (ppvObject == nullptr)
       return E_POINTER;
 

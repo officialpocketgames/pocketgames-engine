@@ -1,10 +1,13 @@
 // Changed for MYIOSDECK (spec 05 clarification 10: an LGPL-2.1-or-later block from
 // steamac's DXMT patch 0015, marked inline, see LICENSE-NOTES.md; spec 05 clarification 17:
 // FORMAT_SUPPORT2 through d3d11_format_support2.hpp; clarification 21: the frame-trace switch is
-// read at device creation). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// read at device creation; clarifications 63 and 73: call statistics, the
+// round-17 switch line). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "com/com_guid.hpp"
 #include "d3d11_format_support2.hpp"
 #include "dxmt_frame_trace.hpp" // spec 05 clarification 21
+#include "dxmt_cuts.hpp"        // spec 05 clarification 73
+#include "d3d11_call_stats.hpp" // spec 05 clarification 63
 #include "d3d11_fence.hpp"
 #include "d3d11_input_layout.hpp"
 #include "d3d11_interfaces.hpp"
@@ -72,16 +75,27 @@ public:
     // MYIOSDECK spec 05 clarification 21: the frame-trace switch is read here, once per
     // process, from the Windows environment (Wine copies the app's environment into it)
     FrameTraceSwitch();
+    // MYIOSDECK spec 05 clarifications 63 and 73: the call statistics count other threads from
+    // here; round 17's switches, read once, in one line
+    d11cs::NoteDeviceThread();
+    Logger::info(CutSettingsLine(CutSettingsOnce()));
   }
 
   HRESULT STDMETHODCALLTYPE QueryInterface(REFIID riid,
                                            void **ppvObject) override {
+    D11_DEVICE_CALL(QueryInterface);
     return container_->QueryInterface(riid, ppvObject);
   }
 
-  ULONG STDMETHODCALLTYPE AddRef() override { return container_->AddRef(); }
+  ULONG STDMETHODCALLTYPE AddRef() override {
+    D11_DEVICE_CALL(AddRef);
+    return container_->AddRef();
+  }
 
-  ULONG STDMETHODCALLTYPE Release() override { return container_->Release(); }
+  ULONG STDMETHODCALLTYPE Release() override {
+    D11_DEVICE_CALL(Release);
+    return container_->Release();
+  }
 
   bool IsTraced() override { return is_traced_; }
 
@@ -89,6 +103,7 @@ public:
   CreateBuffer(const D3D11_BUFFER_DESC *pDesc,
                const D3D11_SUBRESOURCE_DATA *pInitialData,
                ID3D11Buffer **ppBuffer) override {
+    D11_DEVICE_CALL(CreateBuffer);
     InitReturnPtr(ppBuffer);
 
     if (pDesc->ByteWidth == 0 && !(pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILE_POOL))
@@ -115,6 +130,7 @@ public:
   CreateTexture1D(const D3D11_TEXTURE1D_DESC *pDesc,
                   const D3D11_SUBRESOURCE_DATA *pInitialData,
                   ID3D11Texture1D **ppTexture1D) override {
+    D11_DEVICE_CALL(CreateTexture1D);
 
     InitReturnPtr(ppTexture1D);
 
@@ -152,6 +168,7 @@ public:
   CreateTexture2D(const D3D11_TEXTURE2D_DESC *pDesc,
                   const D3D11_SUBRESOURCE_DATA *pInitialData,
                   ID3D11Texture2D **ppTexture2D) override {
+    D11_DEVICE_CALL(CreateTexture2D);
     D3D11_TEXTURE2D_DESC1 desc1;
     UpgradeResourceDescription(pDesc, desc1);
     return CreateTexture2D1(&desc1, pInitialData,
@@ -162,6 +179,7 @@ public:
   CreateTexture3D(const D3D11_TEXTURE3D_DESC *pDesc,
                   const D3D11_SUBRESOURCE_DATA *pInitialData,
                   ID3D11Texture3D **ppTexture3D) override {
+    D11_DEVICE_CALL(CreateTexture3D);
     D3D11_TEXTURE3D_DESC1 desc1;
     UpgradeResourceDescription(pDesc, desc1);
     return CreateTexture3D1(&desc1, pInitialData,
@@ -171,6 +189,7 @@ public:
   HRESULT STDMETHODCALLTYPE CreateShaderResourceView(
       ID3D11Resource *pResource, const D3D11_SHADER_RESOURCE_VIEW_DESC *pDesc,
       ID3D11ShaderResourceView **ppSRView) override {
+    D11_DEVICE_CALL(CreateShaderResourceView);
     if (pDesc) {
       D3D11_SHADER_RESOURCE_VIEW_DESC1 desc1;
       UpgradeViewDescription(pDesc, desc1);
@@ -184,6 +203,7 @@ public:
   HRESULT STDMETHODCALLTYPE CreateUnorderedAccessView(
       ID3D11Resource *pResource, const D3D11_UNORDERED_ACCESS_VIEW_DESC *pDesc,
       ID3D11UnorderedAccessView **ppUAView) override {
+    D11_DEVICE_CALL(CreateUnorderedAccessView);
     if (pDesc) {
       D3D11_UNORDERED_ACCESS_VIEW_DESC1 desc1;
       UpgradeViewDescription(pDesc, desc1);
@@ -197,6 +217,7 @@ public:
   HRESULT STDMETHODCALLTYPE CreateRenderTargetView(
       ID3D11Resource *pResource, const D3D11_RENDER_TARGET_VIEW_DESC *pDesc,
       ID3D11RenderTargetView **ppRTView) override {
+    D11_DEVICE_CALL(CreateRenderTargetView);
     if (pDesc) {
       D3D11_RENDER_TARGET_VIEW_DESC1 desc1;
       UpgradeViewDescription(pDesc, desc1);
@@ -210,6 +231,7 @@ public:
   HRESULT STDMETHODCALLTYPE CreateDepthStencilView(
       ID3D11Resource *pResource, const D3D11_DEPTH_STENCIL_VIEW_DESC *pDesc,
       ID3D11DepthStencilView **ppDepthStencilView) override {
+    D11_DEVICE_CALL(CreateDepthStencilView);
     InitReturnPtr(ppDepthStencilView);
 
     if (!pResource)
@@ -225,6 +247,7 @@ public:
       const D3D11_INPUT_ELEMENT_DESC *pInputElementDescs, UINT NumElements,
       const void *pShaderBytecodeWithInputSignature, SIZE_T BytecodeLength,
       ID3D11InputLayout **ppInputLayout) override {
+    D11_DEVICE_CALL(CreateInputLayout);
     InitReturnPtr(ppInputLayout);
 
     if (!pInputElementDescs)
@@ -247,6 +270,7 @@ public:
   CreateVertexShader(const void *pShaderBytecode, SIZE_T BytecodeLength,
                      ID3D11ClassLinkage *pClassLinkage,
                      ID3D11VertexShader **ppVertexShader) override {
+    D11_DEVICE_CALL(CreateVertexShader);
     InitReturnPtr(ppVertexShader);
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
@@ -259,6 +283,7 @@ public:
   CreateGeometryShader(const void *pShaderBytecode, SIZE_T BytecodeLength,
                        ID3D11ClassLinkage *pClassLinkage,
                        ID3D11GeometryShader **ppGeometryShader) override {
+    D11_DEVICE_CALL(CreateGeometryShader);
     InitReturnPtr(ppGeometryShader);
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
@@ -276,6 +301,7 @@ public:
       const UINT *pBufferStrides, UINT NumStrides, UINT RasterizedStream,
       ID3D11ClassLinkage *pClassLinkage,
       ID3D11GeometryShader **ppGeometryShader) override {
+    D11_DEVICE_CALL(CreateGeometryShaderWithStreamOutput);
     InitReturnPtr(ppGeometryShader);
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
@@ -305,6 +331,7 @@ public:
   CreatePixelShader(const void *pShaderBytecode, SIZE_T BytecodeLength,
                     ID3D11ClassLinkage *pClassLinkage,
                     ID3D11PixelShader **ppPixelShader) override {
+    D11_DEVICE_CALL(CreatePixelShader);
     InitReturnPtr(ppPixelShader);
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
@@ -317,6 +344,7 @@ public:
   CreateHullShader(const void *pShaderBytecode, SIZE_T BytecodeLength,
                    ID3D11ClassLinkage *pClassLinkage,
                    ID3D11HullShader **ppHullShader) override {
+    D11_DEVICE_CALL(CreateHullShader);
     InitReturnPtr(ppHullShader);
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
@@ -332,6 +360,7 @@ public:
   CreateDomainShader(const void *pShaderBytecode, SIZE_T BytecodeLength,
                      ID3D11ClassLinkage *pClassLinkage,
                      ID3D11DomainShader **ppDomainShader) override {
+    D11_DEVICE_CALL(CreateDomainShader);
     InitReturnPtr(ppDomainShader);
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
@@ -347,6 +376,7 @@ public:
   CreateComputeShader(const void *pShaderBytecode, SIZE_T BytecodeLength,
                       ID3D11ClassLinkage *pClassLinkage,
                       ID3D11ComputeShader **ppComputeShader) override {
+    D11_DEVICE_CALL(CreateComputeShader);
     InitReturnPtr(ppComputeShader);
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
@@ -357,6 +387,7 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   CreateClassLinkage(ID3D11ClassLinkage **ppLinkage) override {
+    D11_DEVICE_CALL(CreateClassLinkage);
     *ppLinkage = ref(new MTLD3D11ClassLinkage(this));
     return S_OK;
   }
@@ -364,6 +395,7 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreateBlendState(const D3D11_BLEND_DESC *pBlendStateDesc,
                    ID3D11BlendState **ppBlendState) override {
+    D11_DEVICE_CALL(CreateBlendState);
     ID3D11BlendState1 *pBlendState1;
     D3D11_BLEND_DESC1 desc;
     desc.AlphaToCoverageEnable = pBlendStateDesc->AlphaToCoverageEnable;
@@ -395,6 +427,7 @@ public:
   HRESULT STDMETHODCALLTYPE CreateDepthStencilState(
       const D3D11_DEPTH_STENCIL_DESC *pDesc,
       ID3D11DepthStencilState **ppDepthStencilState) override {
+    D11_DEVICE_CALL(CreateDepthStencilState);
     return depthstencil_states_.CreateStateObject(
         pDesc, (IMTLD3D11DepthStencilState **)ppDepthStencilState);
   }
@@ -402,6 +435,7 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreateRasterizerState(const D3D11_RASTERIZER_DESC *pRasterizerDesc,
                         ID3D11RasterizerState **ppRasterizerState) override {
+    D11_DEVICE_CALL(CreateRasterizerState);
     ID3D11RasterizerState2 *pRasterizerState;
     D3D11_RASTERIZER_DESC2 desc;
     desc.FillMode = pRasterizerDesc->FillMode;
@@ -424,12 +458,14 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreateSamplerState(const D3D11_SAMPLER_DESC *pSamplerDesc,
                      ID3D11SamplerState **ppSamplerState) override {
+    D11_DEVICE_CALL(CreateSamplerState);
     return sampler_states_.CreateStateObject(
         pSamplerDesc, (D3D11SamplerState **)ppSamplerState);
   }
 
   HRESULT STDMETHODCALLTYPE CreateQuery(const D3D11_QUERY_DESC *pQueryDesc,
                                         ID3D11Query **ppQuery) override {
+    D11_DEVICE_CALL(CreateQuery);
     InitReturnPtr(ppQuery);
 
     if (!pQueryDesc)
@@ -476,6 +512,7 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreatePredicate(const D3D11_QUERY_DESC *pPredicateDesc,
                   ID3D11Predicate **ppPredicate) override {
+    D11_DEVICE_CALL(CreatePredicate);
     return CreateQuery(pPredicateDesc,
                        reinterpret_cast<ID3D11Query **>(ppPredicate));
   }
@@ -483,6 +520,7 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreateCounter(const D3D11_COUNTER_DESC *pCounterDesc,
                 ID3D11Counter **ppCounter) override {
+    D11_DEVICE_CALL(CreateCounter);
     InitReturnPtr(ppCounter);
     WARN("Not supported");
     return DXGI_ERROR_UNSUPPORTED;
@@ -491,6 +529,7 @@ public:
   HRESULT STDMETHODCALLTYPE CreateDeferredContext(
       UINT ContextFlags,
       ID3D11DeviceContext **ppDeferredContext) override{
+    D11_DEVICE_CALL(CreateDeferredContext);
     ID3D11DeviceContext3 *ppDeferredContext3;
     HRESULT hr = CreateDeferredContext3(ContextFlags, &ppDeferredContext3);
     *ppDeferredContext = static_cast<ID3D11DeviceContext *>(ppDeferredContext3);
@@ -499,11 +538,13 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   OpenSharedResource(HANDLE hResource, REFIID ReturnedInterface, void **ppResource) override {
+    D11_DEVICE_CALL(OpenSharedResource);
     return ImportSharedTexture(this, hResource, ReturnedInterface, ppResource);
   }
 
   HRESULT STDMETHODCALLTYPE
       CheckFormatSupport(DXGI_FORMAT Format, UINT *pFormatSupport) override {
+    D11_DEVICE_CALL(CheckFormatSupport);
 
     if (pFormatSupport) {
       *pFormatSupport = 0;
@@ -601,12 +642,14 @@ public:
 
   HRESULT STDMETHODCALLTYPE CheckMultisampleQualityLevels(
       DXGI_FORMAT Format, UINT SampleCount, UINT *pNumQualityLevels) override {
+    D11_DEVICE_CALL(CheckMultisampleQualityLevels);
     return CheckMultisampleQualityLevels1(Format, SampleCount, 0,
                                           pNumQualityLevels);
   }
 
   void STDMETHODCALLTYPE CheckCounterInfo(D3D11_COUNTER_INFO *pCounterInfo)
       override { // We basically don't support counters
+    D11_DEVICE_CALL(CheckCounterInfo);
     pCounterInfo->LastDeviceDependentCounter = D3D11_COUNTER(0);
     pCounterInfo->NumSimultaneousCounters = 0;
     pCounterInfo->NumDetectableParallelUnits = 0;
@@ -619,6 +662,7 @@ public:
                                          UINT *pUnitsLength,
                                          LPSTR szDescription,
                                          UINT *pDescriptionLength) override {
+    D11_DEVICE_CALL(CheckCounter);
     WARN("Not supported");
     return DXGI_ERROR_UNSUPPORTED;
   }
@@ -626,6 +670,7 @@ public:
   HRESULT STDMETHODCALLTYPE
   CheckFeatureSupport(D3D11_FEATURE Feature, void *pFeatureSupportData,
                       UINT FeatureSupportDataSize) override {
+    D11_DEVICE_CALL(CheckFeatureSupport);
     switch (Feature) {
     // Format support queries are special in that they use in-out
     // structs
@@ -672,53 +717,66 @@ public:
 
   HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize,
                                            void *pData) override {
+    D11_DEVICE_CALL(GetPrivateData);
     return container_->GetPrivateData(guid, pDataSize, pData);
   }
 
   HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize,
                                            const void *pData) override {
+    D11_DEVICE_CALL(SetPrivateData);
     return container_->SetPrivateData(guid, DataSize, pData);
   }
 
   HRESULT STDMETHODCALLTYPE
   SetPrivateDataInterface(REFGUID guid, const IUnknown *pData) override {
+    D11_DEVICE_CALL(SetPrivateDataInterface);
     return container_->SetPrivateDataInterface(guid, pData);
   }
 
   D3D_FEATURE_LEVEL STDMETHODCALLTYPE GetFeatureLevel() override {
+    D11_DEVICE_CALL(GetFeatureLevel);
     return feature_level_;
   }
 
-  UINT STDMETHODCALLTYPE GetCreationFlags() override { return feature_flags_ & 0x7fffffff; }
+  UINT STDMETHODCALLTYPE GetCreationFlags() override {
+    D11_DEVICE_CALL(GetCreationFlags);
+    return feature_flags_ & 0x7fffffff;
+  }
 
   HRESULT STDMETHODCALLTYPE GetDeviceRemovedReason() override {
+    D11_DEVICE_CALL(GetDeviceRemovedReason);
     // unless we are deal with eGPU, this method should awalys return S_OK?
     return S_OK;
   }
 
   void STDMETHODCALLTYPE
   GetImmediateContext(ID3D11DeviceContext **ppImmediateContext) override {
+    D11_DEVICE_CALL(GetImmediateContext);
     context_->QueryInterface(IID_PPV_ARGS(ppImmediateContext));
   }
 
   HRESULT STDMETHODCALLTYPE SetExceptionMode(UINT RaiseFlags) override {
+    D11_DEVICE_CALL(SetExceptionMode);
     ERR("Not implemented");
     return E_NOTIMPL;
   }
 
   UINT STDMETHODCALLTYPE GetExceptionMode() override {
+    D11_DEVICE_CALL(GetExceptionMode);
     ERR("Not implemented");
     return 0;
   }
 
   void STDMETHODCALLTYPE
   GetImmediateContext1(ID3D11DeviceContext1 **ppImmediateContext) override {
+    D11_DEVICE_CALL(GetImmediateContext1);
     context_->QueryInterface(IID_PPV_ARGS(ppImmediateContext));
   }
 
   HRESULT STDMETHODCALLTYPE CreateDeferredContext1(
       UINT ContextFlags,
       ID3D11DeviceContext1 **ppDeferredContext) override{
+    D11_DEVICE_CALL(CreateDeferredContext1);
     ID3D11DeviceContext3 *ppDeferredContext3;
     HRESULT hr = CreateDeferredContext3(ContextFlags, &ppDeferredContext3);
     *ppDeferredContext = static_cast<ID3D11DeviceContext1 *>(ppDeferredContext3);
@@ -728,6 +786,7 @@ public:
   HRESULT STDMETHODCALLTYPE
       CreateBlendState1(const D3D11_BLEND_DESC1 *pBlendStateDesc,
                         ID3D11BlendState1 **ppBlendState) override {
+    D11_DEVICE_CALL(CreateBlendState1);
     return pipeline_cache_->AddBlendState(pBlendStateDesc,
                                           (IMTLD3D11BlendState **)ppBlendState);
   }
@@ -735,6 +794,7 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreateRasterizerState1(const D3D11_RASTERIZER_DESC1 *pRasterizerDesc,
                          ID3D11RasterizerState1 **ppRasterizerState) override {
+    D11_DEVICE_CALL(CreateRasterizerState1);
     ID3D11RasterizerState2 *pRasterizerState;
     D3D11_RASTERIZER_DESC2 desc;
     desc.FillMode = pRasterizerDesc->FillMode;
@@ -759,6 +819,7 @@ public:
       UINT SDKVersion, REFIID EmulatedInterface,
       D3D_FEATURE_LEVEL *pChosenFeatureLevel,
       ID3DDeviceContextState **ppContextState) override {
+    D11_DEVICE_CALL(CreateDeviceContextState);
     InitReturnPtr(ppContextState);
 
     // TODO: validation
@@ -772,22 +833,26 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   OpenSharedResource1(HANDLE hResource, REFIID ReturnedInterface, void **ppResource) override {
+    D11_DEVICE_CALL(OpenSharedResource1);
     return ImportSharedTextureFromNtHandle(this, hResource, ReturnedInterface, ppResource);
   }
 
   HRESULT STDMETHODCALLTYPE
   OpenSharedResourceByName(LPCWSTR lpName, DWORD dwDesiredAccess, REFIID ReturnedInterface, void **ppResource)
       override {
+    D11_DEVICE_CALL(OpenSharedResourceByName);
     return ImportSharedTextureByName(this, lpName, dwDesiredAccess, ReturnedInterface, ppResource);
   }
 
   void STDMETHODCALLTYPE
   GetImmediateContext2(ID3D11DeviceContext2 **ppImmediateContext) override {
+    D11_DEVICE_CALL(GetImmediateContext2);
     context_->QueryInterface(IID_PPV_ARGS(ppImmediateContext));
   }
 
   HRESULT STDMETHODCALLTYPE
   CreateDeferredContext2(UINT ContextFlags, ID3D11DeviceContext2 **ppDeferredContext) override {
+    D11_DEVICE_CALL(CreateDeferredContext2);
     ID3D11DeviceContext3 *ppDeferredContext3;
     HRESULT hr = CreateDeferredContext3(ContextFlags, &ppDeferredContext3);
     *ppDeferredContext = static_cast<ID3D11DeviceContext2 *>(ppDeferredContext3);
@@ -798,12 +863,16 @@ public:
       ID3D11Resource *resource, UINT *tile_count,
       D3D11_PACKED_MIP_DESC *mip_desc, D3D11_TILE_SHAPE *tile_shape,
       UINT *subresource_tiling_count, UINT first_subresource_tiling,
-      D3D11_SUBRESOURCE_TILING *subresource_tiling) override{IMPLEMENT_ME}
+      D3D11_SUBRESOURCE_TILING *subresource_tiling) override{
+    D11_DEVICE_CALL(GetResourceTiling);
+    IMPLEMENT_ME
+  }
 
   HRESULT STDMETHODCALLTYPE
       CheckMultisampleQualityLevels1(DXGI_FORMAT Format, UINT SampleCount,
                                      UINT Flags,
                                      UINT *pNumQualityLevels) override {
+    D11_DEVICE_CALL(CheckMultisampleQualityLevels1);
     if (Flags) {
       IMPLEMENT_ME;
     }
@@ -833,6 +902,7 @@ public:
   CreateTexture2D1(const D3D11_TEXTURE2D_DESC1 *pDesc,
                    const D3D11_SUBRESOURCE_DATA *pInitialData,
                    ID3D11Texture2D1 **ppTexture2D) override {
+    D11_DEVICE_CALL(CreateTexture2D1);
     InitReturnPtr(ppTexture2D);
 
     if (!pDesc)
@@ -869,6 +939,7 @@ public:
   CreateTexture3D1(const D3D11_TEXTURE3D_DESC1 *pDesc,
                    const D3D11_SUBRESOURCE_DATA *pInitialData,
                    ID3D11Texture3D1 **ppTexture3D) override {
+    D11_DEVICE_CALL(CreateTexture3D1);
     InitReturnPtr(ppTexture3D);
 
     if (!pDesc)
@@ -900,6 +971,7 @@ public:
   HRESULT STDMETHODCALLTYPE
   CreateRasterizerState2(const D3D11_RASTERIZER_DESC2 *pRasterizerDesc,
                          ID3D11RasterizerState2 **ppRasterizerState) override {
+    D11_DEVICE_CALL(CreateRasterizerState2);
     return rasterizer_states_.CreateStateObject(
         pRasterizerDesc, (IMTLD3D11RasterizerState **)ppRasterizerState);
   }
@@ -907,6 +979,7 @@ public:
   HRESULT STDMETHODCALLTYPE CreateShaderResourceView1(
       ID3D11Resource *pResource, const D3D11_SHADER_RESOURCE_VIEW_DESC1 *pDesc,
       ID3D11ShaderResourceView1 **ppSRView) override {
+    D11_DEVICE_CALL(CreateShaderResourceView1);
     InitReturnPtr(ppSRView);
 
     if (!pResource)
@@ -921,6 +994,7 @@ public:
   HRESULT STDMETHODCALLTYPE CreateUnorderedAccessView1(
       ID3D11Resource *pResource, const D3D11_UNORDERED_ACCESS_VIEW_DESC1 *pDesc,
       ID3D11UnorderedAccessView1 **ppUAView) override {
+    D11_DEVICE_CALL(CreateUnorderedAccessView1);
     InitReturnPtr(ppUAView);
 
     if (!pResource)
@@ -935,6 +1009,7 @@ public:
   HRESULT STDMETHODCALLTYPE CreateRenderTargetView1(
       ID3D11Resource *pResource, const D3D11_RENDER_TARGET_VIEW_DESC1 *pDesc,
       ID3D11RenderTargetView1 **ppRTView) override {
+    D11_DEVICE_CALL(CreateRenderTargetView1);
     InitReturnPtr(ppRTView);
 
     if (!pResource)
@@ -948,16 +1023,19 @@ public:
 
   HRESULT STDMETHODCALLTYPE CreateQuery1(const D3D11_QUERY_DESC1 *desc,
                                          ID3D11Query1 **query) override {
+    D11_DEVICE_CALL(CreateQuery1);
     IMPLEMENT_ME
   }
 
   void STDMETHODCALLTYPE
   GetImmediateContext3(ID3D11DeviceContext3 **ppImmediateContext) override{
+    D11_DEVICE_CALL(GetImmediateContext3);
     context_->QueryInterface(IID_PPV_ARGS(ppImmediateContext));
   }
 
   HRESULT STDMETHODCALLTYPE CreateDeferredContext3(
     UINT ContextFlags, ID3D11DeviceContext3 **ppDeferredContext) override {
+    D11_DEVICE_CALL(CreateDeferredContext3);
     *ppDeferredContext = std::move(dxmt::CreateDeferredContext(this, ContextFlags));
     return S_OK;
   }
@@ -968,13 +1046,17 @@ public:
                                             const void *src_data,
                                             UINT src_row_pitch,
                                             UINT src_depth_pitch) override {
+    D11_DEVICE_CALL(WriteToSubresource);
     IMPLEMENT_ME
   }
 
   void STDMETHODCALLTYPE
   ReadFromSubresource(void *dst_data, UINT dst_row_pitch, UINT dst_depth_pitch,
                       ID3D11Resource *src_resource, UINT src_subresource,
-                      const D3D11_BOX *src_box) override{IMPLEMENT_ME}
+                      const D3D11_BOX *src_box) override{
+    D11_DEVICE_CALL(ReadFromSubresource);
+    IMPLEMENT_ME
+  }
 
   WMT::Device STDMETHODCALLTYPE GetMTLDevice() override {
     return container_->GetMTLDevice();
@@ -1040,22 +1122,26 @@ public:
 
   virtual HRESULT STDMETHODCALLTYPE RegisterDeviceRemovedEvent(HANDLE Event,
                                                                DWORD *pCookie) final {
+    D11_DEVICE_CALL(RegisterDeviceRemovedEvent);
     // no device to remove
     return S_OK;
   };
 
   virtual void STDMETHODCALLTYPE UnregisterDeviceRemoved(DWORD Cookie) final {
+    D11_DEVICE_CALL(UnregisterDeviceRemoved);
     // just do nothing
   };
 
   virtual HRESULT STDMETHODCALLTYPE OpenSharedFence(HANDLE Handle, REFIID riid,
                                                     void **ppFence) final {
+    D11_DEVICE_CALL(OpenSharedFence);
     return dxmt::OpenSharedFence(this, Handle, riid, ppFence);
   };
 
   virtual HRESULT STDMETHODCALLTYPE CreateFence(UINT64 InitialValue,
                                                 D3D11_FENCE_FLAG Flags,
                                                 REFIID riid, void **ppFence) final {
+    D11_DEVICE_CALL(CreateFence);
     if (feature_flags_ & D3D11_CREATE_DEVICE_VIDEO_SUPPORT)
       return E_FAIL;
     return dxmt::CreateFence(this, InitialValue, Flags, riid, ppFence);

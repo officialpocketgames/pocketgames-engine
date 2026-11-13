@@ -1,6 +1,9 @@
 #pragma once
+// Changed for MYIOSDECK (spec 05 clarification 63: call statistics for the device's child
+// objects). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 #include "Metal.hpp"
+#include "d3d11_call_stats.hpp"
 #include "d3d11_device.hpp"
 #include "com/com_object.hpp"
 #include "com/com_private_data.hpp"
@@ -15,13 +18,15 @@ public:
 
   virtual void OnSetDebugObjectName(LPCSTR Name) {}
 
+  /* MYIOSDECK spec 05 clarification 63: not final, so that the device contexts can count these
+     four as their own calls */
   HRESULT STDMETHODCALLTYPE GetPrivateData(REFGUID guid, UINT *pDataSize,
-                                           void *pData) final {
+                                           void *pData) {
     return m_privateData.getData(guid, pDataSize, pData);
   }
 
   HRESULT STDMETHODCALLTYPE SetPrivateData(REFGUID guid, UINT DataSize,
-                                           const void *pData) final {
+                                           const void *pData) {
     if (guid == WKPDID_D3DDebugObjectName) {
       auto pool = WMT::MakeAutoreleasePool();
       std::string str((char *)pData, DataSize);
@@ -31,11 +36,11 @@ public:
   }
 
   HRESULT STDMETHODCALLTYPE
-  SetPrivateDataInterface(REFGUID guid, const IUnknown *pUnknown) final {
+  SetPrivateDataInterface(REFGUID guid, const IUnknown *pUnknown) {
     return m_privateData.setInterface(guid, pUnknown);
   }
 
-  void STDMETHODCALLTYPE GetDevice(ID3D11Device **ppDevice) final {
+  void STDMETHODCALLTYPE GetDevice(ID3D11Device **ppDevice) {
     *ppDevice = ref(m_parent);
   }
 
@@ -82,6 +87,18 @@ public:
       : MTLD3D11DeviceObject<ComObject<Base...>>(pDevice) {}
 
   virtual ~MTLD3D11DeviceChild() {};
+
+  /* spec 05 clarification 63: the shared child counters (the device contexts count their own
+     AddRef and Release, which don't come here) */
+  ULONG STDMETHODCALLTYPE AddRef() {
+    D11_CHILD_CALL(AddRef);
+    return ComObject<Base...>::AddRef();
+  }
+
+  ULONG STDMETHODCALLTYPE Release() {
+    D11_CHILD_CALL(Release);
+    return ComObject<Base...>::Release();
+  }
 };
 
 /**
@@ -100,6 +117,7 @@ public:
   virtual ~ManagedDeviceChild() {};
 
   ULONG STDMETHODCALLTYPE AddRef() {
+    D11_CHILD_CALL(AddRef); // spec 05 clarification 63
     uint32_t refCount = this->m_refCount++;
     if (unlikely(!refCount)) {
       this->m_parent->AddRef();
@@ -109,6 +127,7 @@ public:
   }
 
   ULONG STDMETHODCALLTYPE Release() {
+    D11_CHILD_CALL(Release); // spec 05 clarification 63
     D3D11_ASSERT(m_refCount > 0u && "try to release a 0 reference object");
     uint32_t refCount = --this->m_refCount;
     if (unlikely(!refCount)) {

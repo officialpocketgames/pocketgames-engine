@@ -1,6 +1,7 @@
 // Changed for MYIOSDECK (spec 05 D2, D5, E1, E2; dynamic-buffer discard; spec 05 clarification 10:
 // LGPL-2.1-or-later blocks from steamac's DXMT patch 0015, marked inline, see LICENSE-NOTES.md;
 // clarification 24: RecordingPresent; 57: SerializeBeforeCpuWrite). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Also changed for MYIOSDECK (spec 05 clarifications 63, 66, 67: call statistics, discards).
 #include "config/config.hpp"
 #include "d3d11_fence.hpp"
 #include "d3d11_private.h"
@@ -13,6 +14,7 @@
 namespace dxmt {
 struct ContextInternalState {
   using device_mutex_t = d3d11_device_mutex;
+  static constexpr bool kD11csDeferred = false; // MYIOSDECK spec 05 clarification 63
   CommandQueue &cmd_queue;
   bool has_dirty_op_since_last_event = false;
 };
@@ -112,6 +114,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   QueryInterface(REFIID riid, void **ppvObject) override {
+    D11_CTX_CALL(QueryInterface);
     if (ppvObject == nullptr)
       return E_POINTER;
 
@@ -122,11 +125,12 @@ public:
       return S_OK;
     }
 
-    return ImmediateContextBase::QueryInterface(riid, ppvObject);
+    return ImmediateContextBase::QueryInterfaceUncounted(riid, ppvObject); // counted above
   }
 
   ULONG STDMETHODCALLTYPE
   AddRef() override {
+    D11_CTX_CALL(AddRef);
     uint32_t refCount = this->refcount++;
     if (unlikely(!refCount))
       this->m_parent->AddRef();
@@ -136,6 +140,7 @@ public:
 
   ULONG STDMETHODCALLTYPE
   Release() override {
+    D11_CTX_CALL(Release);
     uint32_t refCount = --this->refcount;
     D3D11_ASSERT(refCount != ~0u && "try to release a 0 reference object");
     if (unlikely(!refCount))
@@ -175,11 +180,22 @@ public:
   MapDynamicBuffer(Rc<DynamicBuffer> &dynamic, uint64_t current_seq_id, uint64_t coherent_seq_id) {
     BoundDiscardMemory(DynamicSliceBytes(dynamic->buffer->length()), current_seq_id, coherent_seq_id);
     if (auto next_sub = dynamic->nextSuballocation()) {
+      D11_WORK(work_.discards[0][unsigned(d11cs::DiscardOutcome::NextSlice)]++); // spec 05 clarification 63
       EmitST([allocation = dynamic->immediateName(), next_sub](ArgumentEncodingContext &enc) mutable {
         allocation->useSuballocation(next_sub);
       });
     } else {
-      dynamic->updateImmediateName(current_seq_id, dynamic->allocate(coherent_seq_id, nullptr, current_seq_id), 0, false);
+      // spec 05 clarification 67: with DXMT_D11_DEFERRED_RING the pool hands out no allocation
+      // smaller than the buffer's current slice count (the immediate context's growth stays)
+      bool fresh = false;
+      auto allocation = CutSettingsOnce()[CutSwitch::DeferredRing]
+                            ? dynamic->allocateRing(coherent_seq_id, &fresh, current_seq_id, false)
+                            : dynamic->allocate(coherent_seq_id, &fresh, current_seq_id);
+      D11_WORK(if (fresh) {
+        work_.discards[0][unsigned(d11cs::DiscardOutcome::NewBuffer)]++;
+        work_.discard_new_bytes[0] += allocation->length();
+      } else work_.discards[0][unsigned(d11cs::DiscardOutcome::Pooled)]++); // spec 05 clarification 63
+      dynamic->updateImmediateName(current_seq_id, std::move(allocation), 0, false);
       EmitST([allocation = dynamic->immediateName(),
               buffer = Rc(dynamic->buffer)](ArgumentEncodingContext &enc) mutable {
         allocation->useSuballocation(0);
@@ -194,6 +210,10 @@ public:
   STDMETHODCALLTYPE
   Map(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
       D3D11_MAPPED_SUBRESOURCE *pMappedResource) override {
+    D11_CTX_CALL(Map);
+    D11_WORK(MapType == D3D11_MAP_WRITE_DISCARD          ? work_.map_discard++
+             : MapType == D3D11_MAP_WRITE_NO_OVERWRITE ? work_.map_no_overwrite++
+                                                        : work_.map_other++); // spec 05 clarification 63
     std::lock_guard<d3d11_device_mutex> lock(mutex);
 
     if (unlikely(!pResource || !pMappedResource))
@@ -211,19 +231,7 @@ public:
       case D3D11_MAP_READ_WRITE:
         return E_INVALIDARG;
       case D3D11_MAP_WRITE_DISCARD: {
-        if (bind_flag & D3D11_BIND_VERTEX_BUFFER) {
-          state_.InputAssembler.VertexBuffers.set_dirty();
-        }
-        if (bind_flag & D3D11_BIND_CONSTANT_BUFFER) {
-          for (auto &stage : state_.ShaderStages) {
-            stage.ConstantBuffers.set_dirty();
-          }
-        }
-        if (bind_flag & D3D11_BIND_SHADER_RESOURCE) {
-          for (auto &stage : state_.ShaderStages) {
-            stage.SRVs.set_dirty();
-          }
-        }
+        DirtyDiscardedBuffer(pResource, bind_flag); // spec 05 clarification 66
 
         pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
         pMappedResource->RowPitch = buffer_length;
@@ -247,9 +255,7 @@ public:
       case D3D11_MAP_WRITE_NO_OVERWRITE:
         return E_INVALIDARG;
       case D3D11_MAP_WRITE_DISCARD: {
-        for (auto &stage : state_.ShaderStages) {
-          stage.SRVs.set_dirty();
-        }
+        DirtyDiscardedTexture(pResource); // spec 05 clarification 66
 
         pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
         pMappedResource->RowPitch = row_pitch;
@@ -266,9 +272,7 @@ public:
       case D3D11_MAP_READ_WRITE:
         return E_INVALIDARG;
       case D3D11_MAP_WRITE_DISCARD: {
-        for (auto &stage : state_.ShaderStages) {
-          stage.SRVs.set_dirty();
-        }
+        DirtyDiscardedTexture(pResource); // spec 05 clarification 66
 
         dynamic->updateImmediateName(current_seq_id, dynamic->allocate(coherent_seq_id), false);
         EmitST([allocation = dynamic->immediateName(),
@@ -360,6 +364,7 @@ public:
   void
   STDMETHODCALLTYPE
   Unmap(ID3D11Resource *pResource, UINT Subresource) override {
+    D11_CTX_CALL(Unmap);
     std::lock_guard<d3d11_device_mutex> lock(mutex);
 
     if (unlikely(!pResource))
@@ -379,6 +384,7 @@ public:
   void
   STDMETHODCALLTYPE
   Begin(ID3D11Asynchronous *pAsync) override {
+    D11_CTX_CALL(Begin);
     std::lock_guard<d3d11_device_mutex> lock(mutex);
 
     // in theory pAsync could be any of them: { Query, Predicate, Counter }.
@@ -415,6 +421,7 @@ public:
   void
   STDMETHODCALLTYPE
   End(ID3D11Asynchronous *pAsync) override {
+    D11_CTX_CALL(End);
     std::lock_guard<d3d11_device_mutex> lock(mutex);
 
     D3D11_QUERY_DESC desc;
@@ -462,6 +469,7 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetData(ID3D11Asynchronous *pAsync, void *pData, UINT DataSize, UINT GetDataFlags) override {
+    D11_CTX_CALL(GetData);
     if (!pAsync || (DataSize && !pData))
       return E_INVALIDARG;
 
@@ -558,6 +566,7 @@ public:
   void
   STDMETHODCALLTYPE
   Flush() override {
+    D11_CTX_CALL(Flush);
     std::lock_guard<d3d11_device_mutex> lock(mutex);
 
     if (!ctx_state.has_dirty_op_since_last_event && !promote_flush) {
@@ -574,6 +583,9 @@ public:
   void
   STDMETHODCALLTYPE
   ExecuteCommandList(ID3D11CommandList *pCommandList, BOOL RestoreContextState) override {
+    D11_CTX_CALL(ExecuteCommandList);
+    NotePassReason(d11cs::PassStart::List); // spec 05 clarification 63
+    D11_WORK(work_.command_lists++); // spec 05 clarification 63
     std::lock_guard<d3d11_device_mutex> lock(mutex);
 
     ResetEncodingContextState();
@@ -629,6 +641,8 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   FinishCommandList(BOOL RestoreDeferredContextState, ID3D11CommandList **ppCommandList) override {
+    D11_CTX_CALL(FinishCommandList);
+    NotePassReason(d11cs::PassStart::List); // spec 05 clarification 63
     std::lock_guard<d3d11_device_mutex> lock(mutex);
 
     return DXGI_ERROR_INVALID_CALL;
@@ -637,6 +651,7 @@ public:
   D3D11_DEVICE_CONTEXT_TYPE
   STDMETHODCALLTYPE
   GetType() override {
+    D11_CTX_CALL(GetType);
     return D3D11_DEVICE_CONTEXT_IMMEDIATE;
   }
 
@@ -651,6 +666,7 @@ public:
   void
   Commit() override {
     promote_flush = false;
+    NotePassEndedByCommit(); // spec 05 clarification 63
     D3D11_ASSERT(cmdbuf_state == CommandBufferState::Idle);
     discard_tracker_.onCommit(ctx_state.cmd_queue.CurrentSeqId()); // MYIOSDECK: dynamic-buffer discard
     ctx_state.cmd_queue.CommitCurrentChunk();
@@ -658,6 +674,7 @@ public:
   };
 
   HRESULT STDMETHODCALLTYPE Signal(ID3D11Fence *pFence, UINT64 Value) override {
+    D11_CTX_CALL(Signal);
     auto fence = static_cast<MTLD3D11Fence *>(pFence);
 
     InvalidateCurrentPass();
@@ -670,6 +687,7 @@ public:
   }
 
   HRESULT STDMETHODCALLTYPE Wait(ID3D11Fence *pFence, UINT64 Value) override {
+    D11_CTX_CALL(Wait);
     auto fence = static_cast<MTLD3D11Fence *>(pFence);
 
     Flush();
@@ -683,6 +701,7 @@ public:
   UINT
   STDMETHODCALLTYPE
   GetContextFlags() override {
+    D11_CTX_CALL(GetContextFlags);
     return 0;
   }
 

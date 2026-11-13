@@ -43,8 +43,14 @@ HRESULT d3d9w_native_window_state( IDirect3DDevice9 *device, struct d3d9w_window
  * handler does to the device's state (lost, not reset, occluded, display mode). Returns the
  * window actions for the thunk to take. */
 #define D3D9W_FOCUS_MINIMIZE  0x1u   /* ShowWindow(SW_MINIMIZE): the window is visible and window changes are allowed */
-#define D3D9W_FOCUS_MOVE      0x2u   /* SetWindowPos(NOACTIVATE | NOZORDER) to *pos (origin and size) */
+#define D3D9W_FOCUS_MOVE      0x2u   /* SetWindowPos(NOACTIVATE | NOZORDER) to *pos: a RECT, left and top the monitor
+                                         origin, right = left + width, bottom = top + height (clarification 12) */
 DWORD d3d9w_native_focus_activation( IDirect3DDevice9 *device, BOOL active, RECT *pos );
+
+/* The calling process is ending (clarification 13; the dispatch calls it for the gate's reserved
+ * method 0xffffff): every object still alive becomes an orphan that no longer counts for
+ * clarification 10's one-process rule. Nothing is released or destroyed. */
+void d3d9w_native_process_gone( void );
 
 #ifdef __cplusplus
 }

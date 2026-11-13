@@ -32,6 +32,10 @@ extern "C" {
 /* Library numbers. 1 is Direct3D 9 (spec 33); 2 is reserved for XAudio2. */
 #define IOS_WOW_NATIVE_LIB_D3D9   1u
 #define IOS_WOW_NATIVE_ID(lib, method) ((uint32_t)(lib) << 24 | ((uint32_t)(method) & 0xffffffu))
+/* Method 0xffffff is reserved: the app calls each registered function with it once when the
+ * calling process ends, on the thread making its final NtTerminateProcess(NtCurrentProcess()),
+ * just before that call. ret is ignored. No stub ever uses it (spec 33 clarification 13). */
+#define IOS_WOW_NATIVE_METHOD_PROCESS_END 0xffffffu
 
 /* How the gate returns to the caller. */
 enum ios_wow_native_kind

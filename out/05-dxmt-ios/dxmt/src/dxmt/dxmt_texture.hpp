@@ -2,11 +2,12 @@
 // Changed for MYIOSDECK (spec 05 D5, H7; spec 07 A2: LGPL-2.1-or-later blocks from dxmt-d3d9
 // v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10: an
 // LGPL-2.1-or-later block from steamac's DXMT patch 0023, marked inline; spec 05 clarification 33:
-// two view accessors). Upstream: DXMT a3a6e8f, MIT.
+// two view accessors; clarification 71: the discard marks). Upstream: DXMT a3a6e8f, MIT.
 #include "Metal.hpp"
 #include "dxmt_deptrack.hpp"
 #include "dxmt_residency.hpp"
 #include "dxmt_allocation.hpp"
+#include "dxmt_pass_cuts.hpp" // spec 05 clarification 71
 #include "rc/util_rc_ptr.hpp"
 #include "thread.hpp"
 #include "util_flags.hpp"
@@ -340,7 +341,16 @@ public:
   float lostLevelMinLod(TextureViewKey view);
 #endif
 
+  /* MYIOSDECK spec 05 clarification 71 (item 77): this texture's discarded subresources (keyed
+     (0, level, slice)), kept with the texture so they go when it does. Touched on the encoding
+     thread only. */
+  DiscardMarks &
+  discardMarks() {
+    return discard_marks_;
+  }
+
 private:
+  DiscardMarks discard_marks_;
 #ifdef DXMT_IOS
   uint32_t mip_bias_ = 0;
   std::atomic<uint32_t> lost_levels_ = 0;

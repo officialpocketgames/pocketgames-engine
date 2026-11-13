@@ -1,4 +1,5 @@
 // Changed for MYIOSDECK (spec 05 clarification 24: RecordingPresent; 57: SerializeBeforeCpuWrite). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Also changed for MYIOSDECK (spec 05 clarifications 63, 66, 67: call statistics, discards).
 #include "d3d11_device.hpp"
 #include "d3d11_private.h"
 #include "d3d11_context_impl.cpp"
@@ -16,6 +17,7 @@ struct DynamicBufferAllocation {
 
 struct DeferredContextInternalState {
   using device_mutex_t = null_mutex;
+  static constexpr bool kD11csDeferred = true; // MYIOSDECK spec 05 clarification 63
   CommandQueue &cmd_queue;
   Com<MTLD3D11CommandList> current_cmdlist;
   std::unordered_map<DynamicBuffer *, DynamicBufferAllocation> current_dynamic_buffer_allocations;
@@ -101,6 +103,7 @@ public:
 
   ULONG STDMETHODCALLTYPE
   AddRef() override {
+    D11_CTX_CALL(AddRef);
     uint32_t refCount = this->refcount++;
     if (unlikely(!refCount))
       this->m_parent->AddRef();
@@ -110,6 +113,7 @@ public:
 
   ULONG STDMETHODCALLTYPE
   Release() override {
+    D11_CTX_CALL(Release);
     uint32_t refCount = --this->refcount;
     D3D11_ASSERT(refCount != ~0u && "try to release a 0 reference object");
     if (unlikely(!refCount)) {
@@ -129,6 +133,7 @@ public:
       auto allocation_id = allocation_state.allocation_id;
       auto &suballocation = allocation_state.suballocation;
       if (allocation->hasSuballocatoin(suballocation + 1)) {
+        D11_WORK(work_.discards[1][unsigned(d11cs::DiscardOutcome::NextSlice)]++); // spec 05 clarification 63
         suballocation += 1;
         ctx_state.current_cmdlist->used_dynamic_buffers[allocation_id].suballocation = suballocation;
         EmitST([allocation, sub = suballocation](ArgumentEncodingContext &enc) mutable {
@@ -137,7 +142,20 @@ public:
         return allocation->mappedMemory(suballocation);
       }
     }
-    Rc<BufferAllocation> new_allocation = dynamic->allocate(ctx_state.cmd_queue.CoherentSeqId());
+    // spec 05 clarification 67: with DXMT_D11_DEFERRED_RING a second allocation of the buffer
+    // in this command list doubles its slices, and the pool hands out none smaller
+    bool fresh = false;
+    Rc<BufferAllocation> new_allocation =
+        CutSettingsOnce()[CutSwitch::DeferredRing]
+            ? dynamic->allocateRing(
+                  ctx_state.cmd_queue.CoherentSeqId(), &fresh, 0,
+                  ret != ctx_state.current_dynamic_buffer_allocations.end()
+              )
+            : dynamic->allocate(ctx_state.cmd_queue.CoherentSeqId(), &fresh);
+    D11_WORK(if (fresh) {
+      work_.discards[1][unsigned(d11cs::DiscardOutcome::NewBuffer)]++;
+      work_.discard_new_bytes[1] += new_allocation->length();
+    } else work_.discards[1][unsigned(d11cs::DiscardOutcome::Pooled)]++); // spec 05 clarification 63
     uint32_t id = ctx_state.current_cmdlist->used_dynamic_buffers.size();
     // track the current allocation in case of a following NO_OVERWRITE map
     if (ret == ctx_state.current_dynamic_buffer_allocations.end()) {
@@ -162,6 +180,10 @@ public:
   STDMETHODCALLTYPE
   Map(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
       D3D11_MAPPED_SUBRESOURCE *pMappedResource) override {
+    D11_CTX_CALL(Map);
+    D11_WORK(MapType == D3D11_MAP_WRITE_DISCARD          ? work_.map_discard++
+             : MapType == D3D11_MAP_WRITE_NO_OVERWRITE ? work_.map_no_overwrite++
+                                                        : work_.map_other++); // spec 05 clarification 63
     UINT buffer_length = 0, &row_pitch = buffer_length;
     UINT bind_flag = 0, &depth_pitch = bind_flag;
     if (auto dynamic = GetDynamicBuffer(pResource, &buffer_length, &bind_flag)) {
@@ -173,19 +195,7 @@ public:
       case D3D11_MAP_READ_WRITE:
         return E_INVALIDARG;
       case D3D11_MAP_WRITE_DISCARD: {
-        if (bind_flag & D3D11_BIND_VERTEX_BUFFER) {
-          state_.InputAssembler.VertexBuffers.set_dirty();
-        }
-        if (bind_flag & D3D11_BIND_CONSTANT_BUFFER) {
-          for (auto &stage : state_.ShaderStages) {
-            stage.ConstantBuffers.set_dirty();
-          }
-        }
-        if (bind_flag & D3D11_BIND_SHADER_RESOURCE) {
-          for (auto &stage : state_.ShaderStages) {
-            stage.SRVs.set_dirty();
-          }
-        }
+        DirtyDiscardedBuffer(pResource, bind_flag); // spec 05 clarification 66
 
         pMappedResource->pData = MapDynamicBuffer(dynamic);
         pMappedResource->RowPitch = buffer_length;
@@ -216,9 +226,7 @@ public:
       case D3D11_MAP_READ_WRITE:
         return E_INVALIDARG;
       case D3D11_MAP_WRITE_DISCARD: {
-        for (auto &stage : state_.ShaderStages) {
-            stage.SRVs.set_dirty();
-        }
+        DirtyDiscardedTexture(pResource); // spec 05 clarification 66
         Rc<TextureAllocation> new_allocation = dynamic->allocate(ctx_state.cmd_queue.CoherentSeqId());
         uint32_t id = ctx_state.current_cmdlist->used_dynamic_lineartextures.size();
         // track the current allocation in case of a following NO_OVERWRITE map
@@ -266,9 +274,7 @@ public:
       case D3D11_MAP_WRITE_NO_OVERWRITE:
         return E_INVALIDARG;
       case D3D11_MAP_WRITE_DISCARD: {
-        for (auto &stage : state_.ShaderStages) {
-            stage.SRVs.set_dirty();
-        }
+        DirtyDiscardedTexture(pResource); // spec 05 clarification 66
         pMappedResource->pData = MapDynamicBuffer(dynamic);
         pMappedResource->RowPitch = row_pitch;
         pMappedResource->DepthPitch = depth_pitch;
@@ -283,6 +289,7 @@ public:
   void
   STDMETHODCALLTYPE
   Unmap(ID3D11Resource *pResource, UINT Subresource) override {
+    D11_CTX_CALL(Unmap);
     UINT buffer_length = 0, &row_pitch = buffer_length;
     UINT bind_flag = 0, &depth_pitch = bind_flag;
     if (auto dynamic = GetDynamicTexture(pResource, Subresource, &row_pitch, &depth_pitch)) {
@@ -295,6 +302,7 @@ public:
   void
   STDMETHODCALLTYPE
   Begin(ID3D11Asynchronous *pAsync) override {
+    D11_CTX_CALL(Begin);
     D3D11_QUERY_DESC desc;
     ((ID3D11Query *)pAsync)->GetDesc(&desc);
     switch (desc.Query) {
@@ -337,6 +345,7 @@ public:
   void
   STDMETHODCALLTYPE
   End(ID3D11Asynchronous *pAsync) override {
+    D11_CTX_CALL(End);
     D3D11_QUERY_DESC desc;
     ((ID3D11Query *)pAsync)->GetDesc(&desc);
     switch (desc.Query) {
@@ -377,22 +386,30 @@ public:
   HRESULT
   STDMETHODCALLTYPE
   GetData(ID3D11Asynchronous *pAsync, void *pData, UINT DataSize, UINT GetDataFlags) override {
+    D11_CTX_CALL(GetData);
     return E_FAIL;
   }
 
   void
   STDMETHODCALLTYPE
   Flush() override {
+    D11_CTX_CALL(Flush);
     // nop
   }
 
   void
   STDMETHODCALLTYPE
-  ExecuteCommandList(ID3D11CommandList *pCommandList, BOOL RestoreContextState) override{IMPLEMENT_ME}
+  ExecuteCommandList(ID3D11CommandList *pCommandList, BOOL RestoreContextState) override{
+    D11_CTX_CALL(ExecuteCommandList);
+    NotePassReason(d11cs::PassStart::List); // spec 05 clarification 63
+    IMPLEMENT_ME
+  }
 
   HRESULT 
   STDMETHODCALLTYPE
   FinishCommandList(BOOL RestoreDeferredContextState, ID3D11CommandList **ppCommandList) override {
+    D11_CTX_CALL(FinishCommandList);
+    NotePassReason(d11cs::PassStart::List); // spec 05 clarification 63
     ResetEncodingContextState();
 
     ctx_state.current_cmdlist->promote_flush = promote_flush;
@@ -422,6 +439,7 @@ public:
   D3D11_DEVICE_CONTEXT_TYPE 
   STDMETHODCALLTYPE
   GetType() override {
+    D11_CTX_CALL(GetType);
     return D3D11_DEVICE_CONTEXT_DEFERRED;
   }
 
@@ -439,17 +457,20 @@ public:
 
   HRESULT STDMETHODCALLTYPE
   Signal(ID3D11Fence *pFence, UINT64 Value) override {
+    D11_CTX_CALL(Signal);
     return DXGI_ERROR_INVALID_CALL;
   }
 
   HRESULT STDMETHODCALLTYPE
   Wait(ID3D11Fence *pFence, UINT64 Value) override {
+    D11_CTX_CALL(Wait);
     return DXGI_ERROR_INVALID_CALL;
   }
 
   UINT
   STDMETHODCALLTYPE
   GetContextFlags() override {
+    D11_CTX_CALL(GetContextFlags);
     return context_flag;
   }
 
