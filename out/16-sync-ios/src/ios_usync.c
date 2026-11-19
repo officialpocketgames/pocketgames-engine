@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 16 Part E: an in-process ntsync "driver". Upstream Wine 11.4 can run its synchronization on

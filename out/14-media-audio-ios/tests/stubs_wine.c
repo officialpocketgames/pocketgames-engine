@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 14 Part F: the few ntdll functions the audio driver calls, for the host tests. Built with

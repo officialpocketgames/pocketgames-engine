@@ -5,6 +5,8 @@
 // 24 and 28: the frame trace's read-backs and the frame dump's copies; clarification 57: the
 // serialize test switch). Upstream: DXMT a3a6e8f, MIT.
 // Also changed for MYIOSDECK (spec 05 clarification 63: the encoding time for the call statistics).
+// Also changed for MYIOSDECK (spec 05 round 18: ParkUntilChunk, the bounded park of a polled query,
+// and the highest shared-event value read, items 80 and 82).
 
 #include "Metal.hpp"
 #include "dxmt_allocation.hpp"
@@ -17,6 +19,7 @@
 #include "dxmt_ring_bump_allocator.hpp"
 #include "dxmt_serialize.hpp" // spec 05 clarification 57
 #include "dxmt_pass_stats.hpp" // spec 05 clarification 63
+#include "dxmt_query_poll.hpp" // spec 05 round 18
 #include "dxmt_statistics.hpp"
 #include "log/log.hpp"
 #include "thread.hpp"
@@ -267,6 +270,7 @@ public:
   InternalCommandLibrary cmd_library;
   ArgumentEncodingContext argument_encoding_ctx;
   WMT::Reference<WMT::SharedEvent> event;
+  EventValueCache event_value_; // MYIOSDECK spec 05 round 18 (item 82)
   std::uint64_t current_event_seq_id = 0;
   FrameStatisticsContainer statistics;
   ResourceInitializer initializer;
@@ -302,10 +306,29 @@ public:
   };
 
 
+  /* MYIOSDECK spec 05 round 18 (item 82): reads the shared event's value (a call to the unix
+     side) and keeps it if it is the highest read so far. */
   uint64_t
   SignaledEventSeqId() {
-    return event.signaledValue();
+    return event_value_.atLeast(~0ull, [this] { return event.signaledValue(); });
   };
+
+  /* Item 82: the shared event's value once it is at least `wanted`, without a call to the unix
+     side when the highest value read so far already is; otherwise read (and kept) as above. A
+     value below `wanted` means not yet. */
+  uint64_t
+  SignaledEventSeqIdAtLeast(uint64_t wanted) {
+    return event_value_.atLeast(wanted, [this] { return event.signaledValue(); });
+  };
+
+  /* Item 80: a polled query's park. Blocks until the chunk `seq` has completed (the
+     CPU-coherent sequence reaches it) or `timeout_ns` pass, giving the core up: CpuFence::waitFor
+     (ntdll's timed wait on the Windows half, WaitCPUFenceBounded's loop elsewhere). Takes no
+     lock. Returns whether the chunk completed. */
+  bool
+  ParkUntilChunk(uint64_t seq, uint64_t timeout_ns) {
+    return cpu_coherent.waitFor(seq, timeout_ns);
+  }
 
   obj_handle_t GetSharedEventListener() {
     return shared_event_listener;
@@ -396,19 +419,7 @@ public:
   */
   bool
   WaitCPUFenceBounded(uint64_t seq, uint64_t timeout_ns) {
-    if (cpu_coherent.signaledValue() >= seq)
-      return true;
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::nanoseconds(timeout_ns);
-    for (unsigned i = 0; i < 64; i++) {
-      if (cpu_coherent.signaledValue() >= seq)
-        return true;
-    }
-    while (std::chrono::steady_clock::now() < deadline) {
-      std::this_thread::yield();
-      if (cpu_coherent.signaledValue() >= seq)
-        return true;
-    }
-    return cpu_coherent.signaledValue() >= seq;
+    return cpu_coherent.waitBounded(seq, timeout_ns); // the loop lives in CpuFence since round 18
   }
 #endif
 

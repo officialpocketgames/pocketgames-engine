@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # Spec 12 Part G: builds and runs the host tests of the pure parts (any C11 compiler, no iOS SDK;

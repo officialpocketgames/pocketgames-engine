@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Host test for the swap-chain descriptions DXMT presents as asked

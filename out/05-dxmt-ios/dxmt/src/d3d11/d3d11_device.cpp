@@ -2,7 +2,8 @@
 // steamac's DXMT patch 0015, marked inline, see LICENSE-NOTES.md; spec 05 clarification 17:
 // FORMAT_SUPPORT2 through d3d11_format_support2.hpp; clarification 21: the frame-trace switch is
 // read at device creation; clarifications 63 and 73: call statistics, the
-// round-17 switch line). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// round-17 switch line; round 19, item 88: the DXGI device's CreateSurface and
+// QueryResourceResidency no longer abort). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "com/com_guid.hpp"
 #include "d3d11_format_support2.hpp"
 #include "dxmt_frame_trace.hpp" // spec 05 clarification 21
@@ -22,6 +23,7 @@
 #include "d3d11_private.h"
 #include "d3d11_query.hpp"
 #include "d3d11_swapchain.hpp"
+#include "d3d11_swapchain_state.hpp" // spec 05 round 19 (item 88)
 #include "d3d11_state_object.hpp"
 #include "dxgi_interfaces.h"
 #include "../d3d10/d3d10_device.hpp"
@@ -1267,15 +1269,32 @@ public:
     return S_OK;
   }
 
+  /* MYIOSDECK spec 05 round 19 (item 88): CreateSurface and QueryResourceResidency were
+     IMPLEMENT_ME, which aborts the game. Microsoft documents CreateSurface as internal to
+     Direct3D, not for applications: it says so with E_NOTIMPL. Every resource is resident. */
   HRESULT STDMETHODCALLTYPE
   CreateSurface(const DXGI_SURFACE_DESC *desc, UINT surface_count,
                 DXGI_USAGE usage, const DXGI_SHARED_RESOURCE *shared_resource,
-                IDXGISurface **surface) override{IMPLEMENT_ME}
+                IDXGISurface **surface) override {
+    if (surface)
+      *surface = nullptr;
+    WARN("DXGIDevice::CreateSurface: not supported");
+    return E_NOTIMPL;
+  }
 
   HRESULT STDMETHODCALLTYPE
       QueryResourceResidency(IUnknown *const *resources,
                              DXGI_RESIDENCY *residency,
-                             UINT resource_count) override{IMPLEMENT_ME}
+                             UINT resource_count) override {
+    static_assert(swapchain_state::kResidencyFullyResident == DXGI_RESIDENCY_FULLY_RESIDENT);
+    static_assert(sizeof(DXGI_RESIDENCY) == sizeof(uint32_t));
+    return swapchain_state::QueryResidency(
+               reinterpret_cast<const void *const *>(resources), reinterpret_cast<uint32_t *>(residency),
+               resource_count
+           ) == swapchain_state::Result::Ok
+               ? S_OK
+               : E_INVALIDARG;
+  }
 
   HRESULT STDMETHODCALLTYPE SetGPUThreadPriority(INT Priority) override {
     if (Priority < -7 || Priority > 7)

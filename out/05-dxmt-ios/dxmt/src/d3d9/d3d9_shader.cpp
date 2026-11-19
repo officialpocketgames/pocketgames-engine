@@ -4,6 +4,7 @@
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
 // Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
 // Changed for MYIOSDECK (spec 05 clarification 12): the cache lookups and stores are counted.
+// Changed for MYIOSDECK (spec 33): the ios_wow_native build; see out/05-dxmt-ios/CHANGES.md, section "spec 33".
 #include "d3d9_shader.hpp"
 
 #include "airconv_public.h"
@@ -57,6 +58,9 @@ shader_dump_enabled() {
 const std::string &
 shader_dump_dir() {
   static const std::string v = []() -> std::string {
+#ifdef DXMT_IOS_WOW_NATIVE
+    return std::string(); // MYIOSDECK spec 33 clarification 9: no dump to a DOS path
+#endif
     const char *e = std::getenv("DXMT_DUMP_PATH");
     return (e && e[0]) ? std::string(e) : std::string();
   }();

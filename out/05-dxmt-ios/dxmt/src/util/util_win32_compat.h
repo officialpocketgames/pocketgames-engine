@@ -1,3 +1,5 @@
+/* Changed for MYIOSDECK (spec 33 clarification 9: the ios_wow_native build's thread priority,
+   without a warning per thread start). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 #pragma once
 
 #if defined(DXMT_NATIVE)
@@ -13,10 +15,17 @@ inline HANDLE GetCurrentProcess() {
   return nullptr;
 }
 
+#ifdef DXMT_IOS_WOW_NATIVE
+/* The calling thread's pseudo handle, as on Windows; SetThreadPriority below takes only it. */
+inline HANDLE GetCurrentThread() {
+  return reinterpret_cast<HANDLE>(intptr_t(-2));
+}
+#else
 inline HANDLE GetCurrentThread() {
   dxmt::Logger::warn("GetCurrentThread not implemented.");
   return nullptr;
 }
+#endif
 
 inline DWORD GetCurrentProcessId() {
   dxmt::Logger::warn("GetCurrentProcessId not implemented.");
@@ -29,10 +38,21 @@ inline BOOL ProcessIdToSessionId(DWORD pid, DWORD *id) {
   return FALSE;
 }
 
+#ifdef DXMT_IOS_WOW_NATIVE
+/* Spec 33 B3: the priority as a QoS class of the calling thread (user-interactive for
+   THREAD_PRIORITY_TIME_CRITICAL, which the encode, finish and PSO threads ask for). */
+inline BOOL SetThreadPriority(HANDLE hThread, int nPriority) {
+  if (hThread != GetCurrentThread())
+    return FALSE;
+  dxmt::ios_wow_native::setCurrentThreadPriority(nPriority);
+  return TRUE;
+}
+#else
 inline BOOL SetThreadPriority(HANDLE hThread, int nPriority) {
   dxmt::Logger::warn("SetThreadPriority not implemented.");
   return FALSE;
 }
+#endif
 
 inline HANDLE GetModuleHandle(LPCSTR lpModuleName) {
   dxmt::Logger::warn("GetModuleHandle not implemented.");

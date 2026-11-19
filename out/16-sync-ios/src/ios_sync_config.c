@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 16 Part A: which engine runs. The tuning values of Parts E and G are fixed (spec 00 Part I:

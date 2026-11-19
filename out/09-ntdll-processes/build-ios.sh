@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # Spec 09 Part A: compile ntdll's unix side (dlls/ntdll/unix/ of Wine 11.4, with this spec's

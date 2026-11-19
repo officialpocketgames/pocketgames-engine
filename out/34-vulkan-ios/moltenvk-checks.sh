@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # Spec 34 Part B3: the checks of the MoltenVK archive. Each failure fails the build.

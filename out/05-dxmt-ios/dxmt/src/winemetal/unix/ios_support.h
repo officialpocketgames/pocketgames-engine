@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // iOS-only parts of winemetal's unix side (spec 05). Compiled by build-ios.sh
@@ -143,5 +143,22 @@ void dxmt_ios_wow_release(uint64_t object);
 /* E: Wine calls this (if the symbol exists) when it tears down the window of
    a program that ended. */
 void winemetal_release_window(unsigned long base);
+
+/* ---- Spec 05 item 89: a program's objects, released when its process ends ----
+   The calling pseudo-process (ntdll's ios_current_peb) is the owner. Off with
+   DXMT_RELEASE_ENDED=0, and for calls made between dxmt_ios_untracked_begin
+   and _end (the native Direct3D 9 frontend's, spec 33, whose ended objects
+   stay as they are). */
+
+/* a creating call handed the program `object` (+1); a null object is ignored */
+void dxmt_ios_proc_created(uint64_t object);
+/* the program retains / releases `object`; these do the retain or release */
+void dxmt_ios_proc_retain(uint64_t object);
+void dxmt_ios_proc_release(uint64_t object);
+/* a Metal view made for the program, and its normal release */
+void dxmt_ios_proc_view_created(uint64_t view);
+void dxmt_ios_proc_view_released(uint64_t view);
+/* winemetal_unix.c: the app's view release, on the main thread (asynchronous) */
+void dxmt_ios_release_metal_view_on_main(uint64_t view);
 
 #endif

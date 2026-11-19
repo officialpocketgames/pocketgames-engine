@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 05 clarification 63 (DXMT_D11_CALL_STATS): the counter table, the work counters and the
@@ -125,7 +125,21 @@ struct D11Work {
   uint32_t repeated[kD11ContextMethods] = {}; // state calls that set what was set
   uint32_t tables_cb = 0, tables_srv = 0, tables_vb = 0, pipeline_lookups = 0;
   uint32_t pass_starts[unsigned(PassStart::Count)] = {};
+  /* round 18, item 83: the immediate context's GetData polls that found the result not ready
+     (after a park, its second check's answer), the ones that parked and how long, and the
+     times item 81's flush body had something to commit */
+  uint32_t query_not_ready = 0, query_parked = 0, query_flushes = 0;
+  uint64_t query_parked_ns = 0;
+  /* the children's IUnknown calls made while a counted context or device call ran on the same
+     thread, by D11O_Child_QueryInterface, _AddRef, _Release order */
+  uint32_t child_inside[3] = {};
 };
+
+/* Item 83: a child call's index in D11Work::child_inside */
+constexpr unsigned
+D11ChildIndex(unsigned other_method) {
+  return other_method - unsigned(D11O_Child_QueryInterface);
+}
 
 /* The encoding thread's counters (after the optimiser), read from the shared encoder
    statistics at each report. */
@@ -159,7 +173,8 @@ struct D11Period {
   unsigned level = 1;
 };
 
-/* The report lines (clarification 63's eight; the last at level 2 only). Per-second figures
+/* The report lines (clarification 63's eight and round 18's two, item 83: queries and child
+   calls before the time line; the time line at level 2 only). Per-second figures
    are whole numbers, per-Present ones have one decimal; a period without a Present says
    "no Present" for its per-Present figures. Ties among the busiest are broken by name. */
 inline std::vector<std::string>
@@ -233,6 +248,8 @@ FormatD11Report(const D11Period &p, size_t top = kD11ReportTop) {
     lines.push_back("d3d11 state per Present: no Present");
     lines.push_back("d3d11 passes per Present: no Present");
     lines.push_back("d3d11 cuts per Present: no Present");
+    lines.push_back("d3d11 queries per Present: no Present");
+    lines.push_back("d3d11 child calls per Present: no Present");
     if (p.level >= 2)
       lines.push_back("d3d11 time per Present: no Present");
     return lines;
@@ -288,6 +305,16 @@ FormatD11Report(const D11Period &p, size_t top = kD11ReportTop) {
   auto mb = [&](uint64_t bytes) { return per_present(double(bytes) / (1024.0 * 1024.0)); };
   cuts += "; " + mb(s.bytes_avoided) + " MB avoided, " + mb(s.bytes_avoidable) + " MB more with the switches on";
   lines.push_back(std::move(cuts));
+
+  // round 18, item 83
+  lines.push_back("d3d11 queries per Present: " + pp(p.counts[kD11IdImmediate + D11X_GetData]) + " GetData, " +
+                  pp(w.query_not_ready) + " not ready, " + pp(w.query_parked) + " parked (" +
+                  ms_per_present(double(w.query_parked_ns)) + " ms), " + pp(w.query_flushes) + " flushes");
+  auto child = [&](D11OtherMethod m) {
+    return pp(p.counts[kD11IdOther + m]) + " (" + pp(w.child_inside[D11ChildIndex(m)]);
+  };
+  lines.push_back("d3d11 child calls per Present: AddRef " + child(D11O_Child_AddRef) + " inside calls), Release " +
+                  child(D11O_Child_Release) + "), QueryInterface " + child(D11O_Child_QueryInterface) + ")");
 
   if (p.level >= 2)
     lines.push_back("d3d11 time per Present: " + ms_per_present(ticks_ns(p.present_thread_ticks)) +

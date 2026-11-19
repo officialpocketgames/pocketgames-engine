@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # Spec 35 C1.2/C1.3 on the host: angle/build-angle.sh run from start to end on a fake ANGLE build

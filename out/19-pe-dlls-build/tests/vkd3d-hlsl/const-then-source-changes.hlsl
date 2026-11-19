@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // The const keeps the value its source had at the declaration (Microsoft: o0.x = 3, o0.y = v0.x).

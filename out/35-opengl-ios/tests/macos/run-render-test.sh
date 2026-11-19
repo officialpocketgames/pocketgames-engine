@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # run-render-test.sh <angle out (macos)> <gl4es out (macos)> <work dir>

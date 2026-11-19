@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 05 clarification 30: the frame trace's state lines (dxmt/src/d3d11/d3d11_trace_state.hpp)

@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # CI (macOS, Xcode's iPhoneOS SDK): build one part's iOS static libraries with its own
@@ -10,7 +10,9 @@
 # <part> is a folder name under out/ that has a build-ios.sh: 05-dxmt-ios (also specs 06 and 07,
 # whose code is in its tree), 08-wineserver-ios, 09-ntdll-processes (also specs 10 and 11, and
 # spec 16's src/*.c and spec 13's socket.c, which its build-ios.sh takes itself),
-# 12-win32u-ios, 13-net-crypto-ios, 14-media-audio-ios, 15-controllers, 34-vulkan-ios (MoltenVK
+# 12-win32u-ios, 13-net-crypto-ios, 14-media-audio-ios, 15-controllers, 33-d3d9-native-wow64
+# (the native Direct3D 9 frontend from out/05-dxmt-ios/dxmt with meson's ios_wow_native option,
+# then the part's own build-ios.sh for the dispatch), 34-vulkan-ios (MoltenVK
 # first, cached in moltenvk/), 35-opengl-ios (its own scripts: angle/build-angle.sh,
 # build-gl4es.sh, pgl/build-pgl.sh, opengl32-unix/build-unix.sh). Spec 16 and spec 17 have no
 # build-ios.sh of their own: their unix-side code is compiled by 08, 09, 12-15's.
@@ -167,6 +169,31 @@ case "$part" in
             run "build-ios.sh" sh "$src/build-ios.sh" "$wine" "$wbuild" "$work/ffmpeg" "$out" || status=1
             mkdir -p "$dist/ffmpeg"
             cp "$work/ffmpeg/lib/"*.a "$dist/ffmpeg/" 2>/dev/null || true
+        fi
+        ;;
+    33-d3d9-native-wow64)
+        # spec 33 clarification 6: first the native Direct3D 9 frontend, out/05-dxmt-ios/dxmt with
+        # meson's ios_wow_native option (src/ios_wow_native/meson.build: the frontend, the dxmt
+        # core and util, Part C's allocator and the B4 win32u queries, one static library), then
+        # the dispatch with this part's own build-ios.sh (session T's) when it exists, called like
+        # the Wine parts' (<wine tree> <wine build dir> <out dir>).
+        native="$repo/out/05-dxmt-ios/dxmt"
+        if ! command -v meson > /dev/null 2>&1; then
+            run "meson (Homebrew)" brew install meson || run "meson (pip)" python3 -m pip install --user meson
+            PATH="$PATH:$(python3 -c 'import site; print(site.USER_BASE)' 2>/dev/null)/bin"
+        fi
+        if run "meson setup (ios_wow_native)" meson setup --cross-file "$native/build-ios-arm64.txt" \
+                -Dios_wow_native=true -Dbuildtype=release "$out/native" "$native" &&
+           run "ninja (ios_wow_native)" ninja -C "$out/native" src/ios_wow_native/libd3d9_ios_wow_native.a; then
+            cp "$out/native/src/ios_wow_native/libd3d9_ios_wow_native.a" "$out/" || status=1
+        else
+            status=1
+        fi
+        [ -f "$out/native/meson-logs/meson-log.txt" ] && cp "$out/native/meson-logs/meson-log.txt" "$dist/meson-log.txt"
+        if [ -f "$src/build-ios.sh" ]; then
+            run "build-ios.sh (the dispatch)" sh "$src/build-ios.sh" "$wine" "$wbuild" "$out" || status=1
+        else
+            say "== $src/build-ios.sh is not there yet: only the native frontend is built"
         fi
         ;;
     35-opengl-ios)

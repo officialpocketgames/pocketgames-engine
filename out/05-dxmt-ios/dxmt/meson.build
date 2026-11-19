@@ -1,4 +1,5 @@
 # Changed for MYIOSDECK (spec 05 Part A): aarch64/arm64ec targets, DXMT_IOS, metal_std.
+# Changed for MYIOSDECK (spec 33 Part B): the ios_wow_native option.
 project('dxmt', ['c', 'cpp'], version : 'v0.1', meson_version: '>=1.3.0', default_options : [
   'cpp_std=c++20', 
   'warning_level=2', 
@@ -36,6 +37,14 @@ dxmt_ios = host_machine.system() == 'windows'
 # library built for a Metal version its OS doesn't know, so this is fixed.
 metal_std = get_option('metal_std')
 metal_shader_args = ['-std=' + metal_std, '--target=air64-apple-macos14.0']
+
+# MYIOSDECK spec 33 Part B: the ios_wow_native build (the Direct3D 9 frontend with the dxmt core
+# and util as one static library for aarch64-apple-ios) is self-contained in src/ios_wow_native.
+# Nothing below runs for it, so the PE builds are unchanged.
+if get_option('ios_wow_native')
+  subdir('src/ios_wow_native')
+  subdir_done()
+endif
 
 dxmt_include_dirs = [
   './include',

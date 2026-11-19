@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # Spec 19 Part C: build-pe.sh's whole flow (toolchain, tree, the three trees, collect) on a fake

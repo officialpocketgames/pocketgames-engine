@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 10 Part G: host tests of the pure parts of memory on iOS (ntdll-unix/ios_vm_pure.c), with

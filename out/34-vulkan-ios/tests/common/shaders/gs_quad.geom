@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 // spec 34 clarification 1, item 6: one triangle in, a green quad from -0.5 to 0.5 around its
 // centre out (a strip of four vertices: two triangles)

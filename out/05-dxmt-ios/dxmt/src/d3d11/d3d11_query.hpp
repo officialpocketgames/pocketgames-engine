@@ -1,8 +1,10 @@
 #pragma once
-// Changed for MYIOSDECK (spec 05 clarification 63: QueryInterface counted). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 clarification 63: QueryInterface counted; round 18: what a polled
+// query parks on). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "com/com_guid.hpp"
 #include "d3d11_device_child.hpp"
 #include "dxmt_occlusion_query.hpp"
+#include "dxmt_query_poll.hpp" // MYIOSDECK spec 05 round 18
 #include "log/log.hpp"
 #include "../d3d10/d3d10_query.hpp"
 
@@ -15,6 +17,8 @@ DEFINE_COM_INTERFACE("a301e56d-d87e-4b69-8440-bd003e285904",
   virtual void DoDeferredQuery(dxmt::Rc<dxmt::VisibilityResultQuery> &deferred_query) = 0;
 
   virtual dxmt::Rc<dxmt::VisibilityResultQuery> __query() = 0;
+  /* MYIOSDECK spec 05 round 18 (item 80): the poll state and the chunk that holds its end */
+  virtual dxmt::QueryParkInfo &parkInfo() = 0;
 };
 
 namespace dxmt {
@@ -125,7 +129,13 @@ constexpr size_t kEventStallThreshold = 64;
 
 struct MTLD3D11EventQuery : public ID3D11Query {
   virtual void Issue(uint64_t current_seq_id) = 0;
-  virtual EventState CheckEventState(uint64_t coherent_seq_id) = 0;
+  /* MYIOSDECK spec 05 round 18: `count_poll` is false for item 80's second check, so that the
+     64-poll stall rule still counts GetData calls */
+  virtual EventState CheckEventState(uint64_t coherent_seq_id, bool count_poll = true) = 0;
+  /* item 82: the shared-event value that signals it (0 before its first End) */
+  virtual uint64_t SignalValue() const = 0;
+  /* item 80: the poll state and the chunk that holds its signal */
+  virtual QueryParkInfo &parkInfo() = 0;
 };
 
 template <typename DataType>
@@ -142,7 +152,7 @@ public:
     stall_counter = 0;
   }
 
-  EventState CheckEventState(uint64_t coherent_seq_id) override {
+  EventState CheckEventState(uint64_t coherent_seq_id, bool count_poll) override {
     if (state == QueryState::Undefined)
       return EventState::Invalid;
     if (should_be_signaled_at <= coherent_seq_id) {
@@ -151,6 +161,8 @@ public:
       return EventState::Signaled;
     }
     if (stall_counter != ~0u) {
+      if (!count_poll)
+        return EventState::Pending; // MYIOSDECK spec 05 round 18
       if (stall_counter < kEventStallThreshold) {
         stall_counter++;
         return EventState::Pending;
@@ -160,10 +172,15 @@ public:
     return EventState::Stall;
   };
 
+  uint64_t SignalValue() const override { return should_be_signaled_at; }
+
+  QueryParkInfo &parkInfo() override { return park_; }
+
 private:
   QueryState state = QueryState::Undefined;
   uint32_t stall_counter = 0;
   uint64_t should_be_signaled_at = 0;
+  QueryParkInfo park_; // MYIOSDECK spec 05 round 18 (item 80)
 };
 
 HRESULT CreateOcculusionQuery(MTLD3D11Device *pDevice,

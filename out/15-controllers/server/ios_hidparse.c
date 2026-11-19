@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 15 Part B6: compiles upstream Wine 11.4's dlls/hidparse.sys/main.c UNCHANGED into the

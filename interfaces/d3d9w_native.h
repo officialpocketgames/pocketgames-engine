@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // The seam between spec 33's native Direct3D 9 frontend (out/05-dxmt-ios/dxmt built with

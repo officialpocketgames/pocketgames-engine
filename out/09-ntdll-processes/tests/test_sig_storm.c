@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 11 Part E (Part B4): the signal-storm counter of ios_sig_pure.c. signal_arm64_ios.c's

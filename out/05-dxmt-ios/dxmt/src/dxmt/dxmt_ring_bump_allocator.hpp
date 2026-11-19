@@ -2,6 +2,7 @@
 // Changed for MYIOSDECK (spec 05 D6, D7; spec 06 A, B2, B3; spec 07 A2: LGPL-2.1-or-later blocks
 // from dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10:
 // an LGPL-2.1-or-later block from steamac's DXMT patch 0002, marked inline). Upstream: DXMT a3a6e8f, MIT.
+// Changed for MYIOSDECK (spec 33 B2: ring memory of the ios_wow_native build from the native heap).
 
 #include "Metal.hpp"
 #include "log/log.hpp"
@@ -186,7 +187,9 @@ public:
     buffer_info_ = block_options;
     // Spec 06 B2: in the i386 build the rings upstream lets Metal allocate use
     // DLL-allocated memory too; Metal's own has no 32-bit address.
-    placed_buffer_ = placed_buffer || kI386Build;
+    // MYIOSDECK spec 33 B2: not in the ios_wow_native build, whose rings the
+    // program never sees.
+    placed_buffer_ = placed_buffer || (kI386Build && !kIosWowNative);
   }
 
 #ifdef DXMT_IOS
@@ -194,7 +197,12 @@ public:
      iOS pages are 16 KB (util_placed_memory.hpp). */
   static void *
   allocatePlaced(size_t size) {
+#ifdef DXMT_IOS_WOW_NATIVE
+    /* MYIOSDECK spec 33 B2: memory only Metal and the frontend touch: the native heap */
+    return ios_wow_native::allocHost(PlacedMemoryLength(size), kPlacedMemoryAlignment);
+#else
     return wsi::aligned_malloc(PlacedMemoryLength(size), kPlacedMemoryAlignment);
+#endif
   }
 
   static void

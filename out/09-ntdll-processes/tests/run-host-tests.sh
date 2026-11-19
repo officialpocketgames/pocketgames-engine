@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # Specs 09 and 10 Part G, spec 11 Part E: builds and runs the host tests of the pure parts (any host with a C11

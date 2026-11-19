@@ -3,6 +3,7 @@
 // commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
 // Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
+// Changed for MYIOSDECK (spec 33): the ios_wow_native build; see out/05-dxmt-ios/CHANGES.md, section "spec 33".
 #include "d3d9_interface.hpp"
 
 #include "Metal.hpp"
@@ -1006,7 +1007,7 @@ CanonicalisePresentParams(D3DPRESENT_PARAMETERS &p, HWND hwndFallback, UINT adap
     p.AutoDepthStencilFormat = D3DFMT_D24S8;
 
   if (p.Windowed && (p.BackBufferWidth == 0 || p.BackBufferHeight == 0)) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(DXMT_IOS_WOW_NATIVE) /* MYIOSDECK spec 33 B4: GetClientRect is allowed */
     HWND deriveFrom = p.hDeviceWindow ? p.hDeviceWindow : hwndFallback;
     if (deriveFrom) {
       RECT rc{};

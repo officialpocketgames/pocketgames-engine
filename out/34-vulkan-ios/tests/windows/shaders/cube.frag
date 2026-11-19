@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 // spec 34 M6, vktest: three faces show the BC1 texture, three the BC7 one
 #version 450

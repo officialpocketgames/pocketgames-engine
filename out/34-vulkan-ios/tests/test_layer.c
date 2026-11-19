@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 34 Part M1: host tests of the iOS Vulkan layer (out/34-vulkan-ios/layer/). No GPU and no

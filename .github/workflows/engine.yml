@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # CI of the engine (the App Store rules): the reference sources, the host tests
@@ -188,6 +188,8 @@ jobs:
             prereq: ffmpeg
             prereq_script: out/14-media-audio-ios/build-ffmpeg.sh
           - part: 15-controllers         # with spec 17's additions
+          - part: 33-d3d9-native-wow64   # spec 33: the native Direct3D 9 frontend (out/05-dxmt-ios/dxmt,
+                                         # meson -Dios_wow_native=true), then the part's dispatch
           - part: 34-vulkan-ios          # spec 34: UTM's MoltenVK fork, patched, first (fetch-moltenvk.sh,
             prereq: moltenvk             # build-moltenvk.sh; ios-part.sh checks the cache's stamp),
             prereq_script: out/34-vulkan-ios/build-moltenvk.sh   # then the layer and winevulkan's unix side

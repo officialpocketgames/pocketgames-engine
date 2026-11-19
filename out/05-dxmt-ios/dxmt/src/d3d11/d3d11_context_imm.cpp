@@ -2,6 +2,8 @@
 // LGPL-2.1-or-later blocks from steamac's DXMT patch 0015, marked inline, see LICENSE-NOTES.md;
 // clarification 24: RecordingPresent; 57: SerializeBeforeCpuWrite). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 // Also changed for MYIOSDECK (spec 05 clarifications 63, 66, 67: call statistics, discards).
+// Also changed for MYIOSDECK (spec 05 round 18, items 80-83: a polled query parks; Flush's body
+// uncounted for the front end's own callers; the event value read at most once; query counts).
 #include "config/config.hpp"
 #include "d3d11_fence.hpp"
 #include "d3d11_private.h"
@@ -314,7 +316,7 @@ public:
           result = StagingMapResult(staging->gpuOccupiedUntil() - coherent_seq_id);
           if (MapFlags & D3D11_MAP_FLAG_DO_NOT_WAIT) {
             // so that a game spinning on DO_NOT_WAIT eventually sees it free
-            Flush();
+            FlushUncounted(); // MYIOSDECK spec 05 round 18 (item 81)
             return DXGI_ERROR_WAS_STILL_DRAWING;
           }
         }
@@ -343,7 +345,7 @@ public:
         // even it's in a while loop
         // only the first flush will have effect
         // and the following calls are essentially no-op
-        Flush();
+        FlushUncounted(); // MYIOSDECK spec 05 round 18 (item 81)
         TRACE("staging map block");
         auto& statistics = cmd_queue.CurrentFrameStatistics();
         auto t0 = clock::now();
@@ -430,7 +432,8 @@ public:
     case D3D11_QUERY_TIMESTAMP:
     case D3D11_QUERY_TIMESTAMP_DISJOINT:
     case D3D11_QUERY_EVENT: {
-      if (ctx_state.has_dirty_op_since_last_event) {
+      const bool new_signal = ctx_state.has_dirty_op_since_last_event;
+      if (new_signal) {
         auto event_id = cmd_queue.GetNextEventSeqId();
         static_cast<MTLD3D11EventQuery *>(pAsync)->Issue(event_id);
         InvalidateCurrentPass(true);
@@ -442,15 +445,22 @@ public:
       } else {
         static_cast<MTLD3D11EventQuery *>(pAsync)->Issue(cmd_queue.GetCurrentEventSeqId());
       }
+      // MYIOSDECK spec 05 round 18 (item 80): a park waits for the chunk of the signal, new (the
+      // chunk being recorded, which the signal went into) or reused
+      static_cast<MTLD3D11EventQuery *>(pAsync)->parkInfo().ended(
+          signal_chunk_.onEnd(new_signal, cmd_queue.CurrentSeqId())
+      );
       break;
     }
     case D3D11_QUERY_OCCLUSION:
     case D3D11_QUERY_OCCLUSION_PREDICATE: {
       auto query = static_cast<IMTLD3DOcclusionQuery *>(pAsync);
-      if (query->End())
+      if (query->End()) {
         EmitST([qeury_ = query->__query()](ArgumentEncodingContext &enc) mutable {
           enc.endVisibilityResultQuery(std::move(qeury_));
         });
+        query->parkInfo().ended(cmd_queue.CurrentSeqId()); // MYIOSDECK spec 05 round 18 (item 80)
+      }
       promote_flush = true;
       break;
     }
@@ -466,30 +476,26 @@ public:
     }
   }
 
+  /* One look at a query's result (upstream's GetData body, split out by MYIOSDECK spec 05 round
+     18 so that item 80 can look twice): S_OK with the data written, S_FALSE when not ready, or
+     the error. An event-type query reads the shared event only when the highest value read so
+     far is below its own (item 82). `count_poll` false: item 80's second look, which the
+     64-poll stall rule doesn't count; that rule may clear DONOTFLUSH in `flags`. */
   HRESULT
-  STDMETHODCALLTYPE
-  GetData(ID3D11Asynchronous *pAsync, void *pData, UINT DataSize, UINT GetDataFlags) override {
-    D11_CTX_CALL(GetData);
-    if (!pAsync || (DataSize && !pData))
-      return E_INVALIDARG;
-
-    // Allow dataSize to be zero
-    if (DataSize && DataSize != pAsync->GetDataSize())
-      return E_INVALIDARG;
-
+  CheckQueryResult(
+      ID3D11Asynchronous *pAsync, const D3D11_QUERY_DESC &desc, void *pData, UINT &flags, bool count_poll
+  ) {
     HRESULT hr = S_FALSE;
-
-    D3D11_QUERY_DESC desc;
-    ((ID3D11Query *)pAsync)->GetDesc(&desc);
     switch (desc.Query) {
     case D3D11_QUERY_EVENT:
     case D3D11_QUERY_TIMESTAMP:
     case D3D11_QUERY_TIMESTAMP_DISJOINT: {
-      switch (static_cast<MTLD3D11EventQuery *>(pAsync)->CheckEventState(cmd_queue.SignaledEventSeqId())) {
+      auto event = static_cast<MTLD3D11EventQuery *>(pAsync);
+      switch (event->CheckEventState(cmd_queue.SignaledEventSeqIdAtLeast(event->SignalValue()), count_poll)) {
       case EventState::Pending:
         break;
       case EventState::Stall:
-        GetDataFlags &= ~D3D11_ASYNC_GETDATA_DONOTFLUSH;
+        flags &= ~D3D11_ASYNC_GETDATA_DONOTFLUSH;
         break;
       case EventState::Signaled:
         hr = S_OK;
@@ -556,24 +562,92 @@ public:
       ERR("Unknown query type ", desc.Query);
       return E_FAIL;
     }
-    if (hr == S_FALSE && (GetDataFlags & D3D11_ASYNC_GETDATA_DONOTFLUSH) == 0) {
-      cmd_queue.CurrentFrameStatistics().event_stall++;
-      Flush();
-    }
     return hr;
+  }
+
+  /* MYIOSDECK spec 05 round 18 (item 80): what a polled query parks on; null for the types that
+     never wait */
+  static QueryParkInfo *
+  ParkInfoOf(ID3D11Asynchronous *pAsync, const D3D11_QUERY_DESC &desc) {
+    switch (desc.Query) {
+    case D3D11_QUERY_EVENT:
+    case D3D11_QUERY_TIMESTAMP:
+    case D3D11_QUERY_TIMESTAMP_DISJOINT:
+      return &static_cast<MTLD3D11EventQuery *>(pAsync)->parkInfo();
+    case D3D11_QUERY_OCCLUSION:
+    case D3D11_QUERY_OCCLUSION_PREDICATE:
+      return &static_cast<IMTLD3DOcclusionQuery *>(pAsync)->parkInfo();
+    default:
+      return nullptr;
+    }
+  }
+
+  HRESULT
+  STDMETHODCALLTYPE
+  GetData(ID3D11Asynchronous *pAsync, void *pData, UINT DataSize, UINT GetDataFlags) override {
+    D11_CTX_CALL(GetData);
+    if (!pAsync || (DataSize && !pData))
+      return E_INVALIDARG;
+
+    // Allow dataSize to be zero
+    if (DataSize && DataSize != pAsync->GetDataSize())
+      return E_INVALIDARG;
+
+    D3D11_QUERY_DESC desc;
+    ((ID3D11Query *)pAsync)->GetDesc(&desc);
+
+    /* MYIOSDECK spec 05 round 18 (items 80-83), the order of dxmt_query_poll.hpp's
+       QueryPollFlow: check; when not ready, the flush's body as before (item 81: not the public
+       Flush); with DXMT_D11_QUERY_PARK, park when the query's run says so and its chunk was
+       committed, until the chunk completes or 1 ms; then check once more. No lock is held here:
+       the checks take none and the flush's body holds the context's only while it runs. */
+    QueryParkInfo *park = ParkInfoOf(pAsync, desc);
+    QueryParkInfo no_park;
+    HRESULT hr = S_FALSE;
+    unsigned checks = 0;
+    const QueryPollResult r = QueryPollFlow(
+        park ? *park : no_park, park && CutSettingsOnce()[CutSwitch::QueryPark],
+        [&] {
+          hr = CheckQueryResult(pAsync, desc, pData, GetDataFlags, checks++ == 0);
+          return hr != S_FALSE;
+        },
+        [&] { return (GetDataFlags & D3D11_ASYNC_GETDATA_DONOTFLUSH) != 0; },
+        [&] {
+          cmd_queue.CurrentFrameStatistics().event_stall++;
+          return FlushUncounted();
+        },
+        [] { return QueryNowNs(); }, [&](uint64_t seq) { return seq < cmd_queue.CurrentSeqId(); },
+        [&](uint64_t seq, uint64_t timeout_ns) { cmd_queue.ParkUntilChunk(seq, timeout_ns); }
+    );
+    if (hr == S_FALSE)
+      D11_WORK(work_.query_not_ready++); // item 83
+    if (r.flushed)
+      D11_WORK(work_.query_flushes++);
+    if (r.parked)
+      D11_WORK(work_.query_parked++; work_.query_parked_ns += r.parked_ns);
+    return hr;
+  }
+
+  /* MYIOSDECK spec 05 round 18 (item 81): Flush's body, uncounted, for the front end's own
+     callers (GetData, Map, Signal, Wait), so that item 63 counts what the application called.
+     True when it had something to commit (and committed it). */
+  bool
+  FlushUncounted() {
+    std::lock_guard<d3d11_device_mutex> lock(mutex);
+
+    if (!ctx_state.has_dirty_op_since_last_event && !promote_flush) {
+      return false;
+    }
+    promote_flush = true;
+    InvalidateCurrentPass();
+    return true;
   }
 
   void
   STDMETHODCALLTYPE
   Flush() override {
     D11_CTX_CALL(Flush);
-    std::lock_guard<d3d11_device_mutex> lock(mutex);
-
-    if (!ctx_state.has_dirty_op_since_last_event && !promote_flush) {
-      return;
-    }
-    promote_flush = true;
-    InvalidateCurrentPass();
+    FlushUncounted();
   }
 
   void PrepareFlush() override {
@@ -599,6 +673,7 @@ public:
     for (const auto &[query, index] : cmdlist->issued_visibility_query) {
       query_list[index] = new VisibilityResultQuery();
       query->DoDeferredQuery(query_list[index]);
+      query->parkInfo().ended(seq_id); // MYIOSDECK spec 05 round 18 (item 80): ends in this chunk
     }
 
     for (const auto &query : cmdlist->issued_event_query) {
@@ -681,7 +756,7 @@ public:
     EmitOP([event = fence->event, Value](ArgumentEncodingContext &enc) mutable {
       enc.signalEvent(std::move(event), Value);
     });
-    Flush();
+    FlushUncounted(); // MYIOSDECK spec 05 round 18 (item 81)
 
     return S_OK;
   }
@@ -690,7 +765,7 @@ public:
     D11_CTX_CALL(Wait);
     auto fence = static_cast<MTLD3D11Fence *>(pFence);
 
-    Flush();
+    FlushUncounted(); // MYIOSDECK spec 05 round 18 (item 81)
     EmitOP([event = fence->event, Value](ArgumentEncodingContext &enc) mutable {
       enc.waitEvent(std::move(event), Value);
     });
@@ -715,6 +790,9 @@ private:
 #ifdef DXMT_IOS
   uint64_t staging_rename_budget_ = 256ull << 20;
 #endif
+  /* MYIOSDECK spec 05 round 18 (item 80): the chunk the last event signal was recorded in, which
+     an event query that reuses that signal waits for (0: no signal yet) */
+  EventSignalChunk signal_chunk_;
   // MYIOSDECK (dynamic-buffer discard): d3d11.dynamicCommitMB (default 32) and
   // d3d11.dynamicInflightMB (default 96); 0 turns either off.
   DynamicDiscardTracker discard_tracker_{

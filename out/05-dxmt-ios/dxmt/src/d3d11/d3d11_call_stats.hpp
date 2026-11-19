@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 05 clarification 63: Direct3D 11 call statistics, switch DXMT_D11_CALL_STATS (unset,
@@ -101,6 +101,41 @@ private:
   uint64_t start_ = 0;
 };
 
+/* A device call (round 18, item 83): counted on entry, and the running call on this thread
+   until its scope ends, so that the children's IUnknown calls it makes count as inside calls.
+   Not timed. */
+class DeviceCall {
+public:
+  explicit DeviceCall(unsigned id) {
+    if (unlikely(g_level)) {
+      NoteCall(id);
+      active_ = true;
+      previous_ = t_current_call;
+      t_current_call = id;
+    }
+  }
+  ~DeviceCall() {
+    if (unlikely(active_))
+      t_current_call = previous_;
+  }
+  DeviceCall(const DeviceCall &) = delete;
+  DeviceCall &operator=(const DeviceCall &) = delete;
+
+private:
+  bool active_ = false;
+  unsigned previous_ = kD11CallCount;
+};
+
+/* A child's QueryInterface, AddRef or Release (`method`, one of D11O_Child_*): counted, and
+   counted as an inside call too when a context or device call is running on this thread (the
+   front end's own reference counting and casting; item 83). */
+inline void
+NoteChildCall(D11OtherMethod method) {
+  NoteCall(kD11IdOther + method);
+  if (t_current_call != kD11CallCount)
+    Work().child_inside[D11ChildIndex(method)]++;
+}
+
 /* A state call found the value already set: counted against the running context method. */
 inline void
 NoteRepeated() {
@@ -127,16 +162,15 @@ NoteRepeated() {
 #define D11_CTX_CALL(method)                                                                                           \
   ::dxmt::d11cs::ContextCall d11cs_call_(this->kD11csBase + ::dxmt::d11cs::D11X_##method)
 
+/* In a device method: a scope (round 18, item 83), so a statement of its own at the method's
+   start */
 #define D11_DEVICE_CALL(method)                                                                                        \
-  do {                                                                                                                 \
-    if (unlikely(::dxmt::d11cs::g_level))                                                                              \
-      ::dxmt::d11cs::NoteCall(::dxmt::d11cs::kD11IdDevice + ::dxmt::d11cs::D11D_##method);                             \
-  } while (0)
+  ::dxmt::d11cs::DeviceCall d11cs_call_(::dxmt::d11cs::kD11IdDevice + ::dxmt::d11cs::D11D_##method)
 
 #define D11_CHILD_CALL(method)                                                                                         \
   do {                                                                                                                 \
     if (unlikely(::dxmt::d11cs::g_level))                                                                              \
-      ::dxmt::d11cs::NoteCall(::dxmt::d11cs::kD11IdOther + ::dxmt::d11cs::D11O_Child_##method);                        \
+      ::dxmt::d11cs::NoteChildCall(::dxmt::d11cs::D11O_Child_##method);                                                \
   } while (0)
 
 #define D11_PRESENT_CALL(method)                                                                                       \

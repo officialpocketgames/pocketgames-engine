@@ -1,4 +1,5 @@
 // Changed for MYIOSDECK (spec 06 B1; multi-slice allocations for dynamic-buffer discards). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 33 B2: no placed buffers in the ios_wow_native build).
 #include "dxmt_buffer.hpp"
 #include "dxmt_format.hpp"
 #include "thread.hpp"
@@ -162,7 +163,9 @@ Buffer::allocate(Flags<BufferAllocationFlag> flags, uint32_t min_slices) {
   // Spec 06 B1: in the i386 build every CPU-visible allocation brings its own
   // memory (from the DLL, so inside the program's window); memory Metal
   // allocates has no 32-bit address.
-  if (kI386Build && !flags.test(BufferAllocationFlag::CpuInvisible)) {
+  // (MYIOSDECK spec 33 B2: not in the ios_wow_native build. The program never sees
+  // these allocations there: d3d9 hands it its mirrors, which come from Part C.)
+  if (kI386Build && !kIosWowNative && !flags.test(BufferAllocationFlag::CpuInvisible)) {
     flags.set(BufferAllocationFlag::CpuPlaced);
   }
   WMTBufferInfo info;

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 
 /* Host tests: spec 18 Part F1-F5 (ARM64EC frame checks, code bitmap limit) and G3 (stall guard). */

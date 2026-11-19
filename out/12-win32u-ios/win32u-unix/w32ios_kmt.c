@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 12 Part D: a D3DKMT adapter (opt-in). With PG_KMT_ADAPTER=1 (or on/true/yes) the GPU

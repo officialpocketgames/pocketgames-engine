@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # Spec 19 Part B4 item 1: the arm64ec-windows farm (64-bit programs: ARM64EC code the x64

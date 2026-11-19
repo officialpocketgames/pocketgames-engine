@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // The contract between a native library that serves 32-bit (i386, WoW64) programs and the
@@ -15,7 +15,7 @@
 // preserved; ecx, edx and the flags are not; the direction flag is clear on entry and exit.
 //
 // Section A: what the app's CPU PROVIDES (the library calls these). All are weak on the
-//            library's side: a CPU without a gate (FXI32) provides none of them, and the
+//            library's side: a CPU without a gate provides none of them, and the
 //            library then reports "no gate" and its i386 DLL falls back (spec 33 H).
 // Section B: what the library provides (one function per library, registered at run time).
 
@@ -42,7 +42,7 @@ enum ios_wow_native_kind
 {
     IOS_WOW_NATIVE_RET_EAX = 0,   /* eax = ret.eax */
     IOS_WOW_NATIVE_RET_ST0 = 1,   /* a float pushed on the x87 stack as st(0); eax undefined.
-                                     The app's gate (FXN32, FXW) does not support it: it logs once
+                                     The app's gate does not support it: it logs once
                                      and gives eax (spec 33 clarification 3). */
 };
 

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 35 J4, C3.4 and D3.2: the strings a program reads, and wglCreateContextAttribsARB: 2.1

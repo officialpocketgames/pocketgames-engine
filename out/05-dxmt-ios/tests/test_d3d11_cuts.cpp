@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 05 round 17's cuts, the parts that are pure CPU:
@@ -231,13 +231,15 @@ TestSwitches() {
   CHECK(defaults[CutSwitch::StateFilter] && defaults[CutSwitch::DiscardBound] && defaults[CutSwitch::DeferredRing]);
   CHECK(!defaults[CutSwitch::MergeCompute] && !defaults[CutSwitch::KeepDsv] && !defaults[CutSwitch::RoStore]);
   CHECK(!defaults[CutSwitch::Discard] && !defaults[CutSwitch::OverwriteLoad]);
+  CHECK(defaults[CutSwitch::QueryPark]); // round 18, item 80: on unless set to 0
   CHECK(CutSettingsLine(defaults) == "dxmt: d3d11 cuts: state-filter on, discard-bound on, deferred-ring on, "
-                                     "merge-compute off, keep-dsv off, ro-store off, discard off, overwrite-load off");
+                                     "merge-compute off, keep-dsv off, ro-store off, discard off, overwrite-load off, "
+                                     "query-park on");
 
   // 0 off, 1 on, empty the default, anything else the default with a warning
   auto set = SettingsFrom(
       {{"DXMT_D11_STATE_FILTER", "0"}, {"DXMT_PASS_KEEP_DSV", "1"}, {"DXMT_PASS_RO_STORE", ""},
-       {"DXMT_D11_DISCARD_BOUND", "yes"}, {"DXMT_PASS_DISCARD", "2"}},
+       {"DXMT_D11_DISCARD_BOUND", "yes"}, {"DXMT_PASS_DISCARD", "2"}, {"DXMT_D11_QUERY_PARK", "0"}},
       0
   );
   CHECK(!set[CutSwitch::StateFilter] && !set.ignored[unsigned(CutSwitch::StateFilter)]);
@@ -245,8 +247,10 @@ TestSwitches() {
   CHECK(!set[CutSwitch::RoStore] && !set.ignored[unsigned(CutSwitch::RoStore)]);
   CHECK(set[CutSwitch::DiscardBound] && set.ignored[unsigned(CutSwitch::DiscardBound)]);
   CHECK(!set[CutSwitch::Discard] && set.ignored[unsigned(CutSwitch::Discard)]);
+  CHECK(!set[CutSwitch::QueryPark] && !set.ignored[unsigned(CutSwitch::QueryPark)]);
   CHECK(CutSettingsLine(set) == "dxmt: d3d11 cuts: state-filter off, discard-bound on, deferred-ring on, "
-                                "merge-compute off, keep-dsv on, ro-store off, discard off, overwrite-load off");
+                                "merge-compute off, keep-dsv on, ro-store off, discard off, overwrite-load off, "
+                                "query-park off");
 
   // PG_DXMT_SERIALIZE >= 1 turns 68-72 off whatever they say; 65-67 stay
   std::map<std::string, std::string> all_on;
@@ -254,12 +258,14 @@ TestSwitches() {
     all_on[info.variable] = "1";
   auto serialized = SettingsFrom(all_on, 1);
   CHECK(serialized[CutSwitch::StateFilter] && serialized[CutSwitch::DiscardBound] && serialized[CutSwitch::DeferredRing]);
+  CHECK(serialized[CutSwitch::QueryPark]); // timing only: PG_DXMT_SERIALIZE leaves it
   for (CutSwitch c : {CutSwitch::MergeCompute, CutSwitch::KeepDsv, CutSwitch::RoStore, CutSwitch::Discard,
                       CutSwitch::OverwriteLoad})
     CHECK(!serialized[c] && serialized.serialized[unsigned(c)]);
   CHECK(CutSettingsLine(serialized) ==
         "dxmt: d3d11 cuts: state-filter on, discard-bound on, deferred-ring on, merge-compute off (serialize), "
-        "keep-dsv off (serialize), ro-store off (serialize), discard off (serialize), overwrite-load off (serialize)");
+        "keep-dsv off (serialize), ro-store off (serialize), discard off (serialize), overwrite-load off (serialize), "
+        "query-park on");
   CHECK(SettingsFrom(all_on, 0)[CutSwitch::OverwriteLoad]);
 }
 

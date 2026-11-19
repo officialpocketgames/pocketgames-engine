@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 12 Part A4: what upstream freetype.c gets for dlopen/dlsym/dlclose (see freetype.c).

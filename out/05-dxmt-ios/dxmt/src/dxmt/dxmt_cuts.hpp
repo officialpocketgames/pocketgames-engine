@@ -1,8 +1,9 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
-// Spec 05 clarification 73: the switches of round 17's cuts (items 65-72). Each is read once.
-// Unset or empty is its default, "0" off, "1" on; anything else is the default, with one
+// Spec 05 clarification 73: the switches of round 17's cuts (items 65-72), and round 18's query
+// park (item 80, DXMT_D11_QUERY_PARK, default on). Each is read once. Unset or empty is its
+// default, "0" off, "1" on; anything else is the default, with one
 // warning naming the variable. PG_DXMT_SERIALIZE at level 1 or above turns items 68-72 off
 // whatever their variables say. Pure: the host test drives it with its own values; the
 // encoding context reads the process's once (CutSettingsOnce, dxmt_context.cpp).
@@ -23,6 +24,7 @@ enum class CutSwitch : uint8_t {
   RoStore,       // 70
   Discard,       // 71
   OverwriteLoad, // 72
+  QueryPark,     // round 18, item 80
   Count
 };
 
@@ -42,6 +44,7 @@ inline constexpr CutSwitchInfo kCutSwitches[unsigned(CutSwitch::Count)] = {
     {"DXMT_PASS_RO_STORE", "ro-store", false, true},
     {"DXMT_PASS_DISCARD", "discard", false, true},
     {"DXMT_PASS_OVERWRITE_LOAD", "overwrite-load", false, true},
+    {"DXMT_D11_QUERY_PARK", "query-park", true, false},
 };
 
 struct CutSettings {
@@ -82,8 +85,8 @@ CutSettingsFrom(ValueOf &&value_of, unsigned serialize_level) {
 }
 
 /* "dxmt: d3d11 cuts: state-filter on, discard-bound on, deferred-ring on, merge-compute off,
-   keep-dsv off, ro-store off, discard off, overwrite-load off" ("off (serialize)" for a switch
-   PG_DXMT_SERIALIZE turned off) */
+   keep-dsv off, ro-store off, discard off, overwrite-load off, query-park on" ("off
+   (serialize)" for a switch PG_DXMT_SERIALIZE turned off) */
 inline std::string
 CutSettingsLine(const CutSettings &settings) {
   std::string line = "dxmt: d3d11 cuts:";

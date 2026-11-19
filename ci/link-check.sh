@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # CI (macOS): link every iOS static library of ci/ios-part.sh into one arm64 iOS executable with
@@ -50,7 +50,10 @@ note ""
 # ---------------------------------------------------------------- the archives
 # spec 35: ANGLE's and gl4es's archives are force-loaded too, so the duplicate-symbol check covers
 # all of their code (spec 35 C1.3)
-parts="05-dxmt-ios 08-wineserver-ios 09-ntdll-processes 12-win32u-ios 13-net-crypto-ios 14-media-audio-ios 15-controllers 34-vulkan-ios 35-opengl-ios"
+# spec 33 clarification 12: part 33's two archives, the native Direct3D 9 frontend
+# (libd3d9_ios_wow_native.a) and the dispatch; the frontend's weak d3d9w_object_gone is the
+# dispatch's, the gate functions of interfaces/ios_wow_native.h are app_stubs.c's
+parts="05-dxmt-ios 08-wineserver-ios 09-ntdll-processes 12-win32u-ios 13-net-crypto-ios 14-media-audio-ios 15-controllers 33-d3d9-native-wow64 34-vulkan-ios 35-opengl-ios"
 third_party_re='^lib(bearssl|tomcrypt_unix|avformat|avcodec|swresample|avutil|moltenvk)\.a$'
 ours=""
 missing=""

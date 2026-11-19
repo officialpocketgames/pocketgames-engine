@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // The pattern ANGLE's Direct3D 11 back end writes for GLSL ES 3.00 array and shadow-array

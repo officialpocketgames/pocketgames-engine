@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# Spec 33 Part B: the sources of the ios_wow_native build, relative to src/. meson.build in this
+# folder and tests/ios-wow-native/compile-native-linux.sh both read this list.
+# Kept apart, because they are compiled differently:
+#   util/util_ios_wow_native_user.c   (C, against Wine 11.4's include/)
+#   out/33-d3d9-native-wow64/alloc/ios_wow_window_alloc.c   (C, Part C's allocator)
+
+# The Direct3D 9 frontend (spec 07)
+d3d9/d3d9.cpp
+d3d9/d3d9_buffer.cpp
+d3d9/d3d9_call_stats.cpp
+d3d9/d3d9_clear_quad.cpp
+d3d9/d3d9_cube_texture.cpp
+d3d9/d3d9_device.cpp
+d3d9/d3d9_format.cpp
+d3d9/d3d9_fvf.cpp
+d3d9/d3d9_interface.cpp
+d3d9/d3d9_ios.cpp
+d3d9/d3d9_mem.cpp
+d3d9/d3d9_native_seam.cpp
+d3d9/d3d9_query.cpp
+d3d9/d3d9_shader.cpp
+d3d9/d3d9_shader_scan.cpp
+d3d9/d3d9_state_block.cpp
+d3d9/d3d9_state_defaults.cpp
+d3d9/d3d9_surface.cpp
+d3d9/d3d9_swapchain.cpp
+d3d9/d3d9_texture.cpp
+d3d9/d3d9_validation.cpp
+d3d9/d3d9_vertex_declaration.cpp
+d3d9/d3d9_volume.cpp
+d3d9/d3d9_volume_texture.cpp
+
+# The dxmt core
+dxmt/dxmt_format.cpp
+dxmt/dxmt_names.cpp
+dxmt/dxmt_command_queue.cpp
+dxmt/dxmt_command.cpp
+dxmt/dxmt_capture.cpp
+dxmt/dxmt_info.cpp
+dxmt/dxmt_device.cpp
+dxmt/dxmt_buffer.cpp
+dxmt/dxmt_texture.cpp
+dxmt/dxmt_context.cpp
+dxmt/dxmt_dynamic.cpp
+dxmt/dxmt_staging.cpp
+dxmt/dxmt_hud_state.cpp
+dxmt/dxmt_allocation.cpp
+dxmt/dxmt_presenter.cpp
+dxmt/dxmt_sampler.cpp
+dxmt/dxmt_resource_initializer.cpp
+dxmt/dxmt_shader_cache.cpp
+dxmt/dxmt_bc_decode.cpp
+dxmt/dxmt_bc_emulation.cpp
+
+# util, with the iOS window system (spec 05 E1) and this build's platform layer
+util/util_atomic_wait.cpp
+util/util_env.cpp
+util/util_string.cpp
+util/util_bloom.cpp
+util/thread.cpp
+util/com/com_guid.cpp
+util/com/com_private_data.cpp
+util/config/config.cpp
+util/log/log.cpp
+util/sha1/sha1.c
+util/sha1/sha1_util.cpp
+util/wsi_monitor_ios.cpp
+util/wsi_window_ios.cpp
+util/util_ios_wow_native.cpp
+
+# winemetal's thunks, calling the unix side's 64-bit table directly (B2)
+winemetal/winemetal_thunks.c

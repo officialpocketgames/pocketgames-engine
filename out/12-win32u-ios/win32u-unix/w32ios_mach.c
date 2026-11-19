@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // See w32ios_mach.h. Apple SDK: mmap(2), getpagesize(3), vm_remap (mach/vm_map.h).

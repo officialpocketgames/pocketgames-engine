@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright (c) 2026 the MYIOSDECK author
+option('wine_build_path', type : 'string', value : '', description : 'a Wine i386 build (winecrt0, ntdll, winebuild)')
+option('wine_builtin_dll', type : 'boolean', value : false, description : 'mark d3d9.dll as a Wine builtin (winebuild --builtin)')

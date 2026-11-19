@@ -1,3 +1,5 @@
+// Changed for MYIOSDECK (spec 05 round 18: the occlusion query's park info). Upstream: DXMT
+// a3a6e8f, MIT (see LICENSE).
 #include "d3d11_query.hpp"
 #include "dxmt_occlusion_query.hpp"
 
@@ -73,6 +75,13 @@ class OcculusionQuery : public MTLD3DQueryBase<IMTLD3DOcclusionQuery> {
 
   virtual Rc<VisibilityResultQuery> __query() override {
     return query;
+  }
+
+  /* MYIOSDECK spec 05 round 18 (item 80) */
+  QueryParkInfo park_;
+
+  virtual QueryParkInfo &parkInfo() override {
+    return park_;
   }
 };
 

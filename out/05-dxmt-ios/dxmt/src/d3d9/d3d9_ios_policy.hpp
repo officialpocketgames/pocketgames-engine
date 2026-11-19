@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 07 Part C: the decision rules of the Direct3D 9 frontend's iOS
@@ -16,6 +16,8 @@
 #include <cstdint>
 #include <utility>
 #include <vector>
+
+#include "../dxmt/dxmt_query_poll.hpp"
 
 namespace dxmt::d9ios {
 
@@ -201,55 +203,16 @@ ReadbackBatchEnd(const uint64_t *sizes, size_t count, size_t begin) {
   return end;
 }
 
-/* ---- C7: query polling ---------------------------------------------------- */
+/* ---- C7: query polling ----------------------------------------------------
+   The rule itself lives in dxmt/dxmt_query_poll.hpp since spec 05 round 18
+   (item 80), so the Direct3D 11 frontend runs the same one. */
 
-constexpr uint64_t kQueryPollRunGapNs = 250000; // 250 us
-constexpr uint64_t kQueryParkNs = 100000;       // 100 us
-/* Spec 07 clarification 2: the first two not-ready polls of a run return at
-   once; the third and later ones park. */
-constexpr uint32_t kQueryPollsBeforePark = 2;
-
-/* Per-query polling state, reset by Issue(END). */
-struct QueryPollState {
-  uint64_t last_not_ready_ns = 0; // when the previous poll found the result not ready
-  uint32_t run = 0;               // not-ready polls in the current run (adaptive)
-  uint32_t polls_since_issue = 0; // every not-ready poll since Issue (non-adaptive)
-  bool flushed_since_issue = false;
-
-  void
-  onIssueEnd() {
-    *this = QueryPollState{};
-  }
-};
-
-/* A poll of an EVENT or OCCLUSION query found the result not ready at `now_ns`
-   (only such polls call this; a ready poll never reads the clock): park the
-   caller before answering? Adaptive: the gap to the previous not-ready poll is
-   measured start to start (so that poll's park counts in it); a gap of at most
-   kQueryPollRunGapNs continues the run, a longer one starts a new run at 1.
-   Not adaptive: the count is every not-ready poll since Issue. Either way,
-   park once the count is more than kQueryPollsBeforePark. */
-inline bool
-QueryPollShouldPark(QueryPollState &state, uint64_t now_ns, bool adaptive) {
-  state.polls_since_issue++;
-  if (!adaptive)
-    return state.polls_since_issue > kQueryPollsBeforePark;
-  const bool continues =
-      state.run != 0 && now_ns >= state.last_not_ready_ns && now_ns - state.last_not_ready_ns <= kQueryPollRunGapNs;
-  state.run = continues ? state.run + 1 : 1;
-  state.last_not_ready_ns = now_ns;
-  return state.run > kQueryPollsBeforePark;
-}
-
-/* The forward-progress submit a poll asks for happens once per Issue(END):
-   true the first time after each Issue(END). */
-inline bool
-QueryTakeFlush(QueryPollState &state) {
-  if (state.flushed_since_issue)
-    return false;
-  state.flushed_since_issue = true;
-  return true;
-}
+using dxmt::kQueryParkNs;
+using dxmt::kQueryPollRunGapNs;
+using dxmt::kQueryPollsBeforePark;
+using dxmt::QueryPollShouldPark;
+using dxmt::QueryPollState;
+using dxmt::QueryTakeFlush;
 
 /* ---- C9: adapter modes ---------------------------------------------------- */
 

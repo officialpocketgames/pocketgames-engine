@@ -1,3 +1,4 @@
+// Changed for MYIOSDECK (spec 33 clarification 9: no Metal capture in the ios_wow_native build). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "dxmt_capture.hpp"
 #include "log/log.hpp"
 #include "util_env.hpp"
@@ -9,6 +10,9 @@
 namespace dxmt {
 
 CaptureState::CaptureState() {
+#ifdef DXMT_IOS_WOW_NATIVE
+  return; // MYIOSDECK spec 33 clarification 9: Metal capture needs wine_get_unix_file_name
+#endif
   if (env::getEnvVar("MTL_CAPTURE_ENABLED") != "1")
     return;
   if (env::getExeBaseName() != env::getEnvVar("DXMT_CAPTURE_EXECUTABLE"))

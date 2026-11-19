@@ -1,4 +1,5 @@
-/* Changed for MYIOSDECK (spec 05 H3, clarification 12). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
+/* Changed for MYIOSDECK (spec 05 H3, clarification 12; item 89: what a program is handed is
+   counted for its end). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 #import <Foundation/Foundation.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -9,6 +10,16 @@
 #include "cache_log.h"
 #define WINEMETAL_API
 #include "../winemetal_thunks.h"
+
+/* MYIOSDECK spec 05 item 89: the readers, writers and data handed to a program are counted
+   for its end (ios_support.m) */
+#if defined(DXMT_IOS)
+#include <stdint.h>
+void dxmt_ios_proc_created(uint64_t object);
+#define DXMT_PROC_CREATED(handle) dxmt_ios_proc_created((uint64_t)(handle))
+#else
+#define DXMT_PROC_CREATED(handle) ((void)0)
+#endif
 
 @interface CacheReader : NSObject
 - (instancetype)initWithPath:(NSString *)path version:(uint64_t)version;
@@ -338,6 +349,7 @@ _CacheReader_alloc_init(void *obj) {
     params->ret_cache = (obj_handle_t)[[CacheReader alloc] initWithPath:path version:params->version];
     [path release];
   }
+  DXMT_PROC_CREATED(params->ret_cache); /* spec 05 item 89 */
   return 0;
 }
 
@@ -349,6 +361,7 @@ _CacheReader_get(void *obj) {
   CacheReader *reader = (CacheReader *)params->cache;
   params->ret_data = (obj_handle_t)[reader get:key];
   [key release];
+  DXMT_PROC_CREATED(params->ret_data); /* spec 05 item 89 */
   return 0;
 }
 
@@ -360,6 +373,7 @@ _CacheWriter_alloc_init(void *obj) {
     params->ret_cache = (obj_handle_t)[[CacheWriter alloc] initWithPath:path version:params->version];
     [path release];
   }
+  DXMT_PROC_CREATED(params->ret_cache); /* spec 05 item 89 */
   return 0;
 }
 

@@ -9,7 +9,9 @@
  * 0008, marked inline, and the residency-set calls 0023 needs (MYIOSDECK's own). Spec 05
  * clarification 13: the 32-bit common argument's flags. Spec 05 clarification 20: the compute
  * pipeline's maxTotalThreadsPerThreadgroup (23: its guard). Spec 05 clarification 25: the
- * compute memory barrier record. Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+ * compute memory barrier record. Spec 05 item 89: what a program is handed is counted per
+ * pseudo-process and released at its end (ios_support.m). Upstream: DXMT a3a6e8f, MIT (see
+ * LICENSE).
  */
 #include <stdatomic.h>
 #include <dlfcn.h>
@@ -61,15 +63,33 @@ execute_on_main(dispatch_block_t block) {
   }
 }
 
+/* MYIOSDECK spec 05 item 89: a calling program's references are counted per pseudo-process
+   (ios_support.m, winemetal_proc_objects.h), so that what it still holds when it ends can be
+   released. DXMT_PROC_CREATED records the +1 a creating call hands the Windows half (the calls
+   Metal.hpp wraps as owned references); a null handle is not recorded. */
+#if defined(DXMT_IOS)
+#define DXMT_PROC_CREATED(handle) dxmt_ios_proc_created((uint64_t)(handle))
+#else
+#define DXMT_PROC_CREATED(handle) ((void)0)
+#endif
+
 static NTSTATUS
 _NSObject_retain(NSObject **obj) {
+#if defined(DXMT_IOS)
+  dxmt_ios_proc_retain((uint64_t)*obj); /* spec 05 item 89: counts, then retains */
+#else
   [*obj retain];
+#endif
   return STATUS_SUCCESS;
 }
 
 static NTSTATUS
 _NSObject_release(NSObject **obj) {
+#if defined(DXMT_IOS)
+  dxmt_ios_proc_release((uint64_t)*obj); /* spec 05 item 89: counts, then releases */
+#else
   [*obj release];
+#endif
   return STATUS_SUCCESS;
 }
 
@@ -97,6 +117,7 @@ _MTLCopyAllDevices(void *obj) {
 #else
   params->ret = (obj_handle_t)MTLCopyAllDevices();
 #endif
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -139,6 +160,7 @@ static NTSTATUS
 _MTLDevice_newCommandQueue(void *obj) {
   struct unixcall_generic_obj_uint64_obj_ret *params = obj;
   params->ret = (obj_handle_t)[(id<MTLDevice>)params->handle newCommandQueueWithMaxCommandBufferCount:params->arg];
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -185,6 +207,7 @@ static NTSTATUS
 _MTLDevice_newSharedEvent(void *obj) {
   struct unixcall_generic_obj_obj_ret *params = obj;
   params->ret = (obj_handle_t)[(id<MTLDevice>)params->handle newSharedEvent];
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -225,6 +248,7 @@ _MTLDevice_newBuffer(void *obj) {
   }
   params->ret = (obj_handle_t)buffer;
   info->gpu_address = [buffer gpuAddress];
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -254,6 +278,7 @@ _MTLDevice_newSamplerState(void *obj) {
   info->gpu_resource_id = info->support_argument_buffers ? [sampler gpuResourceID]._impl : 0;
   params->ret = (obj_handle_t)sampler;
   [sampler_desc release];
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -287,6 +312,7 @@ _MTLDevice_newDepthStencilState(void *obj) {
 
   params->ret = (obj_handle_t)[device newDepthStencilStateWithDescriptor:desc];
   [desc release];
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -348,6 +374,7 @@ _MTLDevice_newTexture(void *obj) {
   info->mach_port = 0;
 
   [desc release];
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -371,6 +398,7 @@ _MTLBuffer_newTexture(void *obj) {
   info->mach_port = 0;
 
   [desc release];
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -416,6 +444,7 @@ _MTLTexture_newTextureView(void *obj) {
                             swizzle:to_metal_swizzle(params->swizzle, params->format)];
   params->ret = (obj_handle_t)ret;
   params->gpu_resource_id = [ret gpuResourceID]._impl;
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -433,6 +462,8 @@ _MTLDevice_newLibrary(void *obj) {
   NSError *err = NULL;
   params->ret_library = (obj_handle_t)[device newLibraryWithData:(dispatch_data_t)params->data error:&err];
   params->ret_error = (obj_handle_t)[err retain]; /* steamac's DXMT patch 0008 (LGPL, osy): out-errors are autoreleased; the win side owns the handle (WMT::Reference) */
+  DXMT_PROC_CREATED(params->ret_library); /* spec 05 item 89 */
+  DXMT_PROC_CREATED(params->ret_error); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -443,6 +474,7 @@ _MTLLibrary_newFunction(void *obj) {
   NSString *name = [[NSString alloc] initWithCString:(char *)params->arg encoding:NSUTF8StringEncoding];
   params->ret = (obj_handle_t)[library newFunctionWithName:name];
   [name release];
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -503,6 +535,8 @@ _MTLDevice_newComputePipelineState(void *obj) {
                                                                                                       error:&err];
   }
   [descriptor release];
+  DXMT_PROC_CREATED(params->ret_pso); /* spec 05 item 89 */
+  DXMT_PROC_CREATED(params->ret_error); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -689,6 +723,8 @@ _MTLDevice_newRenderPipelineState(void *obj) {
                                                                                                      error:&err];
   }
   [descriptor release];
+  DXMT_PROC_CREATED(params->ret_pso); /* spec 05 item 89 */
+  DXMT_PROC_CREATED(params->ret_error); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -771,6 +807,8 @@ _MTLDevice_newMeshRenderPipelineState(void *obj) {
   }
 #endif
   [descriptor release];
+  DXMT_PROC_CREATED(params->ret_pso); /* spec 05 item 89 */
+  DXMT_PROC_CREATED(params->ret_error); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -1579,6 +1617,7 @@ _MTLDevice_newTemporalScaler(void *obj) {
   }
 
   [desc release];
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -1595,6 +1634,7 @@ _MTLDevice_newSpatialScaler(void *obj) {
   desc.outputHeight = info->output_height;
   params->ret = (obj_handle_t)[desc newSpatialScalerWithDevice:(id<MTLDevice>)params->device];
   [desc release];
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -1648,6 +1688,7 @@ _NSString_alloc_init(void *obj) {
   struct unixcall_nsstring_string *params = obj;
   NSString *str = [[NSString alloc] initWithCString:params->buffer_ptr.ptr encoding:(NSStringEncoding)params->encoding];
   params->ret = (obj_handle_t)str;
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -1825,27 +1866,50 @@ _CreateMetalViewFromHWND(void *obj) {
     pfn_release_win_data(win_data);
   }
 
+#if defined(DXMT_IOS)
+  dxmt_ios_proc_view_created((uint64_t)params->ret_view); /* spec 05 item 89 */
+#endif
   return STATUS_SUCCESS;
+}
+
+/* MYIOSDECK spec 05 item 89: the lookup _ReleaseMetalView always did, shared with the release at
+   a program's end */
+static void (*release_metal_view_function(void))(macdrv_metal_view v) {
+  struct macdrv_functions_t *macdrv_functions;
+  if ((macdrv_functions = dlsym(RTLD_DEFAULT, "macdrv_functions")))
+    return macdrv_functions->macdrv_view_release_metal_view;
+  return dlsym(RTLD_DEFAULT, "macdrv_view_release_metal_view");
 }
 
 static NTSTATUS
 _ReleaseMetalView(void *obj) {
   struct unixcall_generic_obj_noret *params = obj;
 
-  void (*pfn_macdrv_view_release_metal_view)(macdrv_metal_view v) = NULL;
+  void (*pfn_macdrv_view_release_metal_view)(macdrv_metal_view v) = release_metal_view_function();
 
-  struct macdrv_functions_t *macdrv_functions;
-  if ((macdrv_functions = dlsym(RTLD_DEFAULT, "macdrv_functions"))) {
-    pfn_macdrv_view_release_metal_view = macdrv_functions->macdrv_view_release_metal_view;
-  } else {
-    pfn_macdrv_view_release_metal_view = dlsym(RTLD_DEFAULT, "macdrv_view_release_metal_view");
-  }
-
+#if defined(DXMT_IOS)
+  dxmt_ios_proc_view_released((uint64_t)params->handle); /* spec 05 item 89: no longer the program's */
+#endif
   if (pfn_macdrv_view_release_metal_view)
     pfn_macdrv_view_release_metal_view((macdrv_metal_view)params->handle);
 
   return STATUS_SUCCESS;
 }
+
+#if defined(DXMT_IOS)
+/* MYIOSDECK spec 05 item 89: a view an ended program never released. Its layer comes off its
+   view on the main thread; asynchronously, so the ending thread never waits for the main thread
+   (which may itself be waiting for the program's end). */
+void
+dxmt_ios_release_metal_view_on_main(uint64_t view) {
+  void (*release)(macdrv_metal_view v) = release_metal_view_function();
+  if (!view || !release)
+    return;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    release((macdrv_metal_view)view);
+  });
+}
+#endif
 
 static NTSTATUS
 thunk_SM50Initialize(void *args) {
@@ -2734,6 +2798,8 @@ _MTLLibrary_newFunctionWithConstants(void *obj) {
   params->ret_error = (obj_handle_t)[err retain]; /* steamac's DXMT patch 0008 (LGPL, osy): out-errors are autoreleased; the win side owns the handle (WMT::Reference) */
   [name release];
   [values release];
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
+  DXMT_PROC_CREATED(params->ret_error); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -2933,6 +2999,7 @@ static NTSTATUS
 _MTLDevice_newFence(void *obj) {
   struct unixcall_generic_obj_obj_ret *params = obj;
   params->ret = (obj_handle_t)[(id<MTLDevice>)params->handle newFence];
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -2940,6 +3007,7 @@ static NTSTATUS
 _MTLDevice_newEvent(void *obj) {
   struct unixcall_generic_obj_obj_ret *params = obj;
   params->ret = (obj_handle_t)[(id<MTLDevice>)params->handle newEvent];
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -2983,6 +3051,8 @@ _MTLDevice_newBinaryArchive(void *obj) {
     [url release];
   if (path_str)
     [path_str release];
+  DXMT_PROC_CREATED(params->ret_archive); /* spec 05 item 89 */
+  DXMT_PROC_CREATED(params->ret_error); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -2996,6 +3066,7 @@ _MTLBinaryArchive_serialize(void *obj) {
   params->ret_error = (obj_handle_t)[err retain]; /* steamac's DXMT patch 0008 (LGPL, osy): out-errors are autoreleased; the win side owns the handle (WMT::Reference) */
   [url release];
   [path_str release];
+  DXMT_PROC_CREATED(params->ret_error); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -3003,6 +3074,7 @@ static NTSTATUS
 _DispatchData_alloc_init(void *obj) {
   struct unixcall_generic_obj_uint64_obj_ret *params = obj;
   params->ret = (obj_handle_t)dispatch_data_create((void *)params->handle, params->arg, NULL, NULL);
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -3056,6 +3128,7 @@ _MTLDevice_newSharedTexture(void *obj) {
     [desc release];
   }
 
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -3143,6 +3216,7 @@ _MTLDevice_newSharedEventWithMachPort(void *obj) {
   id<MTLDevice> device = (id<MTLDevice>)params->device;
   id<MTLDeviceSPI> deviceSPI = (id<MTLDeviceSPI>)device;
   params->ret_event = (obj_handle_t)[deviceSPI newSharedEventWithMachPort:params->mach_port];
+  DXMT_PROC_CREATED(params->ret_event); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
 
@@ -3229,6 +3303,8 @@ _MTLDevice_newResidencySet(void *obj) {
         (obj_handle_t)[(id<MTLDevice>)params->device newResidencySetWithDescriptor:descriptor error:&err];
     params->ret_error = (obj_handle_t)[err retain]; /* +1, as patch 0008 has it for every out-error */
     [descriptor release];
+    DXMT_PROC_CREATED(params->ret_set);   /* spec 05 item 89 */
+    DXMT_PROC_CREATED(params->ret_error); /* spec 05 item 89 */
     return STATUS_SUCCESS;
   }
 #endif

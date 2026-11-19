@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 
 /* Host tests: spec 18 Part J (wow64 guest window) and Part K (wow64win tables). */

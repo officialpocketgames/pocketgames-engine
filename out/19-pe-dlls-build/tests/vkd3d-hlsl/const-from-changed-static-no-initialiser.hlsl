@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // As const-from-changed-static, for a static without an initialiser (Microsoft: mov o0.x, v0.x).

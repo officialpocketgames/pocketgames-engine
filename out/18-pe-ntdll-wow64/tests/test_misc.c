@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 
 /* Host tests: spec 18 Part H5/H6 (name rules), H7 (QPC arithmetic), I1/I2 (heap policies). */

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: MIT
+/* SPDX-License-Identifier: LGPL-2.1-or-later
  * Copyright (c) 2026 the MYIOSDECK author
  *
  * Test-only: declarations of the part of SQLite's public C API (sqlite.org/c3ref) that

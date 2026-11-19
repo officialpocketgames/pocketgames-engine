@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # Spec 05 Part I, spec 06 Part F and spec 07 Part D: builds and runs the host unit tests (BC
@@ -7,7 +7,9 @@
 # the DXSO 32-bit argument chain, the Direct3D 9 iOS rules, the Direct3D 9 call
 # statistics and their call-site coverage; spec 05 clarification 10: the fixes adopted
 # from steamac's DXMT patches; clarification 12: the shader cache's log lines; clarification
-# 13: the six upstream DXMT shader fixes) with any C++20 compiler.
+# 13: the six upstream DXMT shader fixes; spec 33: the ios_wow_native build's platform layer,
+# and the whole native build compiled, link-checked and its seam called on Linux) with any
+# C++20 compiler.
 # Usage: run-host-tests.sh [build-dir]
 # CXX selects the C++ compiler (default c++), CC the C compiler (default cc).
 
@@ -36,6 +38,8 @@ $cxx $flags -I"$src/util/log" -o "$build/test_log_cap" "$here/test_log_cap.cpp"
 $cc -std=c11 -O1 -Wall -Wextra -Werror -I"$native/windows" -I"$native/directx" -I"$src/d3d9" \
   -o "$build/test_d3d9_call_list" "$here/test_d3d9_call_list.c"
 $cxx $flags -I"$src/d3d11" -o "$build/test_swap_effect" "$here/test_swap_effect.cpp"
+# Spec 05 round 19 (item 88): the swap-chain and DXGI-device methods that used to abort.
+$cxx $flags -I"$src/d3d11" -o "$build/test_swapchain_state" "$here/test_swapchain_state.cpp"
 # Dynamic-buffer discard: DXMT's own buffer code against fake Metal (bench_dynamic_discard.cpp).
 # Optimised like the shipping build; run it by hand without --check for the 33k-cycle benchmark.
 $cxx -std=c++20 -O2 -Wall -Wextra -Werror -DDXMT_PAGE_SIZE=4096 -DDXMT_NATIVE=1 -DDXMT_IOS=1 \
@@ -89,6 +93,10 @@ $cxx $flags $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src
 $cc -std=c11 -O1 -Wall -Wextra -Werror -pthread -I"$src/winemetal/unix" \
   -o "$build/test_app_active" "$here/test_app_active.c"
 $cxx $flags -Wno-unused-function -pthread -x c++ -fsyntax-only "$src/winemetal/unix/app_active.h"
+# Spec 05 item 89: the per-process ledger, released when a program's process ends (C and C++).
+$cc -std=gnu11 -O1 -Wall -Wextra -Werror -pthread -I"$src/winemetal/unix" \
+  -o "$build/test_proc_objects" "$here/test_proc_objects.c"
+$cxx $flags -Wno-unused-function -pthread -x c++ -fsyntax-only "$src/winemetal/unix/winemetal_proc_objects.h"
 # Spec 05 clarification 57: PG_DXMT_SERIALIZE's levels, the optimiser's loop, the waits.
 $cxx $flags -I"$src/dxmt" -o "$build/test_serialize" "$here/test_serialize.cpp"
 # Spec 05 clarification 63: the Direct3D 11 call statistics' report, the lists against the
@@ -97,12 +105,27 @@ $cxx $flags -I"$src/d3d11" -I"$src/util" -o "$build/test_d3d11_call_stats" "$her
 $cc -std=c11 -O1 -Wall -Wextra -Werror -I"$native/windows" -I"$native/directx" -I"$src/d3d11" \
   -o "$build/test_d3d11_call_list" "$here/test_d3d11_call_list.c"
 $cxx $flags $native_flags -I"$src/d3d11" -I"$src/dxmt" -o "$build/test_d3d11_cuts" "$here/test_d3d11_cuts.cpp"
+# Spec 05 round 18: a polled Direct3D 11 query parks (items 80-83).
+$cxx $flags -pthread -I"$src/dxmt" -I"$src/util" -I"$src/d3d11" -o "$build/test_d3d11_query_park" \
+  "$here/test_d3d11_query_park.cpp"
 # Spec 05 round 17, the encoder's side of the cuts (68, 70-72) and the trace's lines (64).
 $cxx $flags $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
   -o "$build/test_pass_cuts" "$here/test_pass_cuts.cpp"
 # Spec 05 clarification 30: the frame trace's state lines.
 $cxx $flags $native_flags -I"$src/d3d11" -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
   -o "$build/test_trace_state" "$here/test_trace_state.cpp"
+# Spec 33 J5: the ios_wow_native build's platform layer (threads, QoS, thread ids, the device
+# lock, the address wait, Part C's routing, the B4 wrappers, the ComObject hooks and the focus
+# actions), with Part C's allocator and fakes of Wine's calls.
+iwn="$here/ios-wow-native"
+alloc33="$here/../../33-d3d9-native-wow64/alloc"
+iwn_flags="-DDXMT_NATIVE=1 -DDXMT_IOS=1 -DDXMT_IOS_WOW_NATIVE=1 -DDXMT_PAGE_SIZE=4096 -D__cdecl= -Wno-unused-parameter \
+  -I$src/../include -I$src/../include/native/windows -I$src/../include/native/directx -I$src/util -I$src/d3d9 \
+  -I$alloc33 -include $src/util/util_ios_wow_native.h -include $iwn/linux-standins.h"
+$cc -std=c11 -O1 -Wall -Wextra -Werror -pthread -c -o "$build/ios_wow_window_alloc.o" "$alloc33/ios_wow_window_alloc.c"
+$cxx $flags -pthread $iwn_flags -o "$build/test_ios_wow_native_platform" "$iwn/test_ios_wow_native_platform.cpp" \
+  "$src/util/util_ios_wow_native.cpp" "$src/util/log/log.cpp" "$src/util/util_env.cpp" "$src/util/util_string.cpp" \
+  "$src/util/util_atomic_wait.cpp" "$build/ios_wow_window_alloc.o"
 sqlite_lib=
 for candidate in -lsqlite3 -l:libsqlite3.so.0; do
   if echo 'int main(void) { return 0; }' | $cc -x c - -o "$build/sqlite_probe" $candidate 2>/dev/null; then
@@ -127,6 +150,7 @@ status=0
 "$build/test_d3d9_call_list" || status=1
 sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_swap_effect" || status=1
+"$build/test_swapchain_state" || status=1
 "$build/bench_dynamic_discard" --check || status=1
 "$build/test_chunk_slots" || status=1
 "$build/test_integer_rt_formats" || status=1
@@ -144,16 +168,31 @@ sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_frame_dump" || status=1
 "$build/test_trace_state" || status=1
 "$build/test_app_active" || status=1
+"$build/test_proc_objects" || status=1
 "$build/test_serialize" || status=1
 "$build/test_d3d11_call_stats" || status=1
 "$build/test_d3d11_call_list" || status=1
 sh "$here/check-d3d11-call-sites.sh" "$src/d3d11" || status=1
 "$build/test_d3d11_cuts" || status=1
+"$build/test_d3d11_query_park" || status=1
 "$build/test_pass_cuts" || status=1
 sh "$here/check-shader-fixes.sh" "$src" || status=1
 if [ -n "$sqlite_lib" ]; then
   "$build/test_cache_contents" "$build" || status=1
 else
   echo "test_cache_contents: skipped (no libsqlite3 on this host)"
+fi
+"$build/test_ios_wow_native_platform" || status=1
+# Spec 33 J4: Part C's allocator, which the native library holds (its own runner, in
+# out/33-d3d9-native-wow64/alloc/tests, so this part's CI run covers it too)
+CC="$cc" sh "$alloc33/tests/run-host-tests.sh" "$build/alloc33" || status=1
+# Spec 33 B: the whole ios_wow_native build compiled on Linux, linked against fakes of what the
+# app provides, and its seam called by a fake dispatch (needs Wine 11.4's include/ for the B4
+# queries: WINE_SRC, as CI sets it, or the repository's refs/wine-11.4).
+wine_tree=${WINE_SRC:-"$here/../../../refs/wine-11.4"}
+if [ -f "$wine_tree/include/ntuser.h" ]; then
+  WINE_SRC="$wine_tree" CC="$cc" CXX="$cxx" sh "$iwn/compile-native-linux.sh" "$build/ios-wow-native" || status=1
+else
+  echo "ios-wow-native/compile-native-linux.sh: skipped (no Wine 11.4 tree; set WINE_SRC)"
 fi
 exit $status

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 06 Part D: waiting on another thread. DXMT's threads hand work to each
@@ -61,6 +61,26 @@ atomic_wait(
   atomic.wait(old, order);
 #endif
 }
+
+#ifdef DXMT_ATOMIC_WAIT_NTDLL
+/* Spec 05 round 18 (item 80): one wait while `atomic` holds `old`, for at most `timeout_ns`
+   (rounded up to ntdll's 100 ns unit; a negative timeout is relative). Returns on a change, a
+   wake-up (possibly spurious) or the timeout; the caller checks the value and its deadline. Only
+   the ntdll backend has a timed wait: std::atomic's has none. */
+template <typename T>
+inline void
+atomic_wait_timeout(
+    const std::atomic<T> &atomic, std::type_identity_t<T> old, unsigned long long timeout_ns,
+    std::memory_order order = std::memory_order_seq_cst
+) {
+  detail::atomic_wait_note();
+  static_assert(sizeof(std::atomic<T>) == sizeof(T), "the atomic must be the value itself");
+  static_assert(sizeof(T) == 1 || sizeof(T) == 2 || sizeof(T) == 4 || sizeof(T) == 8, "unsupported size");
+  const long long timeout = -(long long)((timeout_ns + 99) / 100);
+  if (atomic.load(order) == old && timeout != 0)
+    RtlWaitOnAddress(&atomic, &old, sizeof(T), &timeout);
+}
+#endif
 
 template <typename T>
 inline void

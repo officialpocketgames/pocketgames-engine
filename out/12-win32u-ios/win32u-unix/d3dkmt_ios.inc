@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Included at the end of d3dkmt.c (patches/D-01-d3dkmt.patch), under WINE_IOS. Spec 12 Part D:

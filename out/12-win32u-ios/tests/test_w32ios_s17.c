@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 17 Part J, Parts F and G2: host tests of win32u-unix/w32ios_s17_pure.c: the 32-bit

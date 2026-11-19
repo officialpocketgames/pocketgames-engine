@@ -1,4 +1,5 @@
 // Changed for MYIOSDECK (spec 07 clarification 4: every message capped, log_cap.hpp). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 33 clarification 9: the ios_wow_native build writes to the unix-side log).
 /*
  * This file is part of DXMT, Copyright (c) 2023 Feifan He
  *
@@ -65,6 +66,11 @@ void Logger::emitMsg(LogLevel level, const std::string &message) {
       if (ntdll)
         m_wineLogOutput = reinterpret_cast<PFN_wineLogOutput>(
             GetProcAddress(ntdll, "__wine_dbg_output"));
+#elif defined(DXMT_IOS_WOW_NATIVE)
+      // MYIOSDECK spec 33 clarification 9: straight to the unix-side log
+      // (ntdll's unix __wine_dbg_output, linked into the app; weak, so a
+      // host test without Wine writes to stderr).
+      m_wineLogOutput = __wine_dbg_output;
 #endif
       auto path = getFileName(m_fileName);
 

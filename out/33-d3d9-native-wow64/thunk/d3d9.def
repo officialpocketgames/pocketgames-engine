@@ -1,0 +1,20 @@
+; SPDX-License-Identifier: LGPL-2.1-or-later
+; Copyright (c) 2026 the MYIOSDECK author
+;
+; Spec 33 E1: the thunk's exports, with the names and ordinals of the full frontend's d3d9.def
+; (out/05-dxmt-ios/dxmt/src/d3d9/d3d9.def), so a program that imports by ordinal finds the same
+; entry point. tests/run-host-tests.sh compares the two lists.
+LIBRARY D3D9.DLL
+EXPORTS
+    Direct3DCreate9 @16
+    Direct3DCreate9Ex @20
+    D3DPERF_BeginEvent @23
+    D3DPERF_EndEvent @24
+    D3DPERF_GetStatus @25
+    D3DPERF_QueryRepeatFrame @26
+    D3DPERF_SetMarker @27
+    D3DPERF_SetOptions @28
+    D3DPERF_SetRegion @29
+    DebugSetLevel @30
+    DebugSetMute @31
+    Direct3DShaderValidatorCreate9 @32

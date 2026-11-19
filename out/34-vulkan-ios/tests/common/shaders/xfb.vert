@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 // spec 34 clarification 1, item 6: three vertices, each with the value (i, 2i, 3i, 1)
 #version 450

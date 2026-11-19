@@ -1,5 +1,5 @@
 #!/bin/sh
-# SPDX-License-Identifier: MIT
+# SPDX-License-Identifier: LGPL-2.1-or-later
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # Spec 05 clarification 63 (DXMT_D11_CALL_STATS), coverage, second half: every method of
@@ -17,6 +17,8 @@
 #     list once, first thing, with D11_DEVICE_CALL;
 #   - the swap chain counts Present and Present1 once each; the device children's
 #     QueryInterface, AddRef and Release are counted.
+#   - (round 18, item 81) no context method calls the public Flush: the front end's own flushes
+#     go through the uncounted body (FlushUncounted).
 # Usage: check-d3d11-call-sites.sh [src/d3d11 directory]. POSIX sh and awk.
 
 set -eu
@@ -73,6 +75,7 @@ file == "d3d11_device_child.hpp" {
 # ---- the context and device classes ----
 tag != "" {
     a = macro_arg($0, "D11_CHILD_CALL"); if (a != "") child[a]++
+    if (tag != "dev" && $0 ~ /(^|[^A-Za-z0-9_])Flush\(\);/) fail(file ":" FNR ": calls the public Flush (item 81: FlushUncounted)")
     if (!in_range && !done_range && $0 ~ start_re) { in_range = 1; next }
     if (in_range && $0 ~ end_re) { in_range = 0; done_range = 1 }
     if (!in_range) next

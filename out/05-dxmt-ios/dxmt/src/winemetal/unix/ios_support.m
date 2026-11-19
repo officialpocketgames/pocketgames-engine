@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // iOS-only parts of winemetal's unix side (spec 05). Objective-C with manual
@@ -10,6 +10,7 @@
 #include "../winemetal.h"
 #include "ios_wow64.h"
 #include "ios_wow64_objects.h"
+#include "winemetal_proc_objects.h" /* spec 05 item 89 */
 #include <mach/mach.h>
 #include <mach/mach_time.h>
 #include <os/proc.h>
@@ -583,6 +584,12 @@ pg_gpu_meter_cmdbufs(void) {
   return v;
 }
 
+/* spec 05 item 89 (the end of this file) */
+static struct wmp_proc *proc_will_commit(void);
+static void proc_completed(struct wmp_proc *proc);
+static enum wmp_add_result proc_add(uint64_t object, enum wmp_kind kind);
+static enum wmp_release_result proc_drop(uint64_t object);
+
 void
 dxmt_ios_will_commit(id<MTLCommandBuffer> cmdbuf) {
   if (!cmdbuf)
@@ -592,7 +599,10 @@ dxmt_ios_will_commit(id<MTLCommandBuffer> cmdbuf) {
      named by its label, else by its number among the commits. */
   static _Atomic uint64_t commits = 0;
   uint64_t number = atomic_fetch_add(&commits, 1) + 1;
+  /* spec 05 item 89: the calling program's work in flight, which its end waits for */
+  struct wmp_proc *proc = proc_will_commit();
   [cmdbuf addCompletedHandler:^(id<MTLCommandBuffer> done) {
+    proc_completed(proc);
     if (done.status != MTLCommandBufferStatusError || !done.error)
       return;
     bool background = done.error.code == MTLCommandBufferErrorNotPermitted ||
@@ -683,6 +693,7 @@ dxmt_ios_wow_retain(uint64_t object) {
   if (g_wow_table_ready)
     dxmt_wow_objects_retained(&g_wow_objects, object);
   pthread_mutex_unlock(&g_wow_lock);
+  proc_add(object, WMP_OBJECT); /* spec 05 item 89 */
   wow_retain(object);
 }
 
@@ -693,9 +704,12 @@ dxmt_ios_wow_release(uint64_t object) {
   pthread_mutex_lock(&g_wow_lock);
   bool last = g_wow_table_ready && dxmt_wow_objects_released(&g_wow_objects, object);
   pthread_mutex_unlock(&g_wow_lock);
+  enum wmp_release_result counted = proc_drop(object); /* spec 05 item 89 */
   wow_release(object); /* the program's reference */
   if (last)
     wow_release(object); /* the table's own: the program holds none any more */
+  if (counted == WMP_LAST)
+    wow_release(object); /* item 89's record's own */
 }
 
 DXMT_IOS_EXPORT void
@@ -713,4 +727,212 @@ winemetal_release_window(unsigned long base) {
   }
   free(records);
   fprintf(stderr, "dxmt: released %u Metal objects of the 32-bit program at window %#lx\n", n, base);
+}
+
+/* ---- Spec 05 item 89: a program's objects, released when its process ends --- */
+
+/* Wine's iOS ntdll (spec 09 Part B1 and spec 22 C6). Weak, so that a build without them leaves
+   item 89 off instead of failing to link. */
+extern void *ios_current_peb(void) __attribute__((weak_import));
+extern int ios_process_end_hook_add(void (*fn)(const void *peb)) __attribute__((weak_import));
+
+/* at most this long for an ended program's command buffers before its objects go */
+#define DXMT_PROC_END_WAIT_NS (2ull * 1000 * 1000 * 1000)
+
+static void
+proc_release_view(uint64_t view) {
+  dxmt_ios_release_metal_view_on_main(view);
+}
+
+static const struct wmp_ops g_proc_ops = {wow_retain, wow_release, wow_retain_count, proc_release_view};
+static struct wmp_state g_procs = WMP_STATE_INIT(&g_proc_ops);
+static _Thread_local int t_untracked;
+static _Atomic int g_proc_switch = -1;
+static _Atomic int g_proc_hook = 0; /* 0 not yet, 1 registered, -1 unavailable */
+
+static void dxmt_ios_process_ended(const void *peb);
+
+/* The native Direct3D 9 frontend (spec 33) brackets its unix calls with these: its objects of
+   an ended process stay as they are (spec 33 clarification 13), so they are never counted. */
+DXMT_IOS_EXPORT void
+dxmt_ios_untracked_begin(void) {
+  t_untracked++;
+}
+
+DXMT_IOS_EXPORT void
+dxmt_ios_untracked_end(void) {
+  t_untracked--;
+}
+
+/* The calling pseudo-process, or 0: item 89 off (DXMT_RELEASE_ENDED=0, or ntdll without the
+   calls), an untracked call, or a thread of no pseudo-process. The first call registers the
+   process-end hook. */
+static uint64_t
+proc_owner(void) {
+  if (t_untracked || !dxmt_ios_switch("DXMT_RELEASE_ENDED", true, &g_proc_switch))
+    return 0;
+  int hook = atomic_load_explicit(&g_proc_hook, memory_order_acquire);
+  if (hook == 0) {
+    int expected = 0;
+    if (atomic_compare_exchange_strong(&g_proc_hook, &expected, 2)) {
+      bool ok = ios_current_peb && ios_process_end_hook_add && ios_process_end_hook_add(dxmt_ios_process_ended) == 0;
+      if (!ok)
+        fprintf(stderr, "dxmt: no process-end hook from ntdll: Metal objects of ended programs are not released\n");
+      atomic_store_explicit(&g_proc_hook, ok ? 1 : -1, memory_order_release);
+      hook = ok ? 1 : -1;
+    } else {
+      hook = expected;
+    }
+  }
+  if (hook == -1)
+    return 0;
+  /* 2: another thread is registering right now; counting meanwhile is harmless */
+  return ios_current_peb ? (uint64_t)(uintptr_t)ios_current_peb() : 0;
+}
+
+static enum wmp_add_result
+proc_add(uint64_t object, enum wmp_kind kind) {
+  static atomic_bool full_logged = false;
+  uint64_t owner = proc_owner();
+  if (!object || !owner)
+    return WMP_NOT_ADDED;
+  enum wmp_add_result result = wmp_add_ref(&g_procs, object, owner, kind, ios_wow_base());
+  if (result == WMP_NOT_ADDED && !atomic_exchange(&full_logged, true))
+    fprintf(stderr, "dxmt: no memory for the per-process object table; an object isn't counted\n");
+  return result;
+}
+
+static enum wmp_release_result
+proc_drop(uint64_t object) {
+  uint64_t owner = proc_owner();
+  return owner ? wmp_release_ref(&g_procs, object, owner) : WMP_UNCOUNTED;
+}
+
+static struct wmp_proc *
+proc_will_commit(void) {
+  return wmp_will_commit(&g_procs, proc_owner());
+}
+
+static void
+proc_completed(struct wmp_proc *proc) {
+  wmp_completed(&g_procs, proc);
+}
+
+void
+dxmt_ios_proc_created(uint64_t object) {
+  proc_add(object, WMP_OBJECT);
+}
+
+void
+dxmt_ios_proc_retain(uint64_t object) {
+  if (!object)
+    return;
+  proc_add(object, WMP_OBJECT);
+  [(id)(uintptr_t)object retain];
+}
+
+void
+dxmt_ios_proc_release(uint64_t object) {
+  if (!object)
+    return;
+  enum wmp_release_result counted = proc_drop(object);
+  [(id)(uintptr_t)object release]; /* the program's */
+  if (counted == WMP_LAST)
+    [(id)(uintptr_t)object release]; /* the record's own: the program holds none any more */
+}
+
+void
+dxmt_ios_proc_view_created(uint64_t view) {
+  proc_add(view, WMP_VIEW);
+}
+
+void
+dxmt_ios_proc_view_released(uint64_t view) {
+  proc_drop(view);
+}
+
+/* allocatedSize where Metal reports it; a texture view, or a texture made on a buffer, shares
+   memory counted with its parent */
+static uint64_t
+proc_bytes(uint64_t object) {
+  id o = (id)(uintptr_t)object;
+  if (![o respondsToSelector:@selector(allocatedSize)])
+    return 0;
+  if ([o respondsToSelector:@selector(parentTexture)] &&
+      ([(id<MTLTexture>)o parentTexture] || [(id<MTLTexture>)o buffer]))
+    return 0;
+  return (uint64_t)[(id<MTLResource>)o allocatedSize];
+}
+
+static int
+wow_record_object_cmp(const void *a, const void *b) {
+  uint64_t x = ((const struct dxmt_wow_record *)a)->object, y = ((const struct dxmt_wow_record *)b)->object;
+  return x < y ? -1 : (x > y ? 1 : 0);
+}
+
+/* ntdll's process-end hook: runs with the ended pseudo-process's PEB after its threads are gone,
+   before its memory (and a 32-bit program's window) goes back. */
+static void
+dxmt_ios_process_ended(const void *peb) {
+  uint64_t t0 = mach_absolute_time();
+  struct wmp_end end;
+  wmp_take_ended(&g_procs, (uint64_t)(uintptr_t)peb, DXMT_PROC_END_WAIT_NS, &end);
+  if (!end.known && !end.count) {
+    free(end.records);
+    return;
+  }
+  double waited_ms = (double)ns_from_abs(mach_absolute_time() - t0) / 1e6;
+
+  /* A 32-bit program's textures and buffers are also in spec 06 Part E's table, which holds a
+     reference of its own: take its records of this window now (winemetal_release_window, which
+     ntdll calls next, then finds none). Objects in both give the program's references back once,
+     through this ledger, then both tables' own. */
+  struct dxmt_wow_record *wow = NULL;
+  uint32_t wow_n = 0;
+  if (end.wow_base) {
+    pthread_mutex_lock(&g_wow_lock);
+    if (g_wow_table_ready)
+      wow_n = dxmt_wow_objects_take_window(&g_wow_objects, end.wow_base, &wow);
+    pthread_mutex_unlock(&g_wow_lock);
+    if (wow_n > 1)
+      qsort(wow, wow_n, sizeof(*wow), wow_record_object_cmp);
+  }
+  bool *wow_matched = wow_n ? calloc(wow_n, sizeof(bool)) : NULL;
+
+  uint32_t objects = 0, views = 0;
+  uint64_t bytes = 0;
+  @autoreleasepool {
+    for (uint32_t i = 0; i < end.count; i++) {
+      struct wmp_record *r = &end.records[i];
+      if (r->kind == WMP_VIEW) {
+        views++;
+        continue;
+      }
+      objects++;
+      bytes += proc_bytes(r->object);
+      if (wow_n && wow_matched) {
+        struct dxmt_wow_record key = {r->object, 0, 0};
+        struct dxmt_wow_record *hit = bsearch(&key, wow, wow_n, sizeof(*wow), wow_record_object_cmp);
+        if (hit) {
+          r->extra_own = 1;
+          wow_matched[hit - wow] = true;
+        }
+      }
+    }
+    wmp_give_back(&g_proc_ops, end.records, end.count);
+    for (uint32_t i = 0; i < wow_n; i++) {
+      if (wow_matched && wow_matched[i])
+        wow_release(wow[i].object); /* the 32-bit table's own; the ledger gave the program's back */
+      else
+        dxmt_wow_objects_give_back(&g_wow_objects, &wow[i], 1); /* not in the ledger: as before */
+    }
+  }
+  fprintf(stderr,
+          "dxmt: the program's process ended: released %u Metal objects (%.1f MB) and %u views, after its GPU work %s "
+          "(%.0f ms)\n",
+          objects, (double)bytes / (1024.0 * 1024.0), views,
+          end.drained ? "completed" : "timed out at 2 s", waited_ms);
+  free(wow_matched);
+  free(wow);
+  free(end.records);
 }

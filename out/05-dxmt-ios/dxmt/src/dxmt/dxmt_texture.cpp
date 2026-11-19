@@ -1,4 +1,5 @@
 // Changed for MYIOSDECK (spec 05 D5, H7; spec 06 B). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 33 B2: buffer-backed textures of the ios_wow_native build from Part C).
 #include "dxmt_texture.hpp"
 #include "dxmt_residency.hpp"
 #include "util_placed_memory.hpp"
@@ -78,7 +79,7 @@ TextureAllocation::TextureAllocation(
 };
 
 TextureAllocation::~TextureAllocation(){
-#ifdef __i386__
+#if defined(__i386__) || defined(DXMT_IOS_WOW_NATIVE) /* MYIOSDECK spec 33 B2 */
   wsi::aligned_free(mappedMemory);
 #endif
 };
@@ -207,8 +208,10 @@ Texture::allocate(Flags<TextureAllocationFlag> flags) {
     buffer_info.length = bytes_per_image_;
     buffer_info.options = options;
     buffer_info.memory.set(nullptr);
-#ifdef __i386__
+#if defined(__i386__) || defined(DXMT_IOS_WOW_NATIVE)
     // spec 06 B: page-aligned for newBufferWithBytesNoCopy: (16 KB pages on iOS)
+    // MYIOSDECK spec 33 B2: in the ios_wow_native build too, from Part C (a d3d9
+    // buffer-backed texture's LockRect hands this memory to the program).
     buffer_info.length = PlacedMemoryLength(bytes_per_image_);
     buffer_info.memory.set(wsi::aligned_malloc(buffer_info.length, kPlacedMemoryAlignment));
 #endif

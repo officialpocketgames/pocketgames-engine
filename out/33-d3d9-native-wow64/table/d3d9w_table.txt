@@ -1,0 +1,397 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# Spec 33 F1: d3d9w_table, the 15 interfaces of the Direct3D 9 frontend with every method in
+# vtable order (Wine 11.4 include/d3d9.h). tools/gen_d3d9w.py reads this file, checks it against
+# the header and writes gen/.
+#
+#   interface <name in d3d9.h> <kind>
+#   <method> <return> [<argument>...] [@guest] [@special=<helper>]
+#
+# The kind numbers the interface in method ids (IOS_WOW_NATIVE_ID(1, id)): kinds 0-14 in the
+# order of this file, 15 for the exports and the thunk's extra calls (gen/d3d9w_ids.h).
+#
+# Returns: hr (HRESULT), u32 (ULONG, UINT, DWORD, BOOL or an enum), count (a UINT count: 0 when a
+# program pointer is refused), void, float (bits in EAX, spec 33 clarification 3), handle
+# (HMONITOR, truncated to its 32-bit value).
+#
+# Arguments (every one is 4 bytes on the i386 stack):
+#   v              a 32-bit value (integer, BOOL, enum, D3DCOLOR or float), passed as it is
+#   h              a handle (HWND): the same 32-bit number on both sides
+#   opaque         a pointer native code never dereferences (RegisterSoftwareDevice)
+#   in:T           pointer to one T, copied in; NULL stays NULL
+#   out:T          pointer to one T, copied in and written back (untouched stays untouched)
+#   inout:T        as out:T; the name says the method reads it
+#   in:T[n]        n elements: a number, aK (argument K, 1-based after This) or M*aK
+#   in:T[*]        a length only the special helper knows
+#   hout:T         pointer to one handle T, written back as its 32-bit value
+#   iid            a REFIID/REFGUID, 16 bytes copied in
+#   if:K           an interface pointer in: a proxy of kind K (or of a kind K stands for)
+#   ifout:K        pointer to an interface out: the proxy of the object native code returns
+#   ifout_iid      as ifout, of the kind the preceding iid names (QueryInterface, GetContainer)
+#   ifarr:K[n]     an array of n interface pointers in
+#   shader         shader tokens up to the end token (F3)
+#   decl           D3DVERTEXELEMENT9 array up to D3DDECL_END (F3)
+#   rgn            an optional RGNDATA: header plus nCount rectangles (F3)
+#   shared         HANDLE*: the D3D9Ex user-memory pointer or a share handle, read only (C3)
+#   lockptr        void** a Lock returns: a guest address of window memory (F5)
+#
+# Kinds K for if/ifout: D3D9 Device SwapChain Surface Texture CubeTexture VolumeTexture Volume
+# VertexBuffer IndexBuffer VertexDecl VertexShader PixelShader StateBlock Query, and the
+# families BaseTexture (the three texture kinds) and Resource (surface, textures, volume,
+# buffers).
+#
+# @guest: the thunk's vtable holds a hand-written guest function (spec 33 E3, clarification 7);
+#         the generated stub stays reachable for that function's own native calls.
+# @special=<helper>: the dispatch calls a hand-written helper (native/d3d9w_special.c) after the
+#         arguments are read and This is resolved.
+
+interface IDirect3D9Ex D3D9
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32
+RegisterSoftwareDevice      hr     opaque
+GetAdapterCount             u32
+GetAdapterIdentifier        hr     v v out:D3DADAPTER_IDENTIFIER9
+GetAdapterModeCount         u32    v v
+EnumAdapterModes            hr     v v v out:D3DDISPLAYMODE
+GetAdapterDisplayMode       hr     v out:D3DDISPLAYMODE
+CheckDeviceType             hr     v v v v v
+CheckDeviceFormat           hr     v v v v v v
+CheckDeviceMultiSampleType  hr     v v v v v out:DWORD
+CheckDepthStencilMatch      hr     v v v v v
+CheckDeviceFormatConversion hr     v v v v
+GetDeviceCaps               hr     v v out:D3DCAPS9
+GetAdapterMonitor           handle v
+CreateDevice                hr     v v h v inout:D3DPRESENT_PARAMETERS ifout:Device @guest
+GetAdapterModeCountEx       count  v in:D3DDISPLAYMODEFILTER
+EnumAdapterModesEx          hr     v in:D3DDISPLAYMODEFILTER v out:D3DDISPLAYMODEEX
+GetAdapterDisplayModeEx     hr     v out:D3DDISPLAYMODEEX out:D3DDISPLAYROTATION
+CreateDeviceEx              hr     v v h v inout:D3DPRESENT_PARAMETERS in:D3DDISPLAYMODEEX ifout:Device @guest
+GetAdapterLUID              hr     v out:LUID
+
+interface IDirect3DDevice9Ex Device
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32    @guest
+TestCooperativeLevel        hr
+GetAvailableTextureMem      u32
+EvictManagedResources       hr
+GetDirect3D                 hr     ifout:D3D9
+GetDeviceCaps               hr     out:D3DCAPS9
+GetDisplayMode              hr     v out:D3DDISPLAYMODE
+GetCreationParameters       hr     out:D3DDEVICE_CREATION_PARAMETERS
+SetCursorProperties         hr     v v if:Surface @guest
+SetCursorPosition           void   v v v @guest
+ShowCursor                  u32    v @guest
+CreateAdditionalSwapChain   hr     inout:D3DPRESENT_PARAMETERS ifout:SwapChain
+GetSwapChain                hr     v ifout:SwapChain
+GetNumberOfSwapChains       u32
+Reset                       hr     inout:D3DPRESENT_PARAMETERS @guest
+Present                     hr     in:RECT in:RECT h rgn
+GetBackBuffer               hr     v v v ifout:Surface
+GetRasterStatus             hr     v out:D3DRASTER_STATUS
+SetDialogBoxMode            hr     v
+SetGammaRamp                void   v v in:D3DGAMMARAMP
+GetGammaRamp                void   v out:D3DGAMMARAMP
+CreateTexture               hr     v v v v v v ifout:Texture shared
+CreateVolumeTexture         hr     v v v v v v v ifout:VolumeTexture shared
+CreateCubeTexture           hr     v v v v v ifout:CubeTexture shared
+CreateVertexBuffer          hr     v v v v ifout:VertexBuffer shared
+CreateIndexBuffer           hr     v v v v ifout:IndexBuffer shared
+CreateRenderTarget          hr     v v v v v v ifout:Surface shared
+CreateDepthStencilSurface   hr     v v v v v v ifout:Surface shared
+UpdateSurface               hr     if:Surface in:RECT if:Surface in:POINT
+UpdateTexture               hr     if:BaseTexture if:BaseTexture
+GetRenderTargetData         hr     if:Surface if:Surface
+GetFrontBufferData          hr     v if:Surface
+StretchRect                 hr     if:Surface in:RECT if:Surface in:RECT v
+ColorFill                   hr     if:Surface in:RECT v
+CreateOffscreenPlainSurface hr     v v v v ifout:Surface shared
+SetRenderTarget             hr     v if:Surface
+GetRenderTarget             hr     v ifout:Surface
+SetDepthStencilSurface      hr     if:Surface
+GetDepthStencilSurface      hr     ifout:Surface
+BeginScene                  hr
+EndScene                    hr
+Clear                       hr     v in:D3DRECT[a1] v v v v
+SetTransform                hr     v in:D3DMATRIX
+GetTransform                hr     v out:D3DMATRIX
+MultiplyTransform           hr     v in:D3DMATRIX
+SetViewport                 hr     in:D3DVIEWPORT9
+GetViewport                 hr     out:D3DVIEWPORT9
+SetMaterial                 hr     in:D3DMATERIAL9
+GetMaterial                 hr     out:D3DMATERIAL9
+SetLight                    hr     v in:D3DLIGHT9
+GetLight                    hr     v out:D3DLIGHT9
+LightEnable                 hr     v v
+GetLightEnable              hr     v out:BOOL
+SetClipPlane                hr     v in:float[4]
+GetClipPlane                hr     v out:float[4]
+SetRenderState              hr     v v
+GetRenderState              hr     v out:DWORD
+CreateStateBlock            hr     v ifout:StateBlock
+BeginStateBlock             hr
+EndStateBlock               hr     ifout:StateBlock
+SetClipStatus               hr     in:D3DCLIPSTATUS9
+GetClipStatus               hr     out:D3DCLIPSTATUS9
+GetTexture                  hr     v ifout:BaseTexture
+SetTexture                  hr     v if:BaseTexture
+GetTextureStageState        hr     v v out:DWORD
+SetTextureStageState        hr     v v v
+GetSamplerState             hr     v v out:DWORD
+SetSamplerState             hr     v v v
+ValidateDevice              hr     out:DWORD
+SetPaletteEntries           hr     v in:PALETTEENTRY[256]
+GetPaletteEntries           hr     v out:PALETTEENTRY[256]
+SetCurrentTexturePalette    hr     v
+GetCurrentTexturePalette    hr     out:UINT
+SetScissorRect              hr     in:RECT
+GetScissorRect              hr     out:RECT
+SetSoftwareVertexProcessing hr     v
+GetSoftwareVertexProcessing u32
+SetNPatchMode               hr     v
+GetNPatchMode               float  @guest
+DrawPrimitive               hr     v v v
+DrawIndexedPrimitive        hr     v v v v v v
+DrawPrimitiveUP             hr     v v in:void[*] v @special=draw_up
+DrawIndexedPrimitiveUP      hr     v v v v in:void[*] v in:void[*] v @special=draw_indexed_up
+ProcessVertices             hr     v v v if:VertexBuffer if:VertexDecl v
+CreateVertexDeclaration     hr     decl ifout:VertexDecl
+SetVertexDeclaration        hr     if:VertexDecl
+GetVertexDeclaration        hr     ifout:VertexDecl
+SetFVF                      hr     v
+GetFVF                      hr     out:DWORD
+CreateVertexShader          hr     shader ifout:VertexShader
+SetVertexShader             hr     if:VertexShader
+GetVertexShader             hr     ifout:VertexShader
+SetVertexShaderConstantF    hr     v in:float[4*a3] v
+GetVertexShaderConstantF    hr     v out:float[4*a3] v
+SetVertexShaderConstantI    hr     v in:int[4*a3] v
+GetVertexShaderConstantI    hr     v out:int[4*a3] v
+SetVertexShaderConstantB    hr     v in:BOOL[a3] v
+GetVertexShaderConstantB    hr     v out:BOOL[a3] v
+SetStreamSource             hr     v if:VertexBuffer v v
+GetStreamSource             hr     v ifout:VertexBuffer out:UINT out:UINT
+SetStreamSourceFreq         hr     v v
+GetStreamSourceFreq         hr     v out:UINT
+SetIndices                  hr     if:IndexBuffer
+GetIndices                  hr     ifout:IndexBuffer
+CreatePixelShader           hr     shader ifout:PixelShader
+SetPixelShader              hr     if:PixelShader
+GetPixelShader              hr     ifout:PixelShader
+SetPixelShaderConstantF     hr     v in:float[4*a3] v
+GetPixelShaderConstantF     hr     v out:float[4*a3] v
+SetPixelShaderConstantI     hr     v in:int[4*a3] v
+GetPixelShaderConstantI     hr     v out:int[4*a3] v
+SetPixelShaderConstantB     hr     v in:BOOL[a3] v
+GetPixelShaderConstantB     hr     v out:BOOL[a3] v
+DrawRectPatch               hr     v in:float[4] in:D3DRECTPATCH_INFO
+DrawTriPatch                hr     v in:float[3] in:D3DTRIPATCH_INFO
+DeletePatch                 hr     v
+CreateQuery                 hr     v ifout:Query
+SetConvolutionMonoKernel    hr     v v in:float[a1] in:float[a2]
+ComposeRects                hr     if:Surface if:Surface if:VertexBuffer v if:VertexBuffer v v v
+PresentEx                   hr     in:RECT in:RECT h rgn v
+GetGPUThreadPriority        hr     out:INT
+SetGPUThreadPriority        hr     v
+WaitForVBlank               hr     v
+CheckResourceResidency      hr     ifarr:Resource[a2] v
+SetMaximumFrameLatency      hr     v
+GetMaximumFrameLatency      hr     out:UINT
+CheckDeviceState            hr     h
+CreateRenderTargetEx        hr     v v v v v v ifout:Surface shared v
+CreateOffscreenPlainSurfaceEx hr   v v v v ifout:Surface shared v
+CreateDepthStencilSurfaceEx hr     v v v v v v ifout:Surface shared v
+ResetEx                     hr     inout:D3DPRESENT_PARAMETERS in:D3DDISPLAYMODEEX @guest
+GetDisplayModeEx            hr     v out:D3DDISPLAYMODEEX out:D3DDISPLAYROTATION
+
+interface IDirect3DSwapChain9Ex SwapChain
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32    @guest
+Present                     hr     in:RECT in:RECT h rgn v
+GetFrontBufferData          hr     if:Surface
+GetBackBuffer               hr     v v ifout:Surface
+GetRasterStatus             hr     out:D3DRASTER_STATUS
+GetDisplayMode              hr     out:D3DDISPLAYMODE
+GetDevice                   hr     ifout:Device
+GetPresentParameters        hr     out:D3DPRESENT_PARAMETERS
+GetLastPresentCount         hr     out:UINT
+GetPresentStats             hr     out:D3DPRESENTSTATS
+GetDisplayModeEx            hr     out:D3DDISPLAYMODEEX out:D3DDISPLAYROTATION
+
+interface IDirect3DSurface9 Surface
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32    @guest
+GetDevice                   hr     ifout:Device
+SetPrivateData              hr     iid in:void[a3] v v @guest @special=set_private
+GetPrivateData              hr     iid out:void[*] out:DWORD @guest @special=get_private
+FreePrivateData             hr     iid @guest
+SetPriority                 u32    v
+GetPriority                 u32
+PreLoad                     void
+GetType                     u32
+GetContainer                hr     iid ifout_iid
+GetDesc                     hr     out:D3DSURFACE_DESC
+LockRect                    hr     out:D3DLOCKED_RECT in:RECT v @special=lock_rect
+UnlockRect                  hr
+GetDC                       hr     hout:HDC @guest
+ReleaseDC                   hr     h @guest
+
+interface IDirect3DTexture9 Texture
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32    @guest
+GetDevice                   hr     ifout:Device
+SetPrivateData              hr     iid in:void[a3] v v @guest @special=set_private
+GetPrivateData              hr     iid out:void[*] out:DWORD @guest @special=get_private
+FreePrivateData             hr     iid @guest
+SetPriority                 u32    v
+GetPriority                 u32
+PreLoad                     void
+GetType                     u32
+SetLOD                      u32    v
+GetLOD                      u32
+GetLevelCount               u32
+SetAutoGenFilterType        hr     v
+GetAutoGenFilterType        u32
+GenerateMipSubLevels        void
+GetLevelDesc                hr     v out:D3DSURFACE_DESC
+GetSurfaceLevel             hr     v ifout:Surface
+LockRect                    hr     v out:D3DLOCKED_RECT in:RECT v @special=lock_rect
+UnlockRect                  hr     v
+AddDirtyRect                hr     in:RECT
+
+interface IDirect3DCubeTexture9 CubeTexture
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32    @guest
+GetDevice                   hr     ifout:Device
+SetPrivateData              hr     iid in:void[a3] v v @guest @special=set_private
+GetPrivateData              hr     iid out:void[*] out:DWORD @guest @special=get_private
+FreePrivateData             hr     iid @guest
+SetPriority                 u32    v
+GetPriority                 u32
+PreLoad                     void
+GetType                     u32
+SetLOD                      u32    v
+GetLOD                      u32
+GetLevelCount               u32
+SetAutoGenFilterType        hr     v
+GetAutoGenFilterType        u32
+GenerateMipSubLevels        void
+GetLevelDesc                hr     v out:D3DSURFACE_DESC
+GetCubeMapSurface           hr     v v ifout:Surface
+LockRect                    hr     v v out:D3DLOCKED_RECT in:RECT v @special=lock_rect
+UnlockRect                  hr     v v
+AddDirtyRect                hr     v in:RECT
+
+interface IDirect3DVolumeTexture9 VolumeTexture
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32    @guest
+GetDevice                   hr     ifout:Device
+SetPrivateData              hr     iid in:void[a3] v v @guest @special=set_private
+GetPrivateData              hr     iid out:void[*] out:DWORD @guest @special=get_private
+FreePrivateData             hr     iid @guest
+SetPriority                 u32    v
+GetPriority                 u32
+PreLoad                     void
+GetType                     u32
+SetLOD                      u32    v
+GetLOD                      u32
+GetLevelCount               u32
+SetAutoGenFilterType        hr     v
+GetAutoGenFilterType        u32
+GenerateMipSubLevels        void
+GetLevelDesc                hr     v out:D3DVOLUME_DESC
+GetVolumeLevel              hr     v ifout:Volume
+LockBox                     hr     v out:D3DLOCKED_BOX in:D3DBOX v @special=lock_box
+UnlockBox                   hr     v
+AddDirtyBox                 hr     in:D3DBOX
+
+interface IDirect3DVolume9 Volume
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32    @guest
+GetDevice                   hr     ifout:Device
+SetPrivateData              hr     iid in:void[a3] v v @guest @special=set_private
+GetPrivateData              hr     iid out:void[*] out:DWORD @guest @special=get_private
+FreePrivateData             hr     iid @guest
+GetContainer                hr     iid ifout_iid
+GetDesc                     hr     out:D3DVOLUME_DESC
+LockBox                     hr     out:D3DLOCKED_BOX in:D3DBOX v @special=lock_box
+UnlockBox                   hr
+
+interface IDirect3DVertexBuffer9 VertexBuffer
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32    @guest
+GetDevice                   hr     ifout:Device
+SetPrivateData              hr     iid in:void[a3] v v @guest @special=set_private
+GetPrivateData              hr     iid out:void[*] out:DWORD @guest @special=get_private
+FreePrivateData             hr     iid @guest
+SetPriority                 u32    v
+GetPriority                 u32
+PreLoad                     void
+GetType                     u32
+Lock                        hr     v v lockptr v @special=lock_buffer
+Unlock                      hr
+GetDesc                     hr     out:D3DVERTEXBUFFER_DESC
+
+interface IDirect3DIndexBuffer9 IndexBuffer
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32    @guest
+GetDevice                   hr     ifout:Device
+SetPrivateData              hr     iid in:void[a3] v v @guest @special=set_private
+GetPrivateData              hr     iid out:void[*] out:DWORD @guest @special=get_private
+FreePrivateData             hr     iid @guest
+SetPriority                 u32    v
+GetPriority                 u32
+PreLoad                     void
+GetType                     u32
+Lock                        hr     v v lockptr v @special=lock_buffer
+Unlock                      hr
+GetDesc                     hr     out:D3DINDEXBUFFER_DESC
+
+interface IDirect3DVertexDeclaration9 VertexDecl
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32
+GetDevice                   hr     ifout:Device
+GetDeclaration              hr     out:D3DVERTEXELEMENT9[*] out:UINT @special=get_declaration
+
+interface IDirect3DVertexShader9 VertexShader
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32
+GetDevice                   hr     ifout:Device
+GetFunction                 hr     out:void[*] out:UINT @special=get_function
+
+interface IDirect3DPixelShader9 PixelShader
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32
+GetDevice                   hr     ifout:Device
+GetFunction                 hr     out:void[*] out:UINT @special=get_function
+
+interface IDirect3DStateBlock9 StateBlock
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32
+GetDevice                   hr     ifout:Device
+Capture                     hr
+Apply                       hr
+
+interface IDirect3DQuery9 Query
+QueryInterface              hr     iid ifout_iid
+AddRef                      u32
+Release                     u32
+GetDevice                   hr     ifout:Device
+GetType                     u32
+GetDataSize                 u32
+Issue                       hr     v
+GetData                     hr     out:void[*] v v @special=get_data

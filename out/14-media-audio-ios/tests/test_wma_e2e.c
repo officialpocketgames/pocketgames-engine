@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 14 Part F, WMA end to end: WMA v1 and v2 streams of a 440 Hz tone made with FFmpeg's own

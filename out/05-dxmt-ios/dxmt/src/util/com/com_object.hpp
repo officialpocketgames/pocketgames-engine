@@ -1,3 +1,4 @@
+/* Changed for MYIOSDECK (spec 33 clarification 7: object lifetime hooks of the ios_wow_native build). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 /*
  * This file is part of DXMT, Copyright (c) 2023 Feifan He
  *
@@ -12,6 +13,9 @@
 #include <atomic>
 #include "unknwn.h"
 #include "../util_likely.hpp"
+#ifdef DXMT_IOS_WOW_NATIVE
+#include <tuple> /* MYIOSDECK spec 33 */
+#endif
 
 namespace dxmt {
 
@@ -40,7 +44,20 @@ public:
 template <typename... Base> class ComObject : public Base... {
 
 public:
+#ifdef DXMT_IOS_WOW_NATIVE
+  /* MYIOSDECK spec 33 clarifications 5 and 7: the seam is told once for every object
+     destroyed, with the interface address handed out for it (the first base), on whatever
+     thread runs the destructor, before the memory is freed. Clarification 13: an object
+     remembers the generation it was made in, so one orphaned by its process's end no longer
+     counts when it is destroyed later. */
+  ComObject() : m_nativeGeneration(::dxmt::ios_wow_native::objectBorn()) {}
+  virtual ~ComObject() {
+    using First = std::tuple_element_t<0, std::tuple<Base...>>;
+    ::dxmt::ios_wow_native::objectGone(static_cast<First *>(this), m_nativeGeneration);
+  }
+#else
   virtual ~ComObject() {}
+#endif
 
   ULONG STDMETHODCALLTYPE AddRef() {
     uint32_t refCount = m_refCount++;
@@ -71,6 +88,9 @@ public:
 protected:
   std::atomic<uint32_t> m_refCount = {0ul};
   std::atomic<uint32_t> m_refPrivate = {0ul};
+#ifdef DXMT_IOS_WOW_NATIVE
+  const uint32_t m_nativeGeneration; /* MYIOSDECK spec 33 clarification 13 */
+#endif
 };
 
 template <typename... Base> class ComObjectWithInitialRef : public Base... {

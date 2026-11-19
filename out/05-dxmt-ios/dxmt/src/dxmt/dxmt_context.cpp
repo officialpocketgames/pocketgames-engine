@@ -4,6 +4,7 @@
 // Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 // Also changed for MYIOSDECK (spec 05 round 17: 63 pass counts, 64 the trace's pass lines, 68 the compute and
 // blit merge, 69-72 the pass cuts, 73 the switches).
+// Changed for MYIOSDECK (spec 33 B2, clarification 9: the ios_wow_native build's memory, no frame trace or dump).
 #include "dxmt_context.hpp"
 #include "Metal.hpp"
 #include "dxmt_command_queue.hpp"
@@ -68,7 +69,12 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
   dummy_sampler_info_.max_anisotroy = 1;
   dummy_sampler_info_.lod_average = false;
   dummy_sampler_ = device.newSamplerState(dummy_sampler_info_);
+#ifdef DXMT_IOS_WOW_NATIVE
+  // MYIOSDECK spec 33 B2: only Metal reads it: the native heap
+  dummy_cbuffer_host_ = ios_wow_native::allocHost(65536, kPlacedMemoryAlignment);
+#else
   dummy_cbuffer_host_ = wsi::aligned_malloc(65536, kPlacedMemoryAlignment); // 16 KB pages on iOS
+#endif
   dummy_cbuffer_info_.length = 65536;
   dummy_cbuffer_info_.memory.set(dummy_cbuffer_host_);
   dummy_cbuffer_info_.options = WMTResourceOptionCPUCacheModeWriteCombined | WMTResourceStorageModeShared |
@@ -1076,6 +1082,9 @@ WriteFrameTrace(FrameTraceRecord &record) {
    the process, and one line says it is on. */
 bool
 FrameTraceSwitch() {
+#ifdef DXMT_IOS_WOW_NATIVE
+  return false; // MYIOSDECK spec 33 clarification 9: it writes DOS paths
+#endif
   static const bool on = [] {
     bool value = FrameTraceSwitchValue(env::getEnvVar("PG_DXMT_FRAME_TRACE"));
     if (value) // spec 05 clarification 24: the schedule
@@ -1117,6 +1126,9 @@ CutSettingsOnce() {
 /* spec 05 clarification 28: the dump switch, read once per process like the trace's */
 bool
 FrameDumpSwitch() {
+#ifdef DXMT_IOS_WOW_NATIVE
+  return false; // MYIOSDECK spec 33 clarification 9: it writes DOS paths
+#endif
   static const bool on = [] {
     bool value = FrameTraceSwitchValue(env::getEnvVar("PG_DXMT_FRAME_DUMP"));
     if (value)

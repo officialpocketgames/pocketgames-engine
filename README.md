@@ -1,6 +1,6 @@
-# Pocket Games: open-source components
+# Relic Play: open-source components
 
-[Pocket Games](https://officialpocketgames.github.io/) for iPhone and iPad includes the open-source
+[Relic Play](https://officialpocketgames.github.io/) for iPhone and iPad includes the open-source
 components below. This repository holds the source of the ones it builds (Wine and DXMT for iOS,
 with every change made for iOS) and the scripts that build them. Each file's licence is in its
 header; the licence texts are in the app under Settings › About › Open-source licences.
@@ -13,7 +13,7 @@ header; the licence texts are in the app under Settings › About › Open-sourc
 | [FreeType](https://freetype.org) 2.13.3 | FreeType License |
 | [BearSSL](https://www.bearssl.org) | MIT |
 | [LibTomCrypt](https://www.libtom.net) 1.18.2 and LibTomMath | Public domain or WTFPL |
-| New code for iOS in this repository | MIT |
+| New code for iOS in this repository | GNU LGPL 2.1 or later (snapshots before 2026-11-19: MIT) |
 
 ## Source and relinking
 

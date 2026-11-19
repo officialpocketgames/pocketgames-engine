@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 07 Part C: reading the switches once, the module-wide mirror budget and
-// the per-device log line (C16).
+// the per-device log line (C16). Spec 33 B6: the ios_wow_native build's tag.
 
 #include "d3d9_ios.hpp"
 
@@ -58,14 +58,23 @@ D9MirrorCacheBudget() {
 void
 LogD9IosDevice(bool bc_emulated, bool call_stats) {
   const D9IosConfig &c = D9Ios();
+#ifdef DXMT_IOS_WOW_NATIVE
+  // Spec 33 B6 and clarification 9: the native build tags the line and says
+  // what it leaves out.
+  const char *head = "d3d9 (native) device: bc_decode=";
+  const char *tail = " frame_trace=off frame_dump=off metal_capture=off shader_dump=off";
+#else
+  const char *head = "d3d9 device: bc_decode=";
+  const char *tail = "";
+#endif
   Logger::info(str::format(
-      "d3d9 device: bc_decode=", bc_emulated ? 1 : 0, " upload_commit_mb=", c.upload_commit_bytes >> 20,
+      head, bc_emulated ? 1 : 0, " upload_commit_mb=", c.upload_commit_bytes >> 20,
       " batch_budget=", c.batch_budget ? 1 : 0, " scene_batch=", c.scene_batch ? 1 : 0,
       " batch_readback=", c.batch_readback ? 1 : 0, " query_adaptive=", c.query_adaptive ? 1 : 0,
       " virtual_mode=", c.virtual_mode ? 1 : 0, " canonical_blend=", c.canonical_blend ? 1 : 0,
       " binding_prune=", c.binding_prune ? 1 : 0, " shader_prune=", c.shader_prune ? 1 : 0,
       " aniso_limit=", c.aniso_limit, " small_mirror_cache=", c.small_mirror_cache ? 1 : 0,
-      " call_stats=", call_stats ? 1 : 0
+      " call_stats=", call_stats ? 1 : 0, tail
   ));
 }
 

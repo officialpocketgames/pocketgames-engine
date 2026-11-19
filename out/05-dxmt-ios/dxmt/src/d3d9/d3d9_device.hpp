@@ -3,6 +3,7 @@
 // commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
 // Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
+// Changed for MYIOSDECK (spec 33): the ios_wow_native build; see out/05-dxmt-ios/CHANGES.md, section "spec 33".
 #pragma once
 
 #include "Metal.hpp"
@@ -39,6 +40,10 @@
 #include <mutex>
 #include <unordered_map>
 #include <vector>
+
+#ifdef DXMT_IOS_WOW_NATIVE
+struct d3d9w_window_state; // MYIOSDECK spec 33: interfaces/d3d9w_native.h
+#endif
 
 namespace dxmt {
 
@@ -513,6 +518,14 @@ public:
   focusMessagesFiltered() const {
     return m_focusMessagesFiltered;
   }
+#ifdef DXMT_IOS_WOW_NATIVE
+  // MYIOSDECK spec 33 clarification 7: the device's side of the seam
+  // (interfaces/d3d9w_native.h, d3d9_native_seam.cpp). The thunk makes the
+  // window, focus-window and display-mode calls in guest code; the device keeps
+  // its state and reports what the PE build would have done.
+  HRESULT nativeWindowState(::d3d9w_window_state *out);
+  DWORD nativeFocusActivation(bool activated, RECT *pos);
+#endif
   HRESULT STDMETHODCALLTYPE CreateRenderTargetEx(
       UINT Width, UINT Height, D3DFORMAT Format, D3DMULTISAMPLE_TYPE MultiSample, DWORD MultisampleQuality,
       BOOL Lockable, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle, DWORD Usage

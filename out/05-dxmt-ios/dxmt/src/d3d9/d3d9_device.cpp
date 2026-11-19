@@ -3,7 +3,12 @@
 // commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
 // Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
+// Changed for MYIOSDECK (spec 33): the ios_wow_native build; see out/05-dxmt-ios/CHANGES.md, section "spec 33".
 #include "d3d9_device.hpp"
+#ifdef DXMT_IOS_WOW_NATIVE
+#include "d3d9_native_focus.hpp" // MYIOSDECK spec 33
+#include "d3d9w_native.h"        // MYIOSDECK spec 33: interfaces/d3d9w_native.h
+#endif
 
 #include "airconv_public.h"
 #include "d3d9_buffer.hpp"
@@ -1910,7 +1915,7 @@ MTLD3D9Device::GetAvailableTextureMem() {
       if (end != e && mb > 0)
         return static_cast<uint64_t>(mb) << 20;
     }
-#ifdef __i386__
+#if defined(__i386__) || defined(DXMT_IOS_WOW_NATIVE) /* MYIOSDECK spec 33: 32-bit programs */
     return 1024ull << 20;
 #else
     return 0;
@@ -2183,6 +2188,7 @@ MTLD3D9Device::GetNumberOfSwapChains() {
   D9DeviceLock lock = LockDevice();
   return 1;
 }
+#ifndef DXMT_IOS_WOW_NATIVE /* MYIOSDECK spec 33: the native build's versions follow unhookFocusWindowProc */
 namespace {
 // Hides the window traffic a device makes on its own behalf from the
 // application, and restores the previous setting rather than clearing it since
@@ -2554,6 +2560,108 @@ MTLD3D9Device::unhookFocusWindowProc() {
     RemovePropW(focus, kFocusProcProp);
   }
 }
+#else /* DXMT_IOS_WOW_NATIVE */
+// MYIOSDECK spec 33 B4 and clarification 7. In the ios_wow_native build the
+// device makes no window, focus-window or display-mode call: everything that
+// sends a message or changes a window runs as guest code in the thunk, before or
+// after the native call, as the PE build's code above does it. The device keeps
+// the same state and reports it through the seam (nativeWindowState,
+// nativeFocusActivation, d3d9_native_seam.cpp).
+void
+MTLD3D9Device::enterFullscreenWindow(HWND, UINT, UINT) {}
+
+void
+MTLD3D9Device::leaveFullscreenWindow() {}
+
+void
+MTLD3D9Device::hookFocusWindowProc(HWND) {}
+
+void
+MTLD3D9Device::unhookFocusWindowProc() {}
+
+void
+MTLD3D9Device::onFocusActivation(bool activated) {
+  (void)nativeFocusActivation(activated, nullptr);
+}
+
+HRESULT
+MTLD3D9Device::nativeWindowState(::d3d9w_window_state *out) {
+  if (!out)
+    return D3DERR_INVALIDCALL;
+  D9DeviceLock lock = LockDevice();
+  *out = {};
+  out->focus_window = m_creationParams.hFocusWindow;
+  // The window the PE build's enter/leaveFullscreenWindow work on: the implicit
+  // chain's, which is hDeviceWindow or, without one, the focus window.
+  out->device_window = m_implicitSwapChain ? m_implicitSwapChain->hWindow()
+                       : m_presentParams.hDeviceWindow ? m_presentParams.hDeviceWindow
+                                                       : m_creationParams.hFocusWindow;
+  out->windowed = m_presentParams.Windowed;
+  out->ex = m_isEx;
+  out->backbuffer_width = m_presentParams.BackBufferWidth;
+  out->backbuffer_height = m_presentParams.BackBufferHeight;
+  out->behavior_flags = m_creationParams.BehaviorFlags;
+  out->virtual_mode = D9Ios().virtual_mode;
+  // The mode enterFullscreenWindow sets on the virtual monitor (spec 07 C8):
+  // the back buffer's size.
+  out->mode.Width = m_presentParams.BackBufferWidth;
+  out->mode.Height = m_presentParams.BackBufferHeight;
+  out->mode.RefreshRate = m_presentParams.FullScreen_RefreshRateInHz;
+  out->mode.Format = m_presentParams.BackBufferFormat;
+  return D3D_OK;
+}
+
+// The PE build's onFocusActivation without its window calls: the same state
+// transitions in the same order, and the window actions returned instead.
+DWORD
+MTLD3D9Device::nativeFocusActivation(bool activated, RECT *pos) {
+  if (!m_implicitSwapChain || m_implicitSwapChain->windowed())
+    return 0;
+
+  HWND device_window = m_implicitSwapChain->hWindow();
+  d9native::FocusInput in{};
+  in.activated = activated;
+  in.may_touch_window = !(m_creationParams.BehaviorFlags & D3DCREATE_NOWINDOWCHANGES);
+  in.has_device_window = device_window != nullptr;
+  in.backbuffer_width = m_presentParams.BackBufferWidth;
+  in.backbuffer_height = m_presentParams.BackBufferHeight;
+
+  if (!activated) {
+    if (device_window)
+      wsi::restoreDisplayMode(wsi::getWindowMonitor(device_window));
+    m_fullscreenOccluded.store(true, std::memory_order_relaxed);
+    m_lastForegroundSample.store(wsi::foregroundWindow(), std::memory_order_relaxed);
+    if (!m_isEx) {
+      auto state = DeviceState::Ok;
+      m_deviceState.compare_exchange_strong(state, DeviceState::Lost, std::memory_order_relaxed);
+    }
+    in.window_visible = device_window && IsWindowVisible(device_window);
+  } else {
+    m_fullscreenOccluded.store(false, std::memory_order_relaxed);
+    m_lastForegroundSample.store(wsi::foregroundWindow(), std::memory_order_relaxed);
+    auto state = DeviceState::Lost;
+    m_deviceState.compare_exchange_strong(
+        state, m_isEx ? DeviceState::Ok : DeviceState::NotReset, std::memory_order_relaxed
+    );
+    if (in.may_touch_window && device_window) {
+      MONITORINFO mi{};
+      mi.cbSize = sizeof(mi);
+      HMONITOR monitor = m_fullscreenMonitor.load(std::memory_order_relaxed);
+      if (!monitor)
+        monitor = MonitorFromWindow(device_window, MONITOR_DEFAULTTOPRIMARY);
+      if (monitor && GetMonitorInfoW(monitor, &mi)) {
+        in.monitor_x = mi.rcMonitor.left;
+        in.monitor_y = mi.rcMonitor.top;
+      }
+    }
+  }
+
+  const d9native::FocusActions out = d9native::FocusWindowActions(in);
+  if (pos && (out.actions & d9native::kFocusMove))
+    *pos = out.pos;
+  return out.actions;
+}
+#endif /* DXMT_IOS_WOW_NATIVE */
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *pPresentationParameters) {
@@ -5108,7 +5216,7 @@ MTLD3D9Device::frontBufferReadback(MTLD3D9SwapChain *chain, IDirect3DSurface9 *p
   // Fullscreen, and the headless host build, use (0, 0).
   int32_t dst_x = 0;
   int32_t dst_y = 0;
-#ifdef _WIN32
+#if defined(_WIN32) || defined(DXMT_IOS_WOW_NATIVE) /* MYIOSDECK spec 33 B4: ClientToScreen is allowed */
   if (chain->windowed()) {
     HWND window = chain->hWindow() ? chain->hWindow() : m_creationParams.hFocusWindow;
     POINT point = {0, 0};

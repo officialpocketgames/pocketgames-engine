@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Included first in every file of the iOS win32u (build-ios.sh: -include). Spec 12 Part A3/A4:

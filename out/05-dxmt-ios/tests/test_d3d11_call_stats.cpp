@@ -1,11 +1,11 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 05 clarification 63 (DXMT_D11_CALL_STATS): the counter table and its report
 // (dxmt/src/d3d11/d3d11_call_stats_table.hpp) with a fake clock: the switch's values, ranking
 // with ties by name, rates, per-Present figures, the reset, fewer than 16 methods, "no Present",
-// the def: mark, level 2's times, the work, pass and cut lines, and every line under the
-// logger's cap with eight-digit rates. That every method is counted once is checked by
+// the def: mark, level 2's times, the work, pass and cut lines, round 18's query and child-call
+// lines (item 83), and every line under the logger's cap with eight-digit rates. That every method is counted once is checked by
 // check-d3d11-call-sites.sh and test_d3d11_call_list.c.
 
 #include "test_common.hpp"
@@ -92,8 +92,8 @@ TestReport() {
   CHECK(!table.reportDue(14 * kSecond));
   CHECK(table.reportDue(15 * kSecond));
   auto lines = table.takeReport(15 * kSecond, passes, 1, 1);
-  // summary, two top lines (5 methods), and the five per-Present lines of level 1
-  CHECK_EQ(lines.size(), 8u);
+  // summary, two top lines (5 methods), and the seven per-Present lines of level 1
+  CHECK_EQ(lines.size(), 10u);
   CHECK(lines[0] == "d3d11 calls: 200/s, 50/s on deferred contexts, 3/s from other threads, 20.0 per Present (10 "
                     "Presents/s)");
   CHECK(lines[1] == "d3d11 calls, top 1-4: Draw 100/s (10.0/Present), def:Draw 50/s (5.0/Present), "
@@ -110,6 +110,10 @@ TestReport() {
                     "dispatch 0.0, commit 0.0, list 0.0, other 0.0");
   CHECK(lines[7] == "d3d11 cuts per Present: keep-dsv 0.0/3.0, ro-store 0.0/0.0, discard 0.0/0.0, overwrite-load "
                     "0.0/0.0; 0.0 MB avoided, 103.0 MB more with the switches on");
+  // round 18 (item 83): nothing of either counted here
+  CHECK(lines[8] == "d3d11 queries per Present: 0.0 GetData, 0.0 not ready, 0.0 parked (0.0 ms), 0.0 flushes");
+  CHECK(lines[9] == "d3d11 child calls per Present: AddRef 0.0 (0.0 inside calls), Release 0.0 (0.0), "
+                    "QueryInterface 0.0 (0.0)");
 
   // the table is reset and the next period starts at 15 s
   CHECK_EQ(table.countOf(kD11IdImmediate + D11X_Draw), 0u);
@@ -125,6 +129,8 @@ TestReport() {
   CHECK(quiet[1] == "d3d11 calls, top 1-1: Device::CreateBuffer 0/s 2000 ns");
   CHECK(quiet.back() == "d3d11 time per Present: no Present");
   CHECK(quiet[2] == "d3d11 work per Present: no Present");
+  CHECK(quiet[quiet.size() - 3] == "d3d11 queries per Present: no Present");
+  CHECK(quiet[quiet.size() - 2] == "d3d11 child calls per Present: no Present");
 }
 
 void
@@ -151,10 +157,44 @@ TestCutsAndTime() {
   p.level = 2;
   auto lines = FormatD11Report(p);
   CHECK(lines[1] == "d3d11 calls, top 1-1: Draw 2400/s (240.0/Present) 500 ns");
-  CHECK(lines[lines.size() - 2] == "d3d11 cuts per Present: keep-dsv 2.0/0.0, ro-store 0.0/8.0, discard 0.0/0.0, "
+  CHECK(lines[lines.size() - 4] == "d3d11 cuts per Present: keep-dsv 2.0/0.0, ro-store 0.0/8.0, discard 0.0/0.0, "
                                    "overwrite-load 0.0/0.0; 2.0 MB avoided, 59.0 MB more with the switches on");
   CHECK(lines.back() == "d3d11 time per Present: 51.0 ms in calls on the presenting thread, 0.0 ms on other "
                         "threads, 8.0 ms encoding");
+}
+
+/* Round 18 (item 83): the queries and child-call lines with figures */
+void
+TestQueryAndChildLines() {
+  std::vector<uint32_t> counts(kD11CallCount, 0);
+  counts[kD11IdImmediate + D11X_GetData] = 3000;
+  counts[kD11IdOther + D11O_Child_AddRef] = 900;
+  counts[kD11IdOther + D11O_Child_Release] = 800;
+  counts[kD11IdOther + D11O_Child_QueryInterface] = 50;
+  D11Work work;
+  work.query_not_ready = 2500;
+  work.query_parked = 40;
+  work.query_parked_ns = 40ull * 800000; // 0.8 ms each
+  work.query_flushes = 20;
+  work.child_inside[D11ChildIndex(D11O_Child_AddRef)] = 600;
+  work.child_inside[D11ChildIndex(D11O_Child_Release)] = 500;
+  work.child_inside[D11ChildIndex(D11O_Child_QueryInterface)] = 10;
+  D11Period p;
+  p.counts = counts.data();
+  p.presents = 100;
+  p.elapsed_ns = 10 * kSecond;
+  p.work = &work;
+  auto lines = FormatD11Report(p);
+  CHECK_EQ(lines.size(), 1u + 1 + 7);
+  CHECK(lines[lines.size() - 2] == "d3d11 queries per Present: 30.0 GetData, 25.0 not ready, 0.4 parked (0.3 ms), "
+                                   "0.2 flushes");
+  CHECK(lines.back() == "d3d11 child calls per Present: AddRef 9.0 (6.0 inside calls), Release 8.0 (5.0), "
+                        "QueryInterface 0.5 (0.1)");
+  // without a Present
+  p.presents = 0;
+  auto quiet = FormatD11Report(p);
+  CHECK(quiet[quiet.size() - 2] == "d3d11 queries per Present: no Present");
+  CHECK(quiet.back() == "d3d11 child calls per Present: no Present");
 }
 
 void
@@ -172,6 +212,10 @@ TestCap() {
     r = 4000000000u;
   for (auto &s : work.pass_starts)
     s = 4000000000u;
+  work.query_not_ready = work.query_parked = work.query_flushes = 4000000000u;
+  work.query_parked_ns = ~0ull >> 8;
+  for (auto &c : work.child_inside)
+    c = 4000000000u;
   D11Passes passes;
   passes.render = passes.compute = passes.blit = passes.clear = 4000000000ull;
   for (auto &c : passes.cut_applied)
@@ -190,7 +234,7 @@ TestCap() {
   p.present_thread_ticks = ~0ull >> 8;
   p.level = 2;
   auto lines = FormatD11Report(p);
-  CHECK_EQ(lines.size(), 1u + 4 + 6);
+  CHECK_EQ(lines.size(), 1u + 4 + 8);
   for (auto &line : lines)
     CHECK(FormatLogLine("info:  ", line).size() <= kLogMessageMaxBytes);
   // fewer than 16 methods: as many as were called
@@ -214,6 +258,7 @@ main() {
   TestIds();
   TestReport();
   TestCutsAndTime();
+  TestQueryAndChildLines();
   TestCap();
   return TestSummary("test_d3d11_call_stats");
 }

@@ -1,10 +1,10 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // CI link check: do-nothing definitions of what the app itself provides to the unix side,
-// interfaces/wine_unix_contract.h Section B (spec 02 implements them in the real app), and the
-// app hooks of specs 10 Part C and 11. Compiled against the contract header, so a signature that
-// drifts from it fails here.
+// interfaces/wine_unix_contract.h Section B (spec 02 implements them in the real app), the
+// app hooks of specs 10 Part C and 11, and spec 33's gate (interfaces/ios_wow_native.h Section A).
+// Compiled against the contract headers, so a signature that drifts from them fails here.
 
 #include <stddef.h>
 #include <stdint.h>
@@ -90,3 +90,10 @@ void pgios_gamepad_set_vibration(int index, uint16_t left, uint16_t right) { (vo
 int  pgios_gamepad_rumble_caps(void) { return 0; }
 int  pgios_hidpad_get_state(struct pgios_hidpad *out) { (void)out; return 0; }
 void pgios_hidpad_set_output(const struct pgios_hidpad_output *output) { (void)output; }
+
+/* --- spec 33: the gate of the app's 32-bit CPUs (interfaces/ios_wow_native.h Section A; test
+ * builds only, weak on the libraries' side): no gate here, so a library reports none --- */
+#include "ios_wow_native.h"
+uint32_t ios_wow_native_register(uint32_t lib, ios_wow_native_fn fn) { (void)lib; (void)fn; return 0; }
+int ios_wow_native_read(void *dst, uint32_t guest, size_t n) { (void)dst; (void)guest; (void)n; return 0; }
+int ios_wow_native_write(uint32_t guest, const void *src, size_t n) { (void)guest; (void)src; (void)n; return 0; }

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // pgl: the native GL backend of spec 35 (Part D3-D6): OpenGL 2.1 from gl4es on a native ANGLE

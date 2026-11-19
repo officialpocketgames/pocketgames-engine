@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 35 J4 and clarification 2.6: WGL_ARB_pbuffer with WGL_ARB_render_texture. A 64 x 64

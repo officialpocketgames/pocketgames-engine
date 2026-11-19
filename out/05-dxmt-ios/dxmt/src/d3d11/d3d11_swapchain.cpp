@@ -1,6 +1,9 @@
 // Changed for MYIOSDECK (spec 05; FLIP_SEQUENTIAL accepted, see d3d11_swap_effect.hpp; clarification 63: Present counted). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Also changed for MYIOSDECK (spec 05 round 19, item 88: rotation, background colour, source size
+// and restrict-to output answer instead of aborting; see d3d11_swapchain_state.hpp).
 #include "d3d11_swapchain.hpp"
 #include "d3d11_swap_effect.hpp"
+#include "d3d11_swapchain_state.hpp"
 #include "com/com_guid.hpp"
 #include "config/config.hpp"
 #include "d3d11_private.h"
@@ -27,6 +30,7 @@
 #include "dxmt_presenter.hpp"
 #include <atomic>
 #include <cfloat>
+#include <cstddef>
 #include <format>
 
 /**
@@ -36,6 +40,16 @@ This value is 1 by default.
 constexpr size_t kSwapchainLatency = 1;
 
 namespace dxmt {
+
+/* MYIOSDECK spec 05 round 19: d3d11_swapchain_state.hpp mirrors these as numbers */
+static_assert(swapchain_state::kRotationUnspecified == DXGI_MODE_ROTATION_UNSPECIFIED);
+static_assert(swapchain_state::kRotationIdentity == DXGI_MODE_ROTATION_IDENTITY);
+static_assert(swapchain_state::kRotationRotate90 == DXGI_MODE_ROTATION_ROTATE90);
+static_assert(swapchain_state::kRotationRotate180 == DXGI_MODE_ROTATION_ROTATE180);
+static_assert(swapchain_state::kRotationRotate270 == DXGI_MODE_ROTATION_ROTATE270);
+static_assert(sizeof(swapchain_state::Rgba) == sizeof(DXGI_RGBA));
+static_assert(offsetof(DXGI_RGBA, r) == 0 && offsetof(DXGI_RGBA, g) == 4 && offsetof(DXGI_RGBA, b) == 8 &&
+              offsetof(DXGI_RGBA, a) == 12);
 
 WMTPixelFormat ConvertSwapChainFormat(DXGI_FORMAT format) {
   switch (format) {
@@ -482,6 +496,7 @@ public:
   ResizeBuffers(UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format,
                 UINT flags) final {
     /* BufferCount ignored */
+    source_size_.reset(); // MYIOSDECK spec 05 round 19 (item 88): the source size is the new buffers'
     if (Width == 0 || Height == 0) {
       wsi::getWindowSize(hWnd, &desc_.Width, &desc_.Height);
     } else {
@@ -913,34 +928,61 @@ public:
 
   BOOL STDMETHODCALLTYPE IsTemporaryMonoSupported() final { return FALSE; };
 
-  HRESULT
-  STDMETHODCALLTYPE
-  GetRestrictToOutput(IDXGIOutput **ppRestrictToOutput) final { IMPLEMENT_ME; };
+  /* MYIOSDECK spec 05 round 19 (item 88): the seven methods below were IMPLEMENT_ME, which
+     aborts the game (exit code 3); SDL2's Direct3D 11 renderer calls SetRotation on a
+     flip-model swap chain. Each keeps what the game sets and changes nothing about presenting
+     (d3d11_swapchain_state.hpp). */
 
   HRESULT
   STDMETHODCALLTYPE
-  SetBackgroundColor(const DXGI_RGBA *pColor) final { IMPLEMENT_ME; };
-
-  HRESULT
-  STDMETHODCALLTYPE
-  GetBackgroundColor(DXGI_RGBA *pColor) final { IMPLEMENT_ME; };
-
-  HRESULT
-  STDMETHODCALLTYPE
-  SetRotation(DXGI_MODE_ROTATION Rotation) final { IMPLEMENT_ME; };
-
-  HRESULT
-  STDMETHODCALLTYPE
-  GetRotation(DXGI_MODE_ROTATION *pRotation) final { IMPLEMENT_ME; };
-
-  HRESULT STDMETHODCALLTYPE SetSourceSize(UINT width, UINT height) override {
-    IMPLEMENT_ME
+  GetRestrictToOutput(IDXGIOutput **ppRestrictToOutput) final {
+    if (!ppRestrictToOutput)
+      return E_INVALIDARG;
+    *ppRestrictToOutput = nullptr; // no swap chain here is restricted to an output
     return S_OK;
   };
 
-  HRESULT STDMETHODCALLTYPE GetSourceSize(UINT *width, UINT *height) override {
-    IMPLEMENT_ME
+  HRESULT
+  STDMETHODCALLTYPE
+  SetBackgroundColor(const DXGI_RGBA *pColor) final {
+    return StateResult(background_color_.set(reinterpret_cast<const swapchain_state::Rgba *>(pColor)));
+  };
+
+  HRESULT
+  STDMETHODCALLTYPE
+  GetBackgroundColor(DXGI_RGBA *pColor) final {
+    return StateResult(background_color_.get(reinterpret_cast<swapchain_state::Rgba *>(pColor)));
+  };
+
+  HRESULT
+  STDMETHODCALLTYPE
+  SetRotation(DXGI_MODE_ROTATION Rotation) final {
+    static std::atomic<bool> logged{false};
+    if (rotation_.set(uint32_t(Rotation), logged))
+      Logger::info(str::format(
+          "DXGISwapChain::SetRotation: rotation ", uint32_t(Rotation),
+          " stored, not applied (the iOS layer keeps its own orientation)"
+      ));
     return S_OK;
+  };
+
+  HRESULT
+  STDMETHODCALLTYPE
+  GetRotation(DXGI_MODE_ROTATION *pRotation) final {
+    uint32_t rotation = 0;
+    if (!pRotation)
+      return E_INVALIDARG;
+    rotation_.get(&rotation);
+    *pRotation = DXGI_MODE_ROTATION(rotation);
+    return S_OK;
+  };
+
+  HRESULT STDMETHODCALLTYPE SetSourceSize(UINT width, UINT height) override {
+    return StateResult(source_size_.set(width, height, desc_.Width, desc_.Height));
+  };
+
+  HRESULT STDMETHODCALLTYPE GetSourceSize(UINT *width, UINT *height) override {
+    return StateResult(source_size_.get(width, height, desc_.Width, desc_.Height));
   };
 
   HRESULT STDMETHODCALLTYPE SetMaximumFrameLatency(UINT max_latency) override {
@@ -1039,6 +1081,11 @@ public:
   }
 
 private:
+  static HRESULT
+  StateResult(swapchain_state::Result result) {
+    return result == swapchain_state::Result::Ok ? S_OK : E_INVALIDARG;
+  }
+
   bool LayerSupportEDR() {
     WMTEDRValue edr_value;
     MetalLayer_getEDRValue(layer_weak_, &edr_value);
@@ -1071,6 +1118,10 @@ private:
   HUDState hud;
   Rc<Presenter> presenter;
   ModeSetGuard modeset_guard_;
+  /* MYIOSDECK spec 05 round 19 (item 88) */
+  swapchain_state::Rotation rotation_;
+  swapchain_state::BackgroundColor background_color_;
+  swapchain_state::SourceSize source_size_;
   dxmt::mutex mutex_;
 
   std::conditional<EnableMetalFX, WMT::Reference<WMT::FXSpatialScaler>, std::monostate>::type metalfx_scaler;

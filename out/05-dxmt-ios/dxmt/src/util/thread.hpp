@@ -1,3 +1,4 @@
+/* Changed for MYIOSDECK (spec 33 B3: the ios_wow_native build's threads). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 /*
  * This file is part of DXMT, Copyright (c) 2023 Feifan He
  *
@@ -17,6 +18,9 @@
 #include <shared_mutex>
 #include <thread>
 #include <unknwn.h>
+#ifdef DXMT_IOS_WOW_NATIVE
+#include <type_traits> /* MYIOSDECK spec 33 */
+#endif
 
 #include "util_error.hpp"
 
@@ -325,6 +329,23 @@ private:
 #else
 class thread : public std::thread {
 public:
+#ifdef DXMT_IOS_WOW_NATIVE
+  /* MYIOSDECK spec 33 B3: a plain pthread, marked native (it never calls a Wine function and
+     never allocates memory the program sees) and at QoS user-interactive before it runs. */
+  thread() noexcept = default;
+  template <typename Fn, typename = std::enable_if_t<!std::is_same_v<std::decay_t<Fn>, thread>>>
+  explicit thread(Fn &&fn) :
+      std::thread([fn = std::forward<Fn>(fn)]() mutable {
+        ::dxmt::ios_wow_native::onNativeThreadStart();
+        fn();
+      }) {}
+  thread(thread &&) noexcept = default;
+  thread &operator=(thread &&) noexcept = default;
+
+  /* Every frontend thread already runs at user-interactive (onNativeThreadStart); Darwin sets
+     a QoS class only on the calling thread. */
+  void set_priority(ThreadPriority) {}
+#else
   using std::thread::thread;
 
   void set_priority(ThreadPriority priority) {
@@ -345,6 +366,7 @@ public:
     }
     ::pthread_setschedparam(this->native_handle(), policy, &param);
   }
+#endif /* DXMT_IOS_WOW_NATIVE */
 };
 
 using mutex = std::mutex;

@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 // spec 34 clarification 1, item 6: passes the triangle on and captures each vertex's value plus
 // (100, 0, 0, 0) into transform feedback buffer 0, 16 bytes a vertex

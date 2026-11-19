@@ -3,6 +3,7 @@
 // commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
 // Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
+// Changed for MYIOSDECK (spec 33): the ios_wow_native build; see out/05-dxmt-ios/CHANGES.md, section "spec 33".
 #include "d3d9_swapchain.hpp"
 #include <version.h>
 
@@ -263,7 +264,7 @@ layerDrawableExtent(
 // The monitor a window currently lives on, or null (headless / non-Win32).
 static HMONITOR
 windowMonitor(HWND hWindow) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(DXMT_IOS_WOW_NATIVE) /* MYIOSDECK spec 33 B4: a monitor query */
   return hWindow ? MonitorFromWindow(hWindow, MONITOR_DEFAULTTOPRIMARY) : nullptr;
 #else
   (void)hWindow;
@@ -280,7 +281,7 @@ windowMonitor(HWND hWindow) {
 // drawable-extent resize poll a few lines below it.
 static void
 queryMonitorRefreshRate(HMONITOR mon, double *rate_hz) {
-#ifdef _WIN32
+#if defined(_WIN32) || defined(DXMT_IOS_WOW_NATIVE) /* MYIOSDECK spec 33 B4: the display settings */
   wsi::WsiMode mode{};
   if (mon && wsi::getCurrentDisplayMode(mon, &mode) && mode.refreshRate.denominator != 0 &&
       mode.refreshRate.numerator != 0)
@@ -769,6 +770,11 @@ HRESULT
 MTLD3D9SwapChain::presentImpl(
     const RECT *pSourceRect, const RECT *pDestRect, HWND hDestWindowOverride, const RGNDATA *pDirtyRegion, DWORD dwFlags
 ) {
+#ifdef DXMT_IOS_WOW_NATIVE
+  // MYIOSDECK spec 33 C1 and clarification 9: guest-window blocks that have
+  // been empty for 2 s go back to the system on a game thread; Present is one.
+  ios_wow_window_collect();
+#endif
   D9DeviceLock lock = m_device->LockDevice();
   (void)pDirtyRegion; // hint only, spec-permitted to ignore
   // Lost-device gate: presentStateGate returns S_PRESENT_OCCLUDED (Ex) or

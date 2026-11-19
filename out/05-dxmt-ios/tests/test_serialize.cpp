@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: MIT
+// SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 05 clarification 57: PG_DXMT_SERIALIZE (dxmt/src/dxmt/dxmt_serialize.hpp). The level's

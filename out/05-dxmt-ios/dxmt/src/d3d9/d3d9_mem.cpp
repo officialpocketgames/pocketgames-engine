@@ -2,6 +2,7 @@
 // From David Acevedo's DXMT fork (github.com/dacevedo12/dxmt), tag v0.4-d3d9,
 // commit e8dd4c656dcb74a6d970a30a397d1558b0e3fb2b. LGPL-2.1-or-later: see COPYING.LIB
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
+// Changed for MYIOSDECK (spec 33): the ios_wow_native build; see out/05-dxmt-ios/CHANGES.md, section "spec 33".
 /*
  * This file is part of DXMT.
  *
@@ -20,6 +21,10 @@
 #include <algorithm>
 #include <cstdlib>
 #include <utility>
+#ifdef DXMT_IOS_WOW_NATIVE
+#include <cstring>
+#include "wsi_platform.hpp" // MYIOSDECK spec 33
+#endif
 
 namespace dxmt {
 
@@ -344,10 +349,22 @@ D3D9MemoryAllocator::AllocatedMemory() const {
   return m_allocatedMemory.load();
 }
 
+#ifdef DXMT_IOS_WOW_NATIVE
+// MYIOSDECK spec 33 B2 and clarification 9: the volume mirrors are what LockBox
+// hands the program, so they come from Part C (wsi::aligned_malloc in that build).
+D3D9Memory::D3D9Memory(D3D9MemoryAllocator *pAllocator, size_t Size) :
+    m_allocator(pAllocator),
+    m_ptr(wsi::aligned_malloc(Size, 64)),
+    m_size(Size) {
+  if (m_ptr)
+    std::memset(m_ptr, 0, Size);
+}
+#else
 D3D9Memory::D3D9Memory(D3D9MemoryAllocator *pAllocator, size_t Size) :
     m_allocator(pAllocator),
     m_ptr(std::calloc(1, Size)),
     m_size(Size) {}
+#endif
 
 D3D9Memory::D3D9Memory(D3D9Memory &&other) :
     m_allocator(std::exchange(other.m_allocator, nullptr)),
@@ -373,7 +390,11 @@ D3D9Memory::Free() {
   if (m_ptr == nullptr)
     return;
 
+#ifdef DXMT_IOS_WOW_NATIVE
+  wsi::aligned_free(m_ptr); // MYIOSDECK spec 33
+#else
   std::free(m_ptr);
+#endif
   m_ptr = nullptr;
   m_allocator->NotifyFreed(m_size);
 }
