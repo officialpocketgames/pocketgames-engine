@@ -11,6 +11,12 @@
 #define D3D9W_DISPATCH_H
 
 #define COBJMACROS
+/* Clarification 14: windows.h without Winsock. On Darwin <stdlib.h> brings the SDK's htonl,
+   htons, ntohl and ntohs macros, which Wine's winsock.h (included by windows.h otherwise) can't
+   be compiled after. The dispatch uses nothing of Winsock; d3d9.h includes objbase.h itself. */
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>

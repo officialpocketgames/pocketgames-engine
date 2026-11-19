@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: LGPL-2.1-or-later
+// SPDX-License-Identifier: MIT
 // Copyright (c) 2026 the MYIOSDECK author
 //
 // Spec 35 C3: forced into every gl4es source by build-gl4es.sh (clang -include), with GL4ES_IOS

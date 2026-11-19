@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: LGPL-2.1-or-later
+# SPDX-License-Identifier: MIT
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # Spec 35 Part C1.2 and C1.3: what of ANGLE's build goes into libangle.a, and what linking it

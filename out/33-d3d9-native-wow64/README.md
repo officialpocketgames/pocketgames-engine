@@ -46,6 +46,11 @@ sets `ret->eax` and `ret->pop`.
   run one at a time (`d3d9w_create_lock`), so a new process's create never lands between the two;
   `d3d9w_native_process_gone` is called with no dispatch lock but that one held, and must not wait
   for a gate call.
+- The dispatch's sources see `windows.h` without Winsock (clarification 14):
+  `native/d3d9w_dispatch.h` defines `WIN32_LEAN_AND_MEAN` before including it, because Wine's
+  `winsock.h` can't be compiled after the iOS SDK's `htonl`/`htons`/`ntohl`/`ntohs` macros.
+  Include a specific header for anything that turns out missing, never `winsock.h` or
+  `winsock2.h`.
 - `build-pe.sh <wine i386 build> <out dir>` writes `<out>/i386-windows/d3d9.dll` (meson + ninja,
   llvm-mingw from `LLVM_MINGW` or `PATH`). The app's DXMT PE build puts it in place of the full
   frontend's i386 `d3d9.dll` and renames that one `d3d9_dxmt32.dll`.

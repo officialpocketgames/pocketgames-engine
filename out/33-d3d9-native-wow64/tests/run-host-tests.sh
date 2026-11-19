@@ -222,6 +222,25 @@ run dispatch-build $CC -std=gnu11 -g -O1 $WARN -Wno-unused-parameter $SAN $WINE_
     "$P/native/d3d9w_extras.c" "$P/native/d3d9w_unix.c" "$P/gen/d3d9w_dispatch_gen.c" \
     "$T/fake_native.c" "$T/test_dispatch.c" -o "$OUT/test_dispatch" -lpthread &&
     run dispatch "$OUT/test_dispatch"
+# Clarification 14: the iOS SDK defines htonl, htons, ntohl and ntohs as macros, and Wine's
+# winsock.h (reached through windows.h unless WIN32_LEAN_AND_MEAN) can't be compiled after them.
+# glibc doesn't define them as macros, so this check defines them the SDK's way and compiles every
+# dispatch source build-ios.sh builds, with build-ios.sh's definitions: no __WINESRC__, which would
+# make winsock.h prefix its names (USE_WS_PREFIX) and hide the clash. As in the SDK, each expands
+# to a parenthesised expression: a bare `__builtin_bswap32(x)` would turn winsock.h's
+# `ULONG WINAPI htonl(ULONG);` into a redeclaration of the builtin, which gcc accepts.
+sdk_macros() {
+    for src in native/d3d9w_dispatch.c native/d3d9w_marshal.c native/d3d9w_special.c \
+               native/d3d9w_extras.c native/d3d9w_unix.c gen/d3d9w_dispatch_gen.c; do
+        # shellcheck disable=SC2086
+        $CC -std=gnu11 -O1 $WARN -Wno-unused-parameter -DWINE_UNIX_LIB -D_REENTRANT \
+            -isystem "$WBUILD/include" -isystem "$WINE/include" $INC \
+            '-Dhtonl(x)=((unsigned int)__builtin_bswap32(x))' '-Dhtons(x)=((unsigned short)__builtin_bswap16(x))' \
+            '-Dntohl(x)=((unsigned int)__builtin_bswap32(x))' '-Dntohs(x)=((unsigned short)__builtin_bswap16(x))' \
+            -c "$P/$src" -o /dev/null || { echo "with the SDK's byte-order macros: $src fails"; return 1; }
+    done
+}
+run dispatch-sdk-macros sdk_macros
 # shellcheck disable=SC2086
 run pure-build $CC -std=gnu11 -g -O1 $WARN $SAN $WINE_UNIX $INC "$T/test_thunk_pure.c" -o "$OUT/test_thunk_pure" &&
     run pure "$OUT/test_thunk_pure"
