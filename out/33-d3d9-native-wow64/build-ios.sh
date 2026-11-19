@@ -39,9 +39,12 @@ esac
 
 CC=${CC:-"xcrun -sdk iphoneos clang"}
 AR=${AR:-"xcrun -sdk iphoneos ar"}
+# Clarification 14: every source here sees windows.h without Winsock (WIN32_LEAN_AND_MEAN). The
+# SDK's headers define htonl, htons, ntohl and ntohs as macros, and Wine's winsock.h can't be
+# compiled after them. tests/run-host-tests.sh reads this list of definitions, srcs and checks.
 CFLAGS="-arch arm64 -miphoneos-version-min=17.0 -O2 -std=gnu11 -fno-strict-aliasing \
  -Wall -Wextra -Wno-unused-parameter \
- -DWINE_UNIX_LIB -D_REENTRANT \
+ -DWINE_UNIX_LIB -D_REENTRANT -DWIN32_LEAN_AND_MEAN \
  -I$part/native -I$part/include -I$part/gen -I$repo/interfaces \
  -isystem $wbuild/include -isystem $wine/include ${EXTRA_CFLAGS:-}"
 

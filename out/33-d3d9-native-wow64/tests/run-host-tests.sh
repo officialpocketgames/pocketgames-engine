@@ -225,19 +225,32 @@ run dispatch-build $CC -std=gnu11 -g -O1 $WARN -Wno-unused-parameter $SAN $WINE_
 # Clarification 14: the iOS SDK defines htonl, htons, ntohl and ntohs as macros, and Wine's
 # winsock.h (reached through windows.h unless WIN32_LEAN_AND_MEAN) can't be compiled after them.
 # glibc doesn't define them as macros, so this check defines them the SDK's way and compiles every
-# dispatch source build-ios.sh builds, with build-ios.sh's definitions: no __WINESRC__, which would
-# make winsock.h prefix its names (USE_WS_PREFIX) and hide the clash. As in the SDK, each expands
-# to a parenthesised expression: a bare `__builtin_bswap32(x)` would turn winsock.h's
-# `ULONG WINAPI htonl(ULONG);` into a redeclaration of the builtin, which gcc accepts.
+# source build-ios.sh compiles (its srcs and checks) with build-ios.sh's own -D definitions, all
+# read from build-ios.sh itself, so a source or a definition added there is checked too. No
+# __WINESRC__ (build-ios.sh has none): it would make winsock.h prefix its names (USE_WS_PREFIX)
+# and hide the clash. As in the SDK, each macro expands to a parenthesised expression: a bare
+# `__builtin_bswap32(x)` would turn winsock.h's `ULONG WINAPI htonl(ULONG);` into a redeclaration
+# of the builtin, which gcc accepts.
+ios_var() {   # ios_var <name>: the value of build-ios.sh's <name>="..." (one line or several)
+    awk -v n="$1" '
+        !on && index($0, n "=\"") == 1 { on = 1; $0 = substr($0, length(n) + 3) }
+        on { i = index($0, "\""); if (i > 0) { printf "%s ", substr($0, 1, i - 1); exit } printf "%s ", $0 }
+    ' "$P/build-ios.sh"
+}
+IOS_SRCS="$(ios_var srcs) $(ios_var checks)"
+IOS_DEFS=$(ios_var CFLAGS | tr ' ' '\n' | grep -- '^-D' | tr '\n' ' ')
 sdk_macros() {
-    for src in native/d3d9w_dispatch.c native/d3d9w_marshal.c native/d3d9w_special.c \
-               native/d3d9w_extras.c native/d3d9w_unix.c gen/d3d9w_dispatch_gen.c; do
+    [ -n "$(echo $IOS_SRCS)" ] && [ -n "$IOS_DEFS" ] ||
+        { echo "no srcs, checks or -D definitions read from build-ios.sh"; return 1; }
+    echo "build-ios.sh's definitions: $IOS_DEFS"
+    for src in $IOS_SRCS; do
         # shellcheck disable=SC2086
-        $CC -std=gnu11 -O1 $WARN -Wno-unused-parameter -DWINE_UNIX_LIB -D_REENTRANT \
+        $CC -std=gnu11 -O1 $WARN -Wno-unused-parameter $IOS_DEFS \
             -isystem "$WBUILD/include" -isystem "$WINE/include" $INC \
             '-Dhtonl(x)=((unsigned int)__builtin_bswap32(x))' '-Dhtons(x)=((unsigned short)__builtin_bswap16(x))' \
             '-Dntohl(x)=((unsigned int)__builtin_bswap32(x))' '-Dntohs(x)=((unsigned short)__builtin_bswap16(x))' \
             -c "$P/$src" -o /dev/null || { echo "with the SDK's byte-order macros: $src fails"; return 1; }
+        echo "$src: ok"
     done
 }
 run dispatch-sdk-macros sdk_macros
