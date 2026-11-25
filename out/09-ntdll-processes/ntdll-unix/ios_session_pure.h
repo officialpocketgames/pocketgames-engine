@@ -46,7 +46,8 @@ enum ios_leftover_action
 
 /* gone: the thread has left; waiting: its Mach run state, read before any suspension, is
  * "waiting" (blocked in the kernel); in_wine: it is inside a section that holds a Wine lock
- * (or is half-way through leaving). */
+ * (or is half-way through leaving). Spec 09 round 4 (1.1): every thread that hasn't gone is
+ * suspended for good (LOCKED and RUNNING remain for a suspension that fails). */
 enum ios_leftover_action ios_leftover_action( int gone, int waiting, int in_wine );
 
 struct ios_leftover_counts

@@ -148,6 +148,10 @@ int pgios_surface_present(HWND hwnd, int dirty_x, int dirty_y, int dirty_w, int 
  * rectangle; (cx, cy, cw, ch): its client rectangle; both in desktop pixels. */
 void pgios_window_frame(HWND hwnd, int x, int y, int w, int h, int visible,
                          int cx, int cy, int cw, int ch);
+/* (spec 12 round 8) A window was created or got a new parent: `top` is its top-level ancestor
+ * (hwnd itself for a top-level window). Called for child windows too, on Wine threads. Weak:
+ * a bridge without it ignores parents. */
+void pgios_window_toplevel(HWND hwnd, HWND top);
 /* The program's cursor image changed (straight-alpha BGRA, w*h*4 bytes, valid during the
  * call), or it was shown or hidden. Used by desktop sessions only; spec 02 may ignore them. */
 void pgios_cursor_set(unsigned int id, int w, int h, int hot_x, int hot_y, const void *bgra);

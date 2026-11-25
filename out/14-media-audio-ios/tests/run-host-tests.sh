@@ -8,7 +8,7 @@
 #   run-host-tests.sh [<configured Wine 11.4 build dir>]
 #
 # Groups:
-#   pure      always: test_audio_pure, test_wg_pure
+#   pure      always: test_audio_pure, test_wg_pure, test_openal, check-openal-exports.sh
 #   ffmpeg    test_wma_params (against FFmpeg's own decoder): needs a host FFmpeg, which is
 #             built once from refs/ffmpeg-7.1.1 by build-host-ffmpeg.sh into $FFMPEG_HOST
 #             (default ~/.cache/myiosdeck/ffmpeg-7.1.1-host)
@@ -87,6 +87,13 @@ done
 compile test_audio_pure "$T/test_audio_pure.c" $INC && run_test test_audio_pure "" test_audio_pure ios_audio_pure
 compile test_wg_pure "$T/test_wg_pure.c" $INC && \
   run_test test_wg_pure "" test_wg_pure wg_handles wg_parser_pure wg_platform_pure media_log stubs_common
+# spec 14 round 4: openal32's unix side against a fake OpenAL Soft, and its export list
+OAINC="-I$H/openal-unix -I$H/pe/dlls/openal32"
+compile openal_unix "$H/openal-unix/openal_unix.c" $INC $OAINC
+compile test_openal "$T/test_openal.c" $INC $OAINC && \
+  run_test test_openal "" test_openal openal_unix media_log stubs_common
+echo "==== check-openal-exports"
+sh "$T/check-openal-exports.sh" || fail "check-openal-exports"
 
 # ---------------------------------------------------------------- ffmpeg
 if [ ! -f "$FF/lib/libavcodec.a" ]; then

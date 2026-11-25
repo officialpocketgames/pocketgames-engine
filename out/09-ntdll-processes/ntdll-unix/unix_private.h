@@ -81,6 +81,8 @@ static inline TEB64 *NtCurrentTeb64(void) { return (TEB64 *)NtCurrentTeb()->GdiB
 #include "ios_process.h"
 /* MYIOSDECK: spec 17's helpers (Parts B, C, D) */
 #include "ios_s17.h"
+/* MYIOSDECK (spec 09 round 4): shared locks with owner tracking */
+#include "ios_lock.h"
 #else
 extern WOW_PEB *wow_peb;
 extern ULONG_PTR user_space_wow_limit;
@@ -524,12 +526,14 @@ static inline BOOL is_ec_code( ULONG_PTR ptr )
 /* MYIOSDECK (spec 09 Part D3): these locks are shared by every pseudo-process, so they are
  * always taken (upstream skips them while its one process exits), and each thread remembers
  * the ones it holds: a thread that dies inside releases them (ios_release_held_locks), so no
- * other program waits forever on a lock of a dead thread. */
+ * other program waits forever on a lock of a dead thread. Round 4 (1.2-1.3): taken and given
+ * through ios_lock.c, which tracks the owner, logs a long wait and recovers a lock whose holder's
+ * process has ended. */
 static inline void mutex_lock( pthread_mutex_t *mutex )
 {
     TEB *teb = ios_current_teb();
 
-    pthread_mutex_lock( mutex );
+    ios_lock_take( mutex, NULL );
     if (teb)
     {
         struct ntdll_thread_data *data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
@@ -552,7 +556,7 @@ static inline void mutex_unlock( pthread_mutex_t *mutex )
         if (i >= 0) for (; i < n - 1; i++) data->ios_held[i] = data->ios_held[i + 1];
         if (data->ios_held_count) data->ios_held_count--;
     }
-    pthread_mutex_unlock( mutex );
+    ios_lock_give( mutex );
 }
 
 static inline void ios_release_held_locks( struct ntdll_thread_data *data )
@@ -560,7 +564,7 @@ static inline void ios_release_held_locks( struct ntdll_thread_data *data )
     int n = data->ios_held_count;
 
     if (n > (int)ARRAY_SIZE(data->ios_held)) n = ARRAY_SIZE(data->ios_held);
-    while (n-- > 0) pthread_mutex_unlock( data->ios_held[n] );
+    while (n-- > 0) ios_lock_give( data->ios_held[n] );
     data->ios_held_count = 0;
     data->ios_no_interrupt = 0;
 }

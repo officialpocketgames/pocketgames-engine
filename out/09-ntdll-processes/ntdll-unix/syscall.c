@@ -17,6 +17,8 @@
  * License along with this library; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA 02110-1301, USA
  *
+ * Changed for MYIOSDECK, 2026 (spec 09 round 4): trace_syscall and trace_sysret end a killed
+ * thread between two calls.
  * Changed for MYIOSDECK, 2026 (spec 17 Part D5): ntdll_syscall_name. The change sits under
  * WINE_IOS; out/09-ntdll-processes/CHANGES.md lists it.
  */
@@ -300,6 +302,10 @@ void trace_syscall( UINT id, ULONG_PTR *args, ULONG len )
     UINT idx = (id >> 12) & 3, num = id & 0xfff;
     const char **names = syscall_names[idx];
 
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 09 round 4, 1.1): a killed thread leaves here, between two calls */
+    ios_killed_at_boundary();
+#endif
     if (names && names[num])
         TRACE( "\1SysCall  %s(", names[num] );
     else
@@ -319,6 +325,10 @@ void trace_sysret( UINT id, ULONG_PTR retval )
     UINT idx = (id >> 12) & 3, num = id & 0xfff;
     const char **names = syscall_names[idx];
 
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 09 round 4, 1.1): the call is finished; a killed thread leaves here */
+    ios_killed_at_boundary();
+#endif
     if (names && names[num])
         TRACE( "\1SysRet   %s() retval=%08lx\n", names[num], retval );
     else

@@ -3988,6 +3988,11 @@ void virtual_init(void)
     pthread_mutexattr_settype( &attr, PTHREAD_MUTEX_RECURSIVE );
     pthread_mutex_init( &virtual_mutex, &attr );
     pthread_mutexattr_destroy( &attr );
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 09 round 4, 1.2): the shared locks' owner tracking, before any is taken */
+    ios_lock_init_ntdll();
+    ios_lock_name_set( &virtual_mutex, "ntdll virtual_mutex" );
+#endif
 
 #ifdef __aarch64__
     host_page_size = sysconf( _SC_PAGESIZE );

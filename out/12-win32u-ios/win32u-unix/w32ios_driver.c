@@ -529,10 +529,41 @@ void w32ios_foreground_fix( void )
 
 /* ---------------------------------------------------------------- E7 and the rest */
 
+/* Clarification 14: tell the bridge the window's top-level ancestor (GA_ROOT; itself for a
+ * top-level window). The driver entries below run on the window's thread with no win32u lock
+ * held: pCreateWindow after WM_CREATE, pSetParent from set_parent (forwarded to the window's
+ * thread), pSetWindowStyle after the style is stored. */
+static void report_toplevel( HWND hwnd )
+{
+    HWND top, parent;
+
+    if (!w32ios_toplevel_due( pgios_window_toplevel != NULL, is_current_thread_window( hwnd ) != 0,
+                              is_desktop_window( hwnd ), FALSE ))
+        return;
+    if (!(top = NtUserGetAncestor( hwnd, GA_ROOT ))) return;
+    parent = NtUserGetAncestor( top, GA_PARENT );
+    if (!w32ios_toplevel_due( TRUE, TRUE, FALSE,
+                              top == get_hwnd_message_parent() || parent == get_hwnd_message_parent() ))
+        return;
+    pgios_window_toplevel( hwnd, top );
+}
+
 static BOOL ios_CreateWindow( HWND hwnd )
 {
-    if (pgios_pCreateWindow) return pgios_pCreateWindow( hwnd );
+    if (pgios_pCreateWindow && !pgios_pCreateWindow( hwnd )) return FALSE;
+    report_toplevel( hwnd );
     return TRUE;
+}
+
+static void ios_SetParent( HWND hwnd, HWND parent, HWND old_parent )
+{
+    report_toplevel( hwnd );
+}
+
+static void ios_SetWindowStyle( HWND hwnd, INT offset, STYLESTRUCT *style )
+{
+    if (offset == GWL_STYLE && w32ios_style_changes_parenting( style->styleOld, style->styleNew ))
+        report_toplevel( hwnd );
 }
 
 static void ios_DestroyWindow( HWND hwnd )
@@ -597,6 +628,8 @@ static const struct user_driver_funcs ios_driver_funcs =
     .pDestroyCursorIcon = ios_DestroyCursorIcon,
     .pUpdateDisplayDevices = ios_UpdateDisplayDevices,
     .pCreateWindow = ios_CreateWindow,
+    .pSetParent = ios_SetParent,
+    .pSetWindowStyle = ios_SetWindowStyle,
     .pDestroyWindow = ios_DestroyWindow,
     .pProcessEvents = ios_ProcessEvents,
     .pShowWindow = ios_ShowWindow,

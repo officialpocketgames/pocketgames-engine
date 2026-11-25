@@ -37,6 +37,7 @@
 #include "ios_pure.h"
 #include "ios_sig_pure.h"       /* spec 22 C5: the thread registry (Mach port -> TEB) */
 #include "ios_session_pure.h"   /* spec 22 */
+#include "ios_diag_pure.h"      /* spec 09 round 4 */
 
 #ifdef WINE_IOS
 
@@ -217,6 +218,114 @@ void ios_thread_killed( int status )
 BOOL ios_thread_was_killed(void)
 {
     return thread_killed;
+}
+
+
+/***********************************************************************
+ *           ios_thread_kill_defer
+ *
+ * Spec 09 round 4 (1.1): the server closed the calling thread's pipes while it was inside a
+ * system call or unix call. Leaving here would leave every unix-side lock the call holds
+ * (win32u's, a unix library's) locked for every later program. So the request fails instead:
+ * the thread is marked killed (its later requests fail at once, server_call_unlocked), the call
+ * unwinds and releases its locks, and the dispatcher's trace hooks (switched on here) make the
+ * thread leave at its next system-call boundary. At a wait for the server (at_wait), or on the
+ * way out, it leaves now. Returns 1 when the request is to fail.
+ */
+int ios_thread_kill_defer( int at_wait )
+{
+    TEB *teb = ios_current_teb();
+    struct ntdll_thread_data *data = teb ? ntdll_get_thread_data() : NULL;
+
+    if (ios_kill_on_server_gone( teb != NULL, data && data->ios_leaving, at_wait ) != IOS_KILL_FAIL) return 0;
+    thread_killed = 1;
+    data->syscall_trace = 1;   /* trace_syscall / trace_sysret: ios_killed_at_boundary */
+    return 1;
+}
+
+
+/***********************************************************************
+ *           ios_killed_at_boundary
+ *
+ * Round 4 (1.1): called by the dispatcher's trace hooks (syscall.c) on every system-call entry
+ * and return while the hooks are on: a killed thread has finished its call and holds no
+ * unix-side lock; it leaves now.
+ */
+void ios_killed_at_boundary(void)
+{
+    TEB *teb = ios_current_teb();
+    struct ntdll_thread_data *data;
+    const char *frame;
+
+    if (!teb || !thread_killed) return;
+    data = ntdll_get_thread_data();
+    /* inside a user callback the frame has a previous frame (prev_frame, IOS_FRAME_PREV_FRAME
+     * 0x110 of ios_syscall_frame.h): the outer call isn't finished */
+    frame = (const char *)data->syscall_frame;
+    if (ios_kill_leave_at_boundary( thread_killed, data->ios_leaving, frame && *(void *const *)(frame + 0x110) ))
+        abort_thread( 0 );
+}
+
+
+/* ---------- round 4 (1.2-1.3): ntdll's side of ios_lock.c ---------- */
+
+static void lock_who( struct ios_lock_who *who )
+{
+    TEB *teb = ios_current_teb();
+    struct ios_proc *proc = ios_proc_current();
+
+    who->tid = teb ? HandleToULong( teb->ClientId.UniqueThread ) : 0;
+    who->pid = teb ? HandleToULong( teb->ClientId.UniqueProcess ) : 0;
+    who->serial = proc ? proc->serial : 0;
+}
+
+static void lock_log( const char *line )
+{
+    ios_log( "%s", line );
+}
+
+void ios_lock_init_ntdll(void)
+{
+    ios_lock_setup( lock_who, lock_log, 3000 );
+    ios_lock_name_set( &fd_cache_mutex, "ntdll fd_cache_mutex" );
+}
+
+
+/* ---------- round 4 (3): tight file-lookup loops ---------- */
+
+static _Thread_local struct ios_lookup_stats *lookup_stats;
+
+/***********************************************************************
+ *           ios_files_lookup
+ *
+ * Round 4 (3): one NtQueryAttributesFile, NtQueryFullAttributesFile or NtOpenFile of the
+ * calling thread. More than 2000 in 10 s write one line per 10 s with the three most frequent
+ * NT paths (ios_lookup_note).
+ */
+void ios_files_lookup( const UNICODE_STRING *nt_name, NTSTATUS status )
+{
+    struct timespec ts;
+    char path[IOS_LOOKUP_PATH_LEN], line[3 * IOS_LOOKUP_PATH_LEN + 128];
+    uint64_t now;
+    int len = 0;
+    TEB *teb = ios_current_teb();
+
+    if (!teb) return;
+    if (!lookup_stats && !(lookup_stats = calloc( 1, sizeof(*lookup_stats) ))) return;
+    if (nt_name && nt_name->Buffer && nt_name->Length)
+        len = ntdll_wcstoumbs( nt_name->Buffer, nt_name->Length / sizeof(WCHAR), path, sizeof(path) - 1, FALSE );
+    path[len > 0 ? len : 0] = 0;
+    clock_gettime( CLOCK_MONOTONIC, &ts );
+    now = (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000 + 1;
+    if (ios_lookup_note( lookup_stats, now, path, (unsigned int)status, line, sizeof(line) ))
+        ios_log( "[files] thread %04x of process %04x: %s\n", (int)HandleToULong( teb->ClientId.UniqueThread ),
+                 (int)HandleToULong( teb->ClientId.UniqueProcess ), line );
+}
+
+void ios_files_thread_gone(void)
+{
+    free( lookup_stats );
+    lookup_stats = NULL;
 }
 
 
@@ -436,6 +545,9 @@ static void finish_process( struct ios_proc *proc, int exit_code )
     /* forget the slot: a later pseudo-process whose PEB lands here starts clean */
     ios_proc_unregister( proc );
 
+    /* round 4 (1.3): shared locks its (suspended) threads still hold may now be recovered */
+    ios_lock_process_ended( proc->serial );
+
     ios_log( "process %u (%s) ended, exit code %d (0x%x)\n", proc->serial, proc->name,
              exit_code, exit_code );
 }
@@ -510,6 +622,7 @@ void ios_thread_leave( int status )
 
     /* Part D3: a thread dying inside a section that must not be interrupted leaves it */
     ios_release_held_locks( data );
+    ios_files_thread_gone();   /* round 4 (3) */
     /* spec 35 H1: a GL context current on the thread is released while its TEB and server pipes
      * still work (also for a killed thread), so it can be destroyed later */
     if (opengl_ios_thread_exit) opengl_ios_thread_exit();
@@ -589,6 +702,37 @@ static int leftover_in_wine( TEB *teb )
     return data->ios_no_interrupt > 0 || data->ios_leaving;
 }
 
+/* round 4 (1.1): where a suspended thread stopped: the system call its stack pointer is inside
+ * (the kernel stack; the name from its syscall frame, which a unix call made from that point
+ * doesn't change), else guest code */
+static void leftover_place( unsigned int port, TEB *teb, char *buf, size_t len )
+{
+    const struct ntdll_thread_data *data;
+    unsigned long long sp, lo;
+    const char *name;
+    ULONG id;
+
+    if (!teb || ios_mach_thread_sp( port, &sp ))
+    {
+        snprintf( buf, len, "an unknown place" );
+        return;
+    }
+    data = (const struct ntdll_thread_data *)&teb->GdiTebBatch;
+    lo = (ULONG_PTR)data->kernel_stack;
+    if (!lo || sp < lo || sp >= lo + kernel_stack_size || !data->syscall_frame)
+    {
+        snprintf( buf, len, "guest code" );
+        return;
+    }
+    /* the frame's syscall_id, at IOS_FRAME_SYSCALL_ID (0x120) of ios_syscall_frame.h, whose struct
+     * needs the arm64 types this file doesn't include */
+    id = *(const ULONG *)((const char *)data->syscall_frame + 0x120);
+    if (id == IOS_UNIX_CALL_ID) snprintf( buf, len, "a unix call" );
+    else if ((name = ntdll_syscall_name( id ))) snprintf( buf, len, "%s", name );
+    else snprintf( buf, len, "system call %#x", (unsigned int)id );
+}
+
+
 /***********************************************************************
  *           forget_leftover_threads
  *
@@ -634,11 +778,17 @@ static void forget_leftover_threads( struct ios_proc *proc, DWORD self )
                 action = IOS_LEFTOVER_RUNNING;
             else
             {
+                char where[96];
+                TEB *teb = leftover_teb( port );
+
+                /* round 4 (1.1): where it stopped, read once it is suspended */
+                leftover_place( port, teb, where, sizeof(where) );
+                ios_log( "[proc] thread %04x of process %04x kept suspended: in %s\n", (int)tid,
+                         teb ? (int)HandleToULong( teb->ClientId.UniqueProcess ) : 0, where );
+                ios_lock_thread_suspended( proc->serial, tid );
                 thread_forget( tid );
                 ios_threadreg_remove( port );
                 InterlockedDecrement( &proc->pp_nb_threads );
-                ios_log( "process %u (%s): thread %04x was blocked in a system call: suspended for good\n",
-                         proc->serial, proc->name, (int)tid );
             }
         }
         if ((action == IOS_LEFTOVER_RUNNING || action == IOS_LEFTOVER_LOCKED) && !logged++)

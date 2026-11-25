@@ -203,9 +203,10 @@ static void test_rules(void)
     /* gone, waiting (read before suspending), in Wine */
     CHECK( ios_leftover_action( 1, 0, 0 ) == IOS_LEFTOVER_GONE );
     CHECK( ios_leftover_action( 0, 1, 0 ) == IOS_LEFTOVER_SUSPEND );
-    CHECK( ios_leftover_action( 0, 1, 1 ) == IOS_LEFTOVER_LOCKED );
-    CHECK( ios_leftover_action( 0, 0, 0 ) == IOS_LEFTOVER_RUNNING );
-    CHECK( ios_leftover_action( 0, 0, 1 ) == IOS_LEFTOVER_RUNNING );
+    /* spec 09 round 4 (1.1): inside Wine or running guest code, it is suspended too */
+    CHECK( ios_leftover_action( 0, 1, 1 ) == IOS_LEFTOVER_SUSPEND );
+    CHECK( ios_leftover_action( 0, 0, 0 ) == IOS_LEFTOVER_SUSPEND );
+    CHECK( ios_leftover_action( 0, 0, 1 ) == IOS_LEFTOVER_SUSPEND );
 
     memset( &c, 0, sizeof(c) );
     ios_leftover_count( &c, IOS_LEFTOVER_SUSPEND );

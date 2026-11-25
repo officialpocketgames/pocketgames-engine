@@ -289,11 +289,21 @@ extern int ios_process_end_hook_add( void (*fn)( const void *peb ));
 /* C3: the server ended the calling thread (its pipes closed): mark it, then abort_thread */
 extern void ios_thread_killed( int status ) __attribute__((noreturn));
 extern BOOL ios_thread_was_killed(void);
+/* spec 09 round 4 (1.1): a request of a killed thread fails instead (1: the caller returns
+ * STATUS_THREAD_IS_TERMINATING; 0: it leaves now, as ios_thread_killed); the thread leaves at its
+ * next system-call boundary (ios_killed_at_boundary, from the dispatcher's trace hooks) */
+extern int ios_thread_kill_defer( int at_wait );
+extern void ios_killed_at_boundary(void);
+/* round 4 (1.2-1.3): ntdll's identity and log for ios_lock.c; item 3: file lookups */
+extern void ios_lock_init_ntdll(void);
+extern void ios_files_lookup( const UNICODE_STRING *nt_name, NTSTATUS status );
+extern void ios_files_thread_gone(void);
 /* C3: the calling thread is the one that booted its pseudo-process */
 extern void ios_proc_set_main_thread( struct ios_proc *proc );
 /* C5 (ios_mach_thread.c): a thread by its Mach port name (its unix tid) */
 extern int ios_mach_thread_waiting( unsigned int port );   /* 1 blocked in the kernel, 0 not, -1 unknown */
 extern int ios_mach_thread_suspend( unsigned int port );   /* 0 when suspended */
+extern int ios_mach_thread_sp( unsigned int port, unsigned long long *sp );   /* round 4: 0 when read */
 
 /* memory hooks (spec 10, at the end of virtual.c) */
 extern NTSTATUS ios_mem_reserve_wow_window( struct ios_proc *proc );

@@ -10,6 +10,7 @@
 #   - the audio driver, mmdevapi's unix side (audio-unix/),
 #   - dwrite's unix side (dwrite-unix/: upstream dlls/dwrite/freetype.c, unchanged, compiled
 #     through a wrapper against spec 12's static FreeType),
+#   - openal32's unix side (openal-unix/, round 4: calls OpenAL Soft, openal/build-openal.sh),
 #   - the shared helpers (common/).
 # Upstream sources are never copied into this repository; this script copies the one upstream
 # file it compiles (dlls/dwrite/freetype.c) from the given Wine tree into <out dir>/work.
@@ -21,6 +22,7 @@
 #   <ffmpeg prefix>/lib/libavformat.a libavcodec.a libswresample.a libavutil.a   (this order)
 #   -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo
 #   -framework CoreFoundation
+#   -F<openal prefix> -framework OpenALSoft   (dynamic, embedded; openal/README.md)
 # together with specs 08-12's libraries (FreeType comes from spec 12's libwin32u_unix.a; never
 # link a second copy).
 #
@@ -136,6 +138,13 @@ compile "$HERE/dwrite-unix/dwrite_freetype_ios.c" "dwrite-freetype" $WINEDEFS \
   "-I$HERE/common" "-I$WORK/dwrite" "-I$WINE/dlls/dwrite" $WINEINC "-I$FT/include" \
   -Wno-unused-function
 
+# ---------------------------------------------------------------- openal-unix/ (round 4)
+# Plain C, no Wine headers: openal32's unix side and the table of OpenAL Soft's functions
+for c in "$HERE"/openal-unix/*.c; do
+  n=$(basename "$c" .c)
+  compile "$c" "openal-$n" "-I$HERE/common" "-I$HERE/openal-unix" "-I$HERE/pe/dlls/openal32"
+done
+
 if [ -n "$failed" ]; then
   echo "FAILED:$failed"
   for f in $failed; do echo "==== $f"; head -60 "$LOG/$f.log"; done
@@ -154,7 +163,8 @@ missing=""
 for s in winegstreamer_unix_call_funcs winegstreamer_unix_call_wow64_funcs winegstreamer_unix_lib_init \
          dwrite_unix_call_funcs dwrite_unix_call_wow64_funcs \
          winecoreaudio_unix_call_funcs winecoreaudio_unix_call_wow64_funcs \
-         wineios_unix_call_funcs wineios_unix_call_wow64_funcs; do
+         wineios_unix_call_funcs wineios_unix_call_wow64_funcs \
+         openal32_unix_call_funcs openal32_unix_call_wow64_funcs pg_openal_set_app_active; do
   # shellcheck disable=SC2086
   $NM -g "$OUT/libwinemedia_unix.a" 2> /dev/null | grep -q " [DST] _$s\$" || missing="$missing $s"
 done

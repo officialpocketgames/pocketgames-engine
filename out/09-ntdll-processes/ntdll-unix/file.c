@@ -4859,6 +4859,8 @@ NTSTATUS WINAPI NtCreateFile( HANDLE *handle, ACCESS_MASK access, OBJECT_ATTRIBU
     if (status != STATUS_SUCCESS)
         ios_s17_log_failed_open( api, status, disposition, access, options, sharing, unix_name,
                                  attr->ObjectName );
+    /* MYIOSDECK (spec 09 round 4, 3): NtOpenFile counts as a lookup */
+    if (api && !strcmp( api, "NtOpenFile" )) ios_files_lookup( attr->ObjectName, status );
 #endif
     free( unix_name );
     free( nt_name.Buffer );
@@ -5020,6 +5022,7 @@ NTSTATUS WINAPI NtQueryFullAttributesFile( const OBJECT_ATTRIBUTES *attr,
 #ifdef WINE_IOS
     /* MYIOSDECK (spec 17 C2 addendum): failures, within the failed-open budgets */
     if (status) ios_s17_log_failed_query( "NtQueryFullAttributesFile", status, unix_name, attr->ObjectName );
+    ios_files_lookup( attr->ObjectName, status );   /* spec 09 round 4 (3) */
 #endif
     free( unix_name );
     free( nt_name.Buffer );
@@ -5053,6 +5056,7 @@ NTSTATUS WINAPI NtQueryAttributesFile( const OBJECT_ATTRIBUTES *attr, FILE_BASIC
 #ifdef WINE_IOS
     /* MYIOSDECK (spec 17 C2 addendum): failures, within the failed-open budgets */
     if (status) ios_s17_log_failed_query( "NtQueryAttributesFile", status, unix_name, attr->ObjectName );
+    ios_files_lookup( attr->ObjectName, status );   /* spec 09 round 4 (3) */
 #endif
     free( unix_name );
     free( nt_name.Buffer );

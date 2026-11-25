@@ -501,6 +501,22 @@ static void test_init_user_mark( void )
     CHECK( !b4_miss( b, 0, 1 ) );
 }
 
+/* clarification 14: when the bridge hears a window's top-level ancestor */
+static void test_toplevel_report( void )
+{
+    CHECK( w32ios_toplevel_due( 1, 1, 0, 0 ) );
+    CHECK( !w32ios_toplevel_due( 0, 1, 0, 0 ) );   /* the bridge doesn't define it */
+    CHECK( !w32ios_toplevel_due( 1, 0, 0, 0 ) );   /* not the window's thread */
+    CHECK( !w32ios_toplevel_due( 1, 1, 1, 0 ) );   /* the desktop window */
+    CHECK( !w32ios_toplevel_due( 1, 1, 0, 1 ) );   /* message-only */
+
+    CHECK( w32ios_style_changes_parenting( 0x10000000, 0x50000000 ) );   /* WS_CHILD added */
+    CHECK( w32ios_style_changes_parenting( 0x50000000, 0x10000000 ) );   /* removed */
+    CHECK( w32ios_style_changes_parenting( 0x00000000, 0x80000000 ) );   /* WS_POPUP */
+    CHECK( !w32ios_style_changes_parenting( 0x40000000, 0x50C00000 ) );  /* visible, caption only */
+    CHECK( !w32ios_style_changes_parenting( 0, 0 ) );
+}
+
 static void test_pp_table( void )
 {
     static struct w32ios_pp_table table;
@@ -871,6 +887,7 @@ int main( void )
     test_rects();
     test_pp_table();
     test_init_user_mark();
+    test_toplevel_report();
     test_client_procs();
     test_builtin_action();
     test_ceiling();

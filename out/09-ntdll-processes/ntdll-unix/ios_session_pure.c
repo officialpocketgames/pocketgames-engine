@@ -47,10 +47,11 @@ int ios_killed_thread_ends_process( int killed, int is_main, int others, int end
 
 enum ios_leftover_action ios_leftover_action( int gone, int waiting, int in_wine )
 {
-    if (gone) return IOS_LEFTOVER_GONE;
-    if (!waiting) return IOS_LEFTOVER_RUNNING;
-    if (in_wine) return IOS_LEFTOVER_LOCKED;
-    return IOS_LEFTOVER_SUSPEND;
+    /* spec 09 round 4 (1.1): a thread that hasn't left by now (2 s) is suspended for good,
+     * wherever it is; the locks it holds are recovered once its process has ended (ios_lock.c) */
+    (void)waiting;
+    (void)in_wine;
+    return gone ? IOS_LEFTOVER_GONE : IOS_LEFTOVER_SUSPEND;
 }
 
 void ios_leftover_count( struct ios_leftover_counts *c, enum ios_leftover_action a )

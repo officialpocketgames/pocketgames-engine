@@ -21,4 +21,5 @@ nsi.dll                     # spec 13
 winegstreamer.dll           # spec 14
 dwrite.dll                  # spec 14
 winecoreaudio.drv           # spec 14 (loaded by name)
+openal32.dll                # spec 14 round 4 (libwinemedia_unix.a; calls OpenALSoft.framework)
 winevulkan.dll              # spec 34 Part C (libwinevulkan_unix.a)

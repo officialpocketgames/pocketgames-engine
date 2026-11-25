@@ -45,6 +45,7 @@
 #include "config.h"
 
 #include <assert.h>
+#include <dlfcn.h>     /* dladdr: spec 09 round 4 (2) */
 #include <pthread.h>
 #include <setjmp.h>
 #include <signal.h>
@@ -71,6 +72,7 @@
 #include "wine/debug.h"
 #include "ios_syscall_frame.h"
 #include "ios_sig_pure.h"
+#include "ios_diag_pure.h"   /* spec 09 round 4 (2) */
 #include "ios_dylib.h"
 #include "ios_mach_exc.h"
 #include "ios_lowwin_fault.h"
@@ -1189,11 +1191,25 @@ static BOOL handle_syscall_fault( ucontext_t *context, EXCEPTION_RECORD *rec )
     count = InterlockedIncrement( &unix_fault_count );
     if (count <= 16 || !(count % 256))
     {
+        /* spec 09 round 4 (2): the call's name (or number), its first four arguments (saved by
+         * the dispatcher) and the native symbol of the pc */
+        const uint64_t args[4] = { frame->x[0], frame->x[1], frame->x[2], frame->x[3] };
+        const char *symbol = NULL;
+        uint64_t offset = 0;
+        Dl_info info;
+        char line[512];
+
+        if (dladdr( (void *)PC_sig(context), &info ) && info.dli_sname)
+        {
+            symbol = info.dli_sname;
+            offset = (ULONG_PTR)PC_sig(context) - (ULONG_PTR)info.dli_saddr;
+        }
         proc = ios_proc_current();
-        sig_log( "process %u (%s), thread %04x: exception %x in a system call at pc %p, address %p: "
-                 "the call returns it as its status (fault %d of this run)\n",
-                 proc->serial, proc->name, (int)GetCurrentThreadId(), (unsigned int)rec->ExceptionCode,
-                 (void *)PC_sig(context), (void *)rec->ExceptionInformation[1], (int)count );
+        sig_log( "%s", ios_format_syscall_fault( line, sizeof(line), proc->serial, proc->name,
+                                                 (unsigned int)GetCurrentThreadId(), (unsigned int)rec->ExceptionCode,
+                                                 frame->syscall_id == IOS_UNIX_CALL_ID ? NULL : ntdll_syscall_name( frame->syscall_id ),
+                                                 frame->syscall_id, args, (ULONG_PTR)PC_sig(context), symbol, offset,
+                                                 (ULONG_PTR)rec->ExceptionInformation[1], (int)count ));
         log_backtrace( context, 8 );
     }
 
@@ -1874,6 +1890,10 @@ __ASM_GLOBAL_FUNC( __wine_syscall_dispatcher,
                    "mrs x9, NZCV\n\t"
                    "stp x30, x9, [x10, #0x100]\n\t"
                    "str w8, [x10, #0x120]\n\t"
+                   /* MYIOSDECK (spec 09 round 4, 2): the first four arguments, for a fault's line
+                    * (the return path reloads x0-x15 only for a context that was set) */
+                   "stp x0, x1, [x10, #0x00]\n\t"
+                   "stp x2, x3, [x10, #0x10]\n\t"
                    "mrs x9, FPCR\n\t"
                    "str w9, [x10, #0x128]\n\t"
                    "mrs x9, FPSR\n\t"
@@ -2053,6 +2073,12 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    "stp x30, x9, [x10, #0xf0]\n\t"
                    "mrs x9, NZCV\n\t"
                    "stp x30, x9, [x10, #0x100]\n\t"
+                   /* MYIOSDECK (spec 09 round 4, 2): a unix call, not a system call, for a fault's
+                    * line; its arguments (handle, code, params) */
+                   "mov w9, #-1\n\t"
+                   "str w9, [x10, #0x120]\n\t"  /* frame->syscall_id */
+                   "stp x0, x1, [x10, #0x00]\n\t"
+                   "stp x2, xzr, [x10, #0x10]\n\t"
                    "mov x19, x10\n\t"
                    /* switch to kernel stack */
                    "mov sp, x10\n\t"

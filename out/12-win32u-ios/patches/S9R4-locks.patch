@@ -1,0 +1,37 @@
+Spec 09 round 4 (1.2-1.3): win32u's user, display and GDI locks (and the other mutexes of
+sysparams.c and gdiobj.c) are taken through ntdll's owner tracking (w32ios_locks.h). user_lock
+forgets the recursion count of a holder whose process ended and whose lock was recovered.
+
+--- a/dlls/win32u/sysparams.c
++++ b/dlls/win32u/sysparams.c
+@@ -37,6 +37,9 @@
+ #include "d3dkmdt.h"
+ #include "wine/wingdi16.h"
+ #include "wine/server.h"
++#ifdef WINE_IOS
++#include "w32ios_locks.h"   /* MYIOSDECK (spec 09 round 4): owner-tracked shared locks */
++#endif
+
+ WINE_DEFAULT_DEBUG_CHANNEL(system);
+
+@@ -312,6 +315,10 @@
+ void user_lock(void)
+ {
+     pthread_mutex_lock( &user_mutex );
++#ifdef WINE_IOS
++    /* MYIOSDECK (spec 09 round 4): taken over from a holder whose process ended */
++    if (user_lock_rec && user_lock_thread != GetCurrentThreadId()) user_lock_rec = 0;
++#endif
+     if (!user_lock_rec++) user_lock_thread = GetCurrentThreadId();
+ }
+
+--- a/dlls/win32u/gdiobj.c
++++ b/dlls/win32u/gdiobj.c
+@@ -44,6 +44,7 @@
+ #include "wine/unixlib.h"
+ #ifdef WINE_IOS
+ #include "w32ios.h"
++#include "w32ios_locks.h"   /* MYIOSDECK (spec 09 round 4): owner-tracked shared locks */
+ #endif
+
+ WINE_DEFAULT_DEBUG_CHANNEL(gdi);

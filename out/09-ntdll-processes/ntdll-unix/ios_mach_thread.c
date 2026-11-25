@@ -34,7 +34,33 @@ int ios_mach_thread_suspend( unsigned int port )
     return thread_suspend( (thread_act_t)port ) == KERN_SUCCESS ? 0 : -1;
 }
 
+/* spec 09 round 4 (1.1): the stack pointer of a (suspended) thread; 0 when it is read */
+int ios_mach_thread_sp( unsigned int port, unsigned long long *sp )
+{
+#ifdef __aarch64__
+    arm_thread_state64_t state;
+    mach_msg_type_number_t count = ARM_THREAD_STATE64_COUNT;
+
+    if (!port) return -1;
+    if (thread_get_state( (thread_act_t)port, ARM_THREAD_STATE64, (thread_state_t)&state, &count ) != KERN_SUCCESS)
+        return -1;
+    *sp = arm_thread_state64_get_sp( state );
+    return 0;
 #else
+    (void)port;
+    (void)sp;
+    return -1;
+#endif
+}
+
+#else
+
+int ios_mach_thread_sp( unsigned int port, unsigned long long *sp )
+{
+    (void)port;
+    (void)sp;
+    return -1;
+}
 
 int ios_mach_thread_waiting( unsigned int port )
 {

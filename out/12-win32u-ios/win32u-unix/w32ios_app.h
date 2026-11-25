@@ -29,6 +29,7 @@ int  pgios_surface_present( HWND hwnd, int dirty_x, int dirty_y, int dirty_w, in
                              int surf_w, int surf_h, int stride, const void *bits ) W32IOS_WEAK;
 void pgios_window_frame( HWND hwnd, int x, int y, int w, int h, int visible,
                           int cx, int cy, int cw, int ch ) W32IOS_WEAK;
+void pgios_window_toplevel( HWND hwnd, HWND top ) W32IOS_WEAK;   /* clarification 14 */
 void pgios_cursor_set( unsigned int id, int w, int h, int hot_x, int hot_y, const void *bgra ) W32IOS_WEAK;
 void pgios_cursor_show( int show ) W32IOS_WEAK;
 int  pgios_direct_cursor_wanted( void ) W32IOS_WEAK;

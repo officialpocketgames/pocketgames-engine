@@ -62,6 +62,14 @@ int w32ios_is_session_root( int queried, uint64_t parent_pid );
  * hasn't tried yet. */
 int w32ios_child_desktop_due( int enabled, int initialized, int slot_ran_init_user, int slot_tried );
 
+/* Clarification 14: whether to tell the bridge a window's top-level ancestor
+ * (pgios_window_toplevel): the bridge defines it, the call is on the window's own thread, and
+ * the window is neither the desktop window nor message-only. */
+int w32ios_toplevel_due( int hook_defined, int own_thread, int is_desktop, int message_only );
+/* ... and whether a GWL_STYLE change can make a window top-level or a child (WS_CHILD or
+ * WS_POPUP changed). */
+int w32ios_style_changes_parenting( uint32_t old_style, uint32_t new_style );
+
 /* B1: the allocation ceiling of a thread. A WoW64 thread gets the guest ceiling OR 0x7fffffff;
  * every other thread 0. */
 uint64_t w32ios_ceiling( int wow64, uint64_t highest_user_address );

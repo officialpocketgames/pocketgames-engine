@@ -1,0 +1,7 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright (c) 2026 the MYIOSDECK author
+# Spec 14 round 4: openal32.dll (PE only; the unix side is openal-unix/, linked into the app).
+MODULE    = openal32.dll
+
+SOURCES = \
+	openal32_main.c

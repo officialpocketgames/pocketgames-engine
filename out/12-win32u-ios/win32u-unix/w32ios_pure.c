@@ -121,6 +121,16 @@ int w32ios_child_desktop_due( int enabled, int initialized, int slot_ran_init_us
     return enabled && initialized && !slot_ran_init_user && !slot_tried;
 }
 
+int w32ios_toplevel_due( int hook_defined, int own_thread, int is_desktop, int message_only )
+{
+    return hook_defined && own_thread && !is_desktop && !message_only;
+}
+
+int w32ios_style_changes_parenting( uint32_t old_style, uint32_t new_style )
+{
+    return ((old_style ^ new_style) & (0x40000000u /* WS_CHILD */ | 0x80000000u /* WS_POPUP */)) != 0;
+}
+
 uint64_t w32ios_ceiling( int wow64, uint64_t highest_user_address )
 {
     if (!wow64) return 0;

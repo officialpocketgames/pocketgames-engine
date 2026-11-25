@@ -288,6 +288,10 @@ static unsigned int send_request( const struct __server_request_info *req )
         }
     }
 
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 09 round 4, 1.1): a killed thread's request fails; it leaves later */
+    if (errno == EPIPE && ios_thread_kill_defer( 0 )) return STATUS_THREAD_IS_TERMINATING;
+#endif
     if (errno == EPIPE) server_gone_abort(0);
     if (errno == EFAULT) return STATUS_ACCESS_VIOLATION;
     server_protocol_perror( "write" );
@@ -298,8 +302,10 @@ static unsigned int send_request( const struct __server_request_info *req )
  *           read_reply_data
  *
  * Read data from the reply buffer; helper for wait_reply.
+ * MYIOSDECK (spec 09 round 4, 1.1): returns STATUS_THREAD_IS_TERMINATING when the server closed
+ * the pipe of a thread inside a call (ios_thread_kill_defer), else 0.
  */
-static void read_reply_data( void *buffer, size_t size )
+static unsigned int read_reply_data( void *buffer, size_t size )
 {
     int ret;
 
@@ -307,7 +313,7 @@ static void read_reply_data( void *buffer, size_t size )
     {
         if ((ret = read( ntdll_get_thread_data()->reply_fd, buffer, size )) > 0)
         {
-            if (!(size -= ret)) return;
+            if (!(size -= ret)) return 0;
             buffer = (char *)buffer + ret;
             continue;
         }
@@ -317,6 +323,9 @@ static void read_reply_data( void *buffer, size_t size )
         server_protocol_perror("read");
     }
     /* the server closed the connection; time to die... */
+#ifdef WINE_IOS
+    if (ios_thread_kill_defer( 0 )) return STATUS_THREAD_IS_TERMINATING;
+#endif
     server_gone_abort(0);
 }
 
@@ -328,9 +337,12 @@ static void read_reply_data( void *buffer, size_t size )
  */
 static inline unsigned int wait_reply( struct __server_request_info *req )
 {
-    read_reply_data( &req->u.reply, sizeof(req->u.reply) );
-    if (req->u.reply.reply_header.reply_size)
-        read_reply_data( req->reply_data, req->u.reply.reply_header.reply_size );
+    unsigned int ret;
+
+    if ((ret = read_reply_data( &req->u.reply, sizeof(req->u.reply) ))) return ret;
+    if (req->u.reply.reply_header.reply_size &&
+        (ret = read_reply_data( req->reply_data, req->u.reply.reply_header.reply_size )))
+        return ret;
     return req->u.reply.reply_header.error;
 }
 
