@@ -10,8 +10,9 @@
 #   - the audio driver, mmdevapi's unix side (audio-unix/),
 #   - dwrite's unix side (dwrite-unix/: upstream dlls/dwrite/freetype.c, unchanged, compiled
 #     through a wrapper against spec 12's static FreeType),
-#   - openal32's unix side (openal-unix/, round 4: calls OpenAL Soft, openal/build-openal.sh),
-#   - the shared helpers (common/).
+#   - the shared helpers (common/),
+#   - only with WITH_OPENAL=1 (off until OpenAL Soft is pinned and built, CHANGES.md round 4):
+#     openal32's unix side (openal-unix/: calls OpenAL Soft, openal/build-openal.sh).
 # Upstream sources are never copied into this repository; this script copies the one upstream
 # file it compiles (dlls/dwrite/freetype.c) from the given Wine tree into <out dir>/work.
 #
@@ -22,7 +23,7 @@
 #   <ffmpeg prefix>/lib/libavformat.a libavcodec.a libswresample.a libavutil.a   (this order)
 #   -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo
 #   -framework CoreFoundation
-#   -F<openal prefix> -framework OpenALSoft   (dynamic, embedded; openal/README.md)
+#   -F<openal prefix> -framework OpenALSoft   (WITH_OPENAL=1 only; dynamic, embedded; openal/README.md)
 # together with specs 08-12's libraries (FreeType comes from spec 12's libwin32u_unix.a; never
 # link a second copy).
 #
@@ -30,6 +31,7 @@
 #   CC, AR              compiler / archiver (default: xcrun -sdk iphoneos clang / ar)
 #   FREETYPE_SRC        FreeType 2.13.3 tree for its headers (default: <repo>/refs/freetype-2.13.3)
 #   EXTRA_CFLAGS        appended to every compile
+#   WITH_OPENAL         1 adds openal-unix/ (default 0: openal32 is not shipped yet)
 
 set -u
 
@@ -139,11 +141,16 @@ compile "$HERE/dwrite-unix/dwrite_freetype_ios.c" "dwrite-freetype" $WINEDEFS \
   -Wno-unused-function
 
 # ---------------------------------------------------------------- openal-unix/ (round 4)
-# Plain C, no Wine headers: openal32's unix side and the table of OpenAL Soft's functions
-for c in "$HERE"/openal-unix/*.c; do
-  n=$(basename "$c" .c)
-  compile "$c" "openal-$n" "-I$HERE/common" "-I$HERE/openal-unix" "-I$HERE/pe/dlls/openal32"
-done
+# Plain C, no Wine headers: openal32's unix side and the table of OpenAL Soft's functions.
+# Off by default: openal_link.o needs OpenALSoft.framework at the app link.
+OPENAL_TABLES=""
+if [ "${WITH_OPENAL:-0}" = 1 ]; then
+  for c in "$HERE"/openal-unix/*.c; do
+    n=$(basename "$c" .c)
+    compile "$c" "openal-$n" "-I$HERE/common" "-I$HERE/openal-unix" "-I$HERE/pe/dlls/openal32"
+  done
+  OPENAL_TABLES="openal32_unix_call_funcs openal32_unix_call_wow64_funcs pg_openal_set_app_active"
+fi
 
 if [ -n "$failed" ]; then
   echo "FAILED:$failed"
@@ -163,8 +170,7 @@ missing=""
 for s in winegstreamer_unix_call_funcs winegstreamer_unix_call_wow64_funcs winegstreamer_unix_lib_init \
          dwrite_unix_call_funcs dwrite_unix_call_wow64_funcs \
          winecoreaudio_unix_call_funcs winecoreaudio_unix_call_wow64_funcs \
-         wineios_unix_call_funcs wineios_unix_call_wow64_funcs \
-         openal32_unix_call_funcs openal32_unix_call_wow64_funcs pg_openal_set_app_active; do
+         wineios_unix_call_funcs wineios_unix_call_wow64_funcs $OPENAL_TABLES; do
   # shellcheck disable=SC2086
   $NM -g "$OUT/libwinemedia_unix.a" 2> /dev/null | grep -q " [DST] _$s\$" || missing="$missing $s"
 done

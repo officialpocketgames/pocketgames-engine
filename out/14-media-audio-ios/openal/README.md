@@ -60,4 +60,5 @@ liblzma), whose install name is wrong, or that lacks any export `openal32.dll` f
   `pg_openal_set_app_active(1)` when it becomes active again, where the rest of the audio
   follows the app's state (QUESTIONS 14-40). It pauses every OpenAL device
   (`alcDevicePauseSOFT`) and resumes the ones the program didn't pause itself.
-- **Spec 09.** `openal32.dll` is in `unixlibs.txt` (its tables are in `libwinemedia_unix.a`).
+- **Spec 09.** Add `openal32.dll` to `unixlibs.txt` when it is turned on (its tables are in
+  `libwinemedia_unix.a` built with `WITH_OPENAL=1`). Until then it is off: `CHANGES.md`, round 4.

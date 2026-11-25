@@ -61,6 +61,7 @@ int pgios_surface_present(HWND hwnd, int dirty_x, int dirty_y, int dirty_w, int 
 void pgios_window_frame(HWND hwnd, int x, int y, int w, int h, int visible,
                          int cx, int cy, int cw, int ch)
 { (void)hwnd; (void)x; (void)y; (void)w; (void)h; (void)visible; (void)cx; (void)cy; (void)cw; (void)ch; }
+void pgios_window_toplevel(HWND hwnd, HWND top) { (void)hwnd; (void)top; }
 void pgios_cursor_set(unsigned int id, int w, int h, int hot_x, int hot_y, const void *bgra)
 { (void)id; (void)w; (void)h; (void)hot_x; (void)hot_y; (void)bgra; }
 void pgios_cursor_show(int show) { (void)show; }
