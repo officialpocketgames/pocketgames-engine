@@ -1123,7 +1123,14 @@ static void contexts_from_server( CONTEXT *context, struct context_data server_c
  */
 void ios_close_thread_fds(void)
 {
-    struct ntdll_thread_data *data = ntdll_get_thread_data();
+    ios_close_thread_fds_of( NtCurrentTeb() );
+}
+
+/* MYIOSDECK (spec 09 round 7, 10): also for a thread suspended for good (ios_exit.c), which never
+ * runs again: its pipes to the server would otherwise stay in the app's file table */
+void ios_close_thread_fds_of( TEB *teb )
+{
+    struct ntdll_thread_data *data = (struct ntdll_thread_data *)&teb->GdiTebBatch;
 
     if (data->alert_fd != -1) close( data->alert_fd );
     if (data->wait_fd[0] != -1) close( data->wait_fd[0] );

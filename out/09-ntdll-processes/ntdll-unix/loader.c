@@ -2381,6 +2381,7 @@ static void ios_app_init(void)
                    data_dir ? data_dir : "-", config_dir ? config_dir : "-" );
 #ifdef RLIMIT_NOFILE
     set_max_limit( RLIMIT_NOFILE );
+    ios_fd_boot();   /* MYIOSDECK (spec 09 round 7, 10): logged, and raised further if it can be */
 #endif
     ios_boot_mark( "app init: virtual memory" );
     virtual_init();

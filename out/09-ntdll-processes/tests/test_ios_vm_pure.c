@@ -110,6 +110,39 @@ static void test_mem_figures(void)
     CHECK( f.total_pages == 8192 * 64 && f.avail_pages == 1024 * 64 );
 }
 
+/* ---------- spec 09 round 7 item 9: a 32-bit stack grows through its guard page ---------- */
+
+static void test_wow_stack_guard(void)
+{
+    /* the device log: guest window at 0x7100000000, the main 32-bit thread's stack reserved
+     * 0x00000000-0x00030000 (guest), committed down to 0x28000; fault at host 0x7100027f18 */
+    const uint64_t base = 0x7100000000ull, hp = 0x4000, guaranteed = 0x4000;
+    const uint32_t g_start = 0x00000000 + 0x10000, g_limit = 0x00028000, g_end = 0x00030000;
+    uint64_t start = ios_wow_stack_host( g_start, base ), end = ios_wow_stack_host( g_end, base );
+    uint64_t page = 0x7100027f18ull & ~(hp - 1);
+
+    CHECK( start == 0x7100010000ull && end == 0x7100030000ull );
+    CHECK( ios_wow_stack_host( g_limit, base ) == 0x7100028000ull );
+    CHECK( ios_wow_stack_host( 0, base ) == 0 );
+    /* the guard page one page below the committed part: the stack grows */
+    CHECK( ios_stack_guard( page, start, end, guaranteed, hp ) == IOS_GUARD_GROW );
+    /* the old comparison with the guest values never matched: a guard violation */
+    CHECK( ios_stack_guard( page, g_start, g_end, guaranteed, hp ) == IOS_GUARD_NOT_STACK );
+    /* below the guaranteed space: an overflow */
+    CHECK( ios_stack_guard( start + hp, start, end, guaranteed, hp ) == IOS_GUARD_OVERFLOW );
+    CHECK( ios_stack_guard( start + hp + guaranteed - hp, start, end, guaranteed, hp ) == IOS_GUARD_OVERFLOW );
+    CHECK( ios_stack_guard( start + hp + guaranteed, start, end, guaranteed, hp ) == IOS_GUARD_GROW );
+    /* a guard page outside every stack (a program's own PAGE_GUARD): a guard violation */
+    CHECK( ios_stack_guard( base + 0x500000, start, end, guaranteed, hp ) == IOS_GUARD_NOT_STACK );
+    CHECK( ios_stack_guard( start, start, end, guaranteed, hp ) == IOS_GUARD_NOT_STACK );
+    CHECK( ios_stack_guard( end + hp, start, end, guaranteed, hp ) == IOS_GUARD_NOT_STACK );
+    /* the stored limit is the guest value, not a truncated host pointer of another window */
+    CHECK( ios_wow_stack_guest( page - hp, base ) == 0x00020000 );
+    CHECK( ios_wow_stack_guest( 0x7180024000ull, 0x7180000000ull ) == 0x00024000 );
+    /* no guest window: unchanged */
+    CHECK( ios_wow_stack_host( 0x30000, 0 ) == 0x30000 && ios_wow_stack_guest( 0x24000, 0 ) == 0x24000 );
+}
+
 /* ---------- Part E5 ---------- */
 
 static void test_laa(void)
@@ -1460,6 +1493,7 @@ int main(void)
     test_user_limit();
     test_big_reserve();
     test_mem_figures();
+    test_wow_stack_guard();
     test_laa();
     test_translate();
     test_slots();

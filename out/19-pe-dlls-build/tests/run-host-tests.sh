@@ -60,6 +60,7 @@ done
 # B4 / spec 09 clarification 6: no unix table without its DLL in every farm; and the check fires
 sh "$here/test-unixlibs.sh" || fail "test-unixlibs.sh"
 sh "$here/test-apisets.sh" || fail "test-apisets.sh"
+sh "$here/test-media-classes.sh" || fail "test-media-classes.sh"
 mkdir -p "$build"
 printf 'kernel32.dll\nnosuch.dll   # a table whose DLL no farm lists\n' > "$build/unixlibs-fixture.txt"
 if sh "$here/test-unixlibs.sh" "$build/unixlibs-fixture.txt" > "$build/unixlibs-fixture.out" 2>&1; then

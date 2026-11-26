@@ -26,6 +26,8 @@ run test_ios_vm_pure "$SRC/ios_vm_pure.c" "$HERE/test_ios_vm_pure.c"
 run test_session_pure "$SRC/ios_pure.c" "$SRC/ios_sig_pure.c" "$SRC/ios_session_pure.c" "$HERE/test_session_pure.c"
 # spec 09 round 4: shared locks (real threads), the kill rule, the fault line, file lookups
 run test_round4 "$SRC/ios_lock.c" "$SRC/ios_diag_pure.c" "$HERE/test_round4.c"
+# spec 09 round 7 item 10: the file table (real descriptors)
+run test_fd "$SRC/ios_fd.c" "$HERE/test_fd.c"
 # spec 09 Parts A and C2: boot failures come back by longjmp, as build-ios.sh compiles ntdll
 run test_noexit -DWINE_IOS -include "$SRC/ios_noexit.h" "$SRC/ios_pure.c" "$HERE/test_noexit.c"
 

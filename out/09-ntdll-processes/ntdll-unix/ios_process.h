@@ -278,6 +278,11 @@ extern void ios_thread_started( DWORD tid, unsigned int unix_tid );
 extern void ios_end_pseudo_process( int exit_code ) __attribute__((noreturn));
 extern void ios_thread_leave( int status ) __attribute__((noreturn));
 extern void ios_close_thread_fds(void);            /* thread.c */
+extern void ios_close_thread_fds_of( TEB *teb );   /* thread.c, spec 09 round 7: a suspended thread's */
+/* spec 09 round 7 (10, ios_exit.c): the open-file limit at boot, the 10 s line, the 75% line */
+extern void ios_fd_boot(void);
+extern void ios_fd_tick(void);
+extern void ios_fd_note( int fd );
 extern void ios_thread_alert( unsigned int unix_tid );
 extern void ios_alert_own_process(void);
 extern void ios_handle_poke(void);

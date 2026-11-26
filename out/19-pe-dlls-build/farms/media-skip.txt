@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: LGPL-2.1-or-later
+# Copyright (c) 2026 the MYIOSDECK author
+#
+# Spec 19 A21: Wine modules that register COM classes and use the media libraries (Media
+# Foundation, DirectShow, DMOs), which tests/test-media-classes.sh finds in Wine's tree, but that
+# a farm leaves out on purpose. Each of the others must be in farms/arm64ec-windows.txt and not
+# left out of i386-windows by farms/i386-skip.txt.
+#   <farm> <dll> <reason>
+# farm: arm64ec-windows or i386-windows (left out of that farm), or not-media (found by the
+# test's rule but not a media module; the general COM case is not A21's).
+
+arm64ec-windows qcap.dll        capture devices (video and audio capture filters, AVI mux for recording); its unix side (V4L) isn't in the app and the iPhone's cameras aren't wired to it
+arm64ec-windows qdvd.dll        DVD navigation; there is no DVD drive
+arm64ec-windows mfh264enc.dll   an H.264 encoder (recording), in no playback chain; spec 14's wg_transform has no encoders
+
+not-media       dxdiagn.dll     DirectX diagnostics; it lists DirectShow filters (links strmiids)
+not-media       mshtml.dll      the HTML engine; it links the DirectShow GUID library (strmiids) only
+not-media       objsel.dll      the object picker; it links the DirectShow GUID library (strmiids) only
+not-media       sapi.dll        speech; it links mfuuid and wmcodecdspuuid and delay-loads mfplat

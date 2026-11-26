@@ -38,6 +38,7 @@
 #include "ios_sig_pure.h"       /* spec 22 C5: the thread registry (Mach port -> TEB) */
 #include "ios_session_pure.h"   /* spec 22 */
 #include "ios_diag_pure.h"      /* spec 09 round 4 */
+#include "ios_fd.h"             /* spec 09 round 7 */
 
 #ifdef WINE_IOS
 
@@ -326,6 +327,93 @@ void ios_files_thread_gone(void)
 {
     free( lookup_stats );
     lookup_stats = NULL;
+}
+
+
+/* ---------- round 7 (10): the app's open-file table ---------- */
+
+static pthread_mutex_t fd_mutex = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t fd_last_ms, fd_probe_ms;
+static unsigned int fd_limit;
+static int fd_high_done;
+
+static void fd_log( const char *line )
+{
+    ios_log( "%s\n", line );
+}
+
+static uint64_t fd_now_ms(void)
+{
+    struct timespec ts;
+
+    clock_gettime( CLOCK_MONOTONIC, &ts );
+    return (uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000 + 1;
+}
+
+/* the line, and the 75% mark it may reach; fd_mutex is held */
+static void fd_log_table( BOOL only_when_high )
+{
+    struct ios_fd_counts c;
+    struct ios_proc *proc = ios_proc_current();
+    char line[200];
+    BOOL high;
+
+    if (!fd_limit) fd_limit = ios_fd_limit();
+    ios_fd_count( &c, (int)fd_limit );
+    high = ios_fd_threshold_once( &fd_high_done, c.open, fd_limit );
+    if (only_when_high && !high) return;
+    ios_log( "%s\n", ios_fd_line( line, sizeof(line), &c, fd_limit,
+                                 proc ? (unsigned int)__atomic_load_n( &proc->pp_nb_threads, __ATOMIC_RELAXED ) : 0 ));
+}
+
+/***********************************************************************
+ *           ios_fd_boot
+ *
+ * Round 7 (10): at app boot, after set_max_limit( RLIMIT_NOFILE ): the limits, raised further
+ * when the soft one is still below kern.maxfilesperproc.
+ */
+void ios_fd_boot(void)
+{
+    ios_fd_raise_limit( fd_log );
+    fd_limit = ios_fd_limit();
+}
+
+/***********************************************************************
+ *           ios_fd_tick
+ *
+ * Round 7 (10): called from server_select (a thread about to wait, outside Wine's locks): at most
+ * once per 10 s for the whole app, the "[fd] <open> of <limit> open ..." line.
+ */
+void ios_fd_tick(void)
+{
+    uint64_t now = fd_now_ms(), last = __atomic_load_n( &fd_last_ms, __ATOMIC_RELAXED );
+
+    if (last && now - last < 10000) return;
+    if (pthread_mutex_trylock( &fd_mutex )) return;
+    if (ios_fd_due( &fd_last_ms, now )) fd_log_table( FALSE );
+    pthread_mutex_unlock( &fd_mutex );
+}
+
+/***********************************************************************
+ *           ios_fd_note
+ *
+ * Round 7 (10): a descriptor ntdll just got (from the server, or a thread's pipe). Descriptors are
+ * given lowest first, so one at 75% of the limit or above may mean the table is that full: count
+ * (at most once a second) and log the line at once the first time it is.
+ */
+void ios_fd_note( int fd )
+{
+    uint64_t now;
+    unsigned int limit = fd_limit;
+
+    if (fd < 0 || __atomic_load_n( &fd_high_done, __ATOMIC_RELAXED )) return;
+    if (!limit || (uint64_t)fd * 4 < (uint64_t)limit * 3) return;
+    now = fd_now_ms();
+    if (now - __atomic_load_n( &fd_probe_ms, __ATOMIC_RELAXED ) < 1000) return;
+    if (pthread_mutex_trylock( &fd_mutex )) return;
+    fd_probe_ms = now;
+    fd_log_table( TRUE );
+    pthread_mutex_unlock( &fd_mutex );
 }
 
 
@@ -786,6 +874,9 @@ static void forget_leftover_threads( struct ios_proc *proc, DWORD self )
                 ios_log( "[proc] thread %04x of process %04x kept suspended: in %s\n", (int)tid,
                          teb ? (int)HandleToULong( teb->ClientId.UniqueProcess ) : 0, where );
                 ios_lock_thread_suspended( proc->serial, tid );
+                /* round 7 (10): it never runs again; its pipes to the server would stay in the
+                 * app's file table for good */
+                if (teb) ios_close_thread_fds_of( teb );
                 thread_forget( tid );
                 ios_threadreg_remove( port );
                 InterlockedDecrement( &proc->pp_nb_threads );

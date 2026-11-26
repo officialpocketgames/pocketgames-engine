@@ -65,6 +65,8 @@
 
 #ifdef WINE_IOS  /* spec 08 Part B3: every kill() goes through the one wrapper */
 #define kill(pid,sig) ios_kill( pid, sig )
+/* spec 09 round 7 (10): ntdll's count of the app's file table (out/09 ios_fd.c); weak */
+extern char *ios_fd_table_full_line( char *buf, size_t len ) __attribute__((weak));
 #endif
 
 /* Some versions of glibc don't define this */
@@ -452,6 +454,18 @@ int receive_fd( struct process *process )
     {
         if (errno != EWOULDBLOCK && (EWOULDBLOCK == EAGAIN || errno != EAGAIN))
         {
+#ifdef WINE_IOS
+            /* MYIOSDECK (spec 09 round 7, 10): Darwin answers EMSGSIZE when the passed descriptor
+             * finds no slot in the file table (the app's: the server runs in it); say so first */
+            if ((errno == EMSGSIZE || errno == EMFILE) && ios_fd_table_full_line)
+            {
+                int err = errno;
+                char line[200];
+
+                fprintf( stderr, "%s\n", ios_fd_table_full_line( line, sizeof(line) ));
+                errno = err;
+            }
+#endif
             fprintf( stderr, "Protocol error: process %04x: ", process->id );
             perror( "recvmsg" );
             kill_process( process, 1 );

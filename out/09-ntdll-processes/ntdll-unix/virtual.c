@@ -5002,9 +5002,16 @@ static BOOL is_inside_thread_stack( void *ptr, struct thread_stack_info *stack )
     if ((char *)ptr > stack->start && (char *)ptr <= stack->end) return TRUE;
 
     if (!wow_teb) return FALSE;
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 09 round 7, 9): the 32-bit values are guest addresses; ptr is a host one */
+    stack->start = (char *)(ULONG_PTR)ios_wow_stack_host( wow_teb->DeallocationStack, ios_wow_base() );
+    stack->limit = (char *)(ULONG_PTR)ios_wow_stack_host( wow_teb->Tib.StackLimit, ios_wow_base() );
+    stack->end   = (char *)(ULONG_PTR)ios_wow_stack_host( wow_teb->Tib.StackBase, ios_wow_base() );
+#else
     stack->start = ULongToPtr( wow_teb->DeallocationStack );
     stack->limit = ULongToPtr( wow_teb->Tib.StackLimit );
     stack->end   = ULongToPtr( wow_teb->Tib.StackBase );
+#endif
     stack->guaranteed = max( wow_teb->GuaranteedStackBytes, min_guaranteed );
     stack->is_wow = TRUE;
     return ((char *)ptr > stack->start && (char *)ptr <= stack->end);
@@ -5035,7 +5042,20 @@ static NTSTATUS grow_thread_stack( char *page, struct thread_stack_info *stack_i
     if (stack_info->is_wow)
     {
         WOW_TEB *wow_teb = get_wow_teb( NtCurrentTeb() );
+#ifdef WINE_IOS
+        /* MYIOSDECK (spec 09 round 7, 9): the guest value, and the first growth logged once */
+        static __thread BOOL logged;
+
+        wow_teb->Tib.StackLimit = ios_wow_stack_guest( (ULONG_PTR)page, ios_wow_base() );
+        if (!logged)
+        {
+            logged = TRUE;
+            ios_log( "[vm] 32-bit stack of thread %04x grew to %08x\n", (int)GetCurrentThreadId(),
+                     (unsigned int)wow_teb->Tib.StackLimit );
+        }
+#else
         wow_teb->Tib.StackLimit = PtrToUlong( page );
+#endif
     }
     else NtCurrentTeb()->Tib.StackLimit = page;
     return ret;

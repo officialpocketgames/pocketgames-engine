@@ -5,7 +5,10 @@
 # CPU module calls into). build-pe.sh builds exactly these, plus their import closure. No
 # programs: a session of this farm runs Wine's programs from the aarch64 farm (spec 02 Part H
 # step 4). winegstreamer.dll is here for spec 14's 64-bit media path.
+# A21: every Media Foundation, DirectShow and DMO module whose classes the registry names is here
+# too, or farms/media-skip.txt says why not (tests/test-media-classes.sh checks it).
 advapi32.dll
+amstream.dll    # DirectShow multimedia streams (A21)
 apisetschema.dll
 authz.dll
 avifil32.dll    # Video for Windows: a 64-bit game exe imports it (clarification 1)
@@ -15,6 +18,7 @@ bcryptprimitives.dll
 bthprops.cpl
 cabinet.dll
 cfgmgr32.dll
+colorcnv.dll    # colour converter MFT/DMO (A21)
 combase.dll
 comctl32.dll
 comdlg32.dll
@@ -34,14 +38,17 @@ d3dx9_43.dll
 d3dxof.dll
 dbghelp.dll
 dcomp.dll
+devenum.dll     # DirectShow's device and filter enumerator (A21)
 dhcpcsvc.dll
 dinput.dll
 dinput8.dll
 dnsapi.dll
+dsdmo.dll       # DirectSound effect DMOs (A21)
 dsound.dll
 dwmapi.dll
 dwrite.dll
 esent.dll
+evr.dll         # the enhanced video renderer (A21)
 fontsub.dll
 gameux.dll      # Game Explorer: 64-bit games create its COM objects (clarification 2)
 gdi32.dll
@@ -57,22 +64,29 @@ kerberos.dll    # secur32's LSA package; its unix table: spec 12 clarification 9
 kernel32.dll
 kernelbase.dll
 ktmw32.dll
+l3codecx.ax     # the MPEG layer-3 decoder DMO (A21)
 mf.dll
+mfasfsrcsnk.dll # ASF (WMV/WMA) byte-stream handler (A21)
 mferror.dll     # Media Foundation error strings (data only), loaded beside mfmp4srcsnk (A18)
+mfmediaengine.dll # the Media Engine (A21)
 mfmp4srcsnk.dll # Media Foundation's MPEG-4 byte-stream handler: 64-bit games' video (A18)
 mfplat.dll
 mfreadwrite.dll
+mfsrcsnk.dll    # WAVE and AVI byte-stream handlers (A21)
 mlang.dll
 mmdevapi.dll
+mp3dmod.dll     # the MP3 decoder DMO/MFT (A21)
 mpr.dll
 msacm32.dll
 msasn1.dll
+msauddecmft.dll # the AAC decoder MFT (A21)
 mscms.dll       # colour management: Qt 6 programs import it (clarification 1)
 mscoree.dll
 msctf.dll
 msdmo.dll
 msftedit.dll
 msimg32.dll
+msmpeg2vdec.dll # the H.264 decoder MFT (A21)
 msv1_0.dll      # secur32's LSA package; its unix table: spec 12 clarification 9
 msvcp110.dll
 msvcp140.dll
@@ -84,7 +98,9 @@ msvcp_win.dll   # imported by Microsoft's own x64 D3DCompiler_47.dll that games 
 msvcr110.dll
 msvcr120.dll
 msvcrt.dll
+msvdsp.dll      # the video DSP MFT (A21)
 msvfw32.dll     # Video for Windows, imported by avifil32 (clarification 1)
+msvproc.dll     # the video processor MFT (CLSID_VideoProcessorMFT): a Unity game's video (A21)
 mswsock.dll
 msxml3.dll
 msxml6.dll
@@ -103,6 +119,10 @@ pdh.dll
 powrprof.dll
 propsys.dll
 psapi.dll
+qasf.dll        # DirectShow's ASF reader and DMO wrapper (A21)
+qedit.dll       # DirectShow's sample grabber and editing (A21)
+quartz.dll      # DirectShow (A21)
+resampledmo.dll # the audio resampler MFT/DMO (A21)
 riched20.dll
 riched32.dll
 rpcrt4.dll
@@ -126,6 +146,7 @@ uxtheme.dll
 vcruntime140.dll
 vcruntime140_1.dll
 version.dll
+vidreszr.dll    # the video resizer DSP (A21)
 vulkan-1.dll    # spec 34 C1: Wine's loader, built without --prefer-native (pe/dlls/vulkan-1/Makefile.in)
 wbemdisp.dll
 wbemprox.dll
@@ -147,7 +168,9 @@ winusb.dll
 wlanapi.dll
 wldap32.dll
 wldp.dll
+wmadmod.dll     # the WMA decoder DMO (A21)
 wmiutils.dll
+wmvdecod.dll    # the WMV decoder DMO (A21)
 ws2_32.dll
 wsock32.dll
 wtsapi32.dll

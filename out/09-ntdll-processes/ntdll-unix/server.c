@@ -815,6 +815,9 @@ unsigned int server_select( const union select_op *select_op, data_size_t size, 
     } reply_data;
 
     memset( &result, 0, sizeof(result) );
+#ifdef WINE_IOS
+    ios_fd_tick();   /* MYIOSDECK (spec 09 round 7, 10): the file table, at most every 10 s */
+#endif
 
     do
     {
@@ -1107,6 +1110,9 @@ int wine_server_receive_fd( obj_handle_t *handle )
 #endif
             }
             if (fd != -1) fcntl( fd, F_SETFD, FD_CLOEXEC ); /* in case MSG_CMSG_CLOEXEC is not supported */
+#ifdef WINE_IOS
+            ios_fd_note( fd );   /* MYIOSDECK (spec 09 round 7, 10): a high descriptor: the 75% line */
+#endif
             return fd;
         }
         if (!ret) break;
@@ -1422,6 +1428,9 @@ int server_pipe( int fd[2] )
     {
         fcntl( fd[0], F_SETFD, FD_CLOEXEC );
         fcntl( fd[1], F_SETFD, FD_CLOEXEC );
+#ifdef WINE_IOS
+        ios_fd_note( fd[1] );   /* MYIOSDECK (spec 09 round 7, 10) */
+#endif
     }
     return ret;
 }

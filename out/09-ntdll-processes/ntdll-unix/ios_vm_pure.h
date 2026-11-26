@@ -55,6 +55,21 @@ struct ios_mem_figures
 };
 void ios_mem_figures( uint64_t memsize, uint64_t app_avail, uint64_t page_size, struct ios_mem_figures *f );
 
+/* Spec 09 round 7 item 9: a guard-page fault against a thread's stack. A 32-bit thread's stack
+ * values (wow_teb) are guest addresses: its host addresses are them plus the guest window's base
+ * (ios_wow_stack_host; base 0 without a window). ios_stack_guard: for a guard page at page (host)
+ * and a stack [start, end) with guaranteed bytes kept for an overflow (host addresses), whether
+ * the fault isn't the stack's (IOS_GUARD_NOT_STACK: STATUS_GUARD_PAGE_VIOLATION), grows it
+ * (IOS_GUARD_GROW), or reaches the guaranteed space (IOS_GUARD_OVERFLOW: STATUS_STACK_OVERFLOW),
+ * as upstream's is_inside_thread_stack / grow_thread_stack decide. ios_wow_stack_guest: the
+ * guest value of a host address for wow_teb (StackLimit). */
+#define IOS_GUARD_NOT_STACK 0
+#define IOS_GUARD_GROW      1
+#define IOS_GUARD_OVERFLOW  2
+uint64_t ios_wow_stack_host( uint32_t guest, uint64_t base );
+uint32_t ios_wow_stack_guest( uint64_t host, uint64_t base );
+int ios_stack_guard( uint64_t page, uint64_t start, uint64_t end, uint64_t guaranteed, uint64_t host_page );
+
 /* ---------- Part E4/E5: guest limits ---------- */
 
 /* The ceiling reported to 32-bit code (exclusive): 4 GB, or 2 GB for an image without

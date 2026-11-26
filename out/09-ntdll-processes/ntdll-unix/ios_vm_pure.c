@@ -73,6 +73,24 @@ void ios_mem_figures( uint64_t memsize, uint64_t app_avail, uint64_t page_size, 
     f->committed    = (uint32_t)(total_pages - avail_pages);
 }
 
+/* ---------- spec 09 round 7 item 9 ---------- */
+
+uint64_t ios_wow_stack_host( uint32_t guest, uint64_t base )
+{
+    return guest ? base + guest : 0;
+}
+
+uint32_t ios_wow_stack_guest( uint64_t host, uint64_t base )
+{
+    return (uint32_t)(host - base);
+}
+
+int ios_stack_guard( uint64_t page, uint64_t start, uint64_t end, uint64_t guaranteed, uint64_t host_page )
+{
+    if (!(page > start && page <= end)) return IOS_GUARD_NOT_STACK;
+    return page >= start + host_page + guaranteed ? IOS_GUARD_GROW : IOS_GUARD_OVERFLOW;
+}
+
 /* ---------- Part E4/E5 ---------- */
 
 uint64_t ios_wow_ceiling( int large_address_aware, const char *env_laa )
