@@ -6,6 +6,7 @@
 // "main"), prints the compiler's messages to stderr and the disassembly of the result to stdout.
 //   hlslc [-p profile] file.hlsl     (default profile ps_5_0; exit status 1 on a failed compile)
 // Profiles below 4.0 (A15's ps_2_0 check) compile to and disassemble Direct3D 9 bytecode.
+// -s (A16) also prints the input and output signatures (".param" lines) before the code.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -41,6 +42,10 @@ int main(int argc, char **argv)
 {
     struct vkd3d_shader_compile_option option = {VKD3D_SHADER_COMPILE_OPTION_API_VERSION,
             VKD3D_SHADER_API_VERSION_1_19};
+    struct vkd3d_shader_compile_option formatting = {VKD3D_SHADER_COMPILE_OPTION_FORMATTING,
+            VKD3D_SHADER_COMPILE_OPTION_FORMATTING_INDENT | VKD3D_SHADER_COMPILE_OPTION_FORMATTING_HEADER
+            | VKD3D_SHADER_COMPILE_OPTION_FORMATTING_IO_SIGNATURES};
+    int signatures = 0;
     struct vkd3d_shader_hlsl_source_info hlsl_info;
     struct vkd3d_shader_compile_info info;
     struct vkd3d_shader_code dxbc, text;
@@ -54,12 +59,14 @@ int main(int argc, char **argv)
     {
         if (!strcmp(argv[i], "-p") && i + 1 < argc)
             profile = argv[++i];
+        else if (!strcmp(argv[i], "-s"))
+            signatures = 1;
         else
             path = argv[i];
     }
     if (!path || !(src = read_file(path, &size)))
     {
-        fprintf(stderr, "usage: hlslc [-p profile] file.hlsl\n");
+        fprintf(stderr, "usage: hlslc [-s] [-p profile] file.hlsl\n");
         return 2;
     }
 
@@ -96,6 +103,11 @@ int main(int argc, char **argv)
     info.source_type = target == VKD3D_SHADER_TARGET_D3D_BYTECODE
             ? VKD3D_SHADER_SOURCE_D3D_BYTECODE : VKD3D_SHADER_SOURCE_DXBC_TPF;
     info.target_type = VKD3D_SHADER_TARGET_D3D_ASM;
+    if (signatures)
+    {
+        info.options = &formatting;
+        info.option_count = 1;
+    }
     info.log_level = VKD3D_SHADER_LOG_INFO;
     messages = NULL;
     ret = vkd3d_shader_compile(&info, &text, &messages);

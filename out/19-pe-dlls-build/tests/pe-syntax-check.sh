@@ -35,7 +35,8 @@ gen=$(mktemp -d)
 trap 'rm -rf "$gen"' EXIT
 
 status=0
-files=$(cd "$top/pe" && find . -name '*.c' | sed 's|^\./||' | sort)
+# the vkd3d overlay's files (A16's tpf.c, hlsl_codegen.c) are checked in the vkd3d section below
+files=$(cd "$top/pe" && find . -name '*.c' ! -path './libs/vkd3d/*' | sed 's|^\./||' | sort)
 for f in $files; do
     dir=$(dirname "$f")
     mkdir -p "$gen/$dir"
@@ -70,7 +71,7 @@ for target in arm64ec aarch64 i686; do
     done
 done
 
-# vkd3d-shader with the overlay pe/libs/vkd3d/ (A14, A15): its parser hlsl.y is made with bison,
+# vkd3d-shader with the overlay pe/libs/vkd3d/ (A14, A15, A16): its parser hlsl.y is made with bison,
 # then the parser and every vkd3d-shader file that includes hlsl.h compile with Wine's flags for
 # libs/vkd3d (vkd3d's own warnings stay warnings; errors fail)
 vk="$top/pe/libs/vkd3d"
@@ -80,7 +81,8 @@ if [ -d "$vk" ] && command -v bison >/dev/null 2>&1; then
     cp -R "$vk/." "$t/"
     s="$t/libs/vkd3d-shader"
     if (cd "$s" && bison -d -o hlsl.tab.c hlsl.y 2> "$gen/bison.log"); then
-        vkfiles="$s/hlsl.tab.c $(grep -l '#include "hlsl.h"' "$s"/*.c | tr '\n' ' ')"
+        # plus every file the overlay replaces (tpf.c doesn't include hlsl.h)
+        vkfiles="$s/hlsl.tab.c $( (grep -l '#include "hlsl.h"' "$s"/*.c; cd "$vk/libs/vkd3d-shader" && ls *.c 2>/dev/null | sed "s|^|$s/|") | sort -u | tr '\n' ' ')"
         for target in arm64ec aarch64 i686; do
             for f in $vkfiles; do
                 # shellcheck disable=SC2086

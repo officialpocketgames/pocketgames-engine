@@ -6,7 +6,8 @@
 # vkd3d 1.19 with this part's overlay pe/libs/vkd3d/ on top), built natively, compiles the shaders
 # of tests/vkd3d-hlsl/ to what Microsoft's compiler makes of them. It also builds Wine's copy
 # without the overlay and expects the ANGLE shader to fail there, so the test keeps proving that
-# it exercises the bug.
+# it exercises the bug. A15 (half for Shader Model 4 and later) and A16 (SV_ClipDistance and
+# SV_CullDistance) add their checks below.
 #   test-vkd3d-hlsl.sh [build-dir]
 # VKD3D_RELEASE is the unpacked vkd3d 1.19 release (dl.winehq.org/vkd3d/source/vkd3d-1.19.tar.xz,
 # SHA-256 034613605baab8ba84674f8d272cf22b5e86bc6bc03fc5728ef9bce07308baa6): its include/ holds
@@ -153,6 +154,42 @@ else
 fi
 # below 4.0 nothing changes: the same output as Wine's unchanged copy
 same ps_2_0 half-ps20.hlsl half-ps20.hlsl "$fixed" "$upstream"
+
+# A16: SV_ClipDistance / SV_CullDistance for profiles 4.0 and later. sig <profile> <file> <pattern>...:
+# compiles with the signatures printed, and every pattern matches a line
+sig() {
+    p=$1 f=$2
+    shift 2
+    log="$build/$(basename "$f" .hlsl).$p"
+    "$fixed" -s -p "$p" "$cases/$f" > "$log.asm" 2> "$log.err" || { fail "$f ($p): $(head -3 "$log.err" | tr '\n' ' ')"; return; }
+    for pat in "$@"; do
+        grep -Eq -- "$pat" "$log.asm" || fail "$f ($p): no line matches /$pat/ ($log.asm)"
+    done
+}
+# reg <file.profile> <semantic>: the output register a .param line names
+reg() {
+    sed -n "s/^ *\\.param $2\\.[xyzw]*, o\\([0-9]*\\)\\..*/\\1/p" "$build/$1.asm"
+}
+sig vs_4_0 clip-vs40.hlsl '^ *\.param SV_ClipDistance\.x, o[0-9]+\.x, float, CLIPDST$' \
+    '^ *\.param SV_ClipDistance1\.xy, o[0-9]+\.xy, float, CLIPDST$' '^ *dcl_output_siv o[0-9]+\.x, clip_distance' \
+    '^ *dcl_output_siv o[0-9]+\.xy, clip_distance'
+c0=$(reg clip-vs40.vs_4_0 SV_ClipDistance) c1=$(reg clip-vs40.vs_4_0 SV_ClipDistance1) t0=$(reg clip-vs40.vs_4_0 TEXCOORD)
+if [ -z "$c0" ] || [ -z "$c1" ] || [ -z "$t0" ] || [ "$c0" = "$c1" ] || [ "$t0" = "$c0" ] || [ "$t0" = "$c1" ]; then
+    fail "clip-vs40.hlsl: expected SV_ClipDistance0, SV_ClipDistance1 and TEXCOORD0 in three registers (o$c0, o$c1, o$t0)"
+fi
+sig vs_4_0 clip4-vs40.hlsl '^ *\.param SV_ClipDistance\.xyzw, o[0-9]+\.xyzw, float, CLIPDST$' \
+    '^ *\.param SV_ClipDistance1\.xyzw, o[0-9]+\.xyzw, float, CLIPDST$'
+sig vs_5_0 cull-vs50.hlsl '^ *\.param SV_CullDistance\.xyz, o[0-9]+\.xyz, float, CULLDST$' \
+    '^ *\.param SV_ClipDistance\.x, o[0-9]+\.x, float, CLIPDST$' '^ *dcl_output_siv o[0-9]+\.xyz, cull_distance'
+sig ps_4_0 clip-ps40.hlsl '^ *\.param SV_ClipDistance\.x, v[0-9]+(\.[xyzw]+)?, float, CLIPDST$' \
+    '^ *dcl_input_ps_siv .*v[0-9]+\.x, clip_distance'
+# the bug, as the game met it
+if "$upstream" -p vs_4_0 "$cases/clip-vs40.hlsl" > /dev/null 2> "$build/clip-vs40.upstream.err"; then
+    fail "clip-vs40.hlsl: Wine's unchanged vkd3d compiled it (the test no longer shows the bug)"
+else
+    grep -Eq "E5013: Invalid semantic 'SV_ClipDistance'" "$build/clip-vs40.upstream.err" ||
+        fail "clip-vs40.hlsl: unchanged vkd3d failed differently: $(head -3 "$build/clip-vs40.upstream.err" | tr '\n' ' ')"
+fi
 
 [ $status -eq 0 ] && echo "test-vkd3d-hlsl.sh: all checks passed"
 exit $status
