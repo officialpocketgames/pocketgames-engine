@@ -80,6 +80,47 @@ static void test_unix_call_check(void)
     CHECK( ios_unix_call_check( 1, 0, 0, 40 ) == 0 );
 }
 
+/* ---------- spec 09 round 7 item 11: a spawned process's command line ---------- */
+
+static void test_cmdline_line(void)
+{
+    static char long_cmd[2000], line[3000], expect[3000];
+    int i;
+
+    /* as given, Windows paths and all */
+    ios_format_cmdline( line, sizeof(line), 3, "Game-Win64-Shipping.exe",
+                        "\"C:\\Games\\Game\\Binaries\\Win64\\Game-Win64-Shipping.exe\" -dx11 -launcher" );
+    CHECK( !strcmp( line, "process 3 (Game-Win64-Shipping.exe): command line \"C:\\Games\\Game\\Binaries\\Win64\\"
+                          "Game-Win64-Shipping.exe\" -dx11 -launcher" ) );
+    /* empty or missing */
+    ios_format_cmdline( line, sizeof(line), 4, "a.exe", "" );
+    CHECK( !strcmp( line, "process 4 (a.exe): command line " ) );
+    ios_format_cmdline( line, sizeof(line), 4, NULL, NULL );
+    CHECK( !strcmp( line, "process 4 (): command line " ) );
+
+    /* exactly 512 characters: no cut */
+    for (i = 0; i < 512; i++) long_cmd[i] = 'a' + i % 26;
+    long_cmd[512] = 0;
+    ios_format_cmdline( line, sizeof(line), 5, "x.exe", long_cmd );
+    snprintf( expect, sizeof(expect), "process 5 (x.exe): command line %s", long_cmd );
+    CHECK( !strcmp( line, expect ) );
+    /* 513: cut at 512 with "…" */
+    long_cmd[512] = 'z';
+    long_cmd[513] = 0;
+    ios_format_cmdline( line, sizeof(line), 5, "x.exe", long_cmd );
+    long_cmd[512] = 0;
+    snprintf( expect, sizeof(expect), "process 5 (x.exe): command line %s\xe2\x80\xa6", long_cmd );
+    CHECK( !strcmp( line, expect ) );
+
+    /* characters, not bytes: 600 two-byte characters (é) are cut after the 512th, never inside one */
+    for (i = 0; i < 600; i++) { long_cmd[2 * i] = (char)0xc3; long_cmd[2 * i + 1] = (char)0xa9; }
+    long_cmd[1200] = 0;
+    ios_format_cmdline( line, sizeof(line), 6, "y.exe", long_cmd );
+    long_cmd[1024] = 0;
+    snprintf( expect, sizeof(expect), "process 6 (y.exe): command line %s\xe2\x80\xa6", long_cmd );
+    CHECK( !strcmp( line, expect ) );
+}
+
 /* ---------- Part A: unix library names ---------- */
 
 static void test_unixlib_symbol(void)
@@ -311,6 +352,7 @@ int main(void)
     test_refused();
     test_unixlib_symbol();
     test_unix_call_check();
+    test_cmdline_line();
     test_registry();
     test_registry_threads();
     test_children();

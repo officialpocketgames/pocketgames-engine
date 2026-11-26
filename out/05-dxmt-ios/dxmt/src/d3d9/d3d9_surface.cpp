@@ -402,7 +402,7 @@ MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD F
   return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   return lockRectImpl(pLockedRect, pRect, Flags);
   } D9_CHECKED_END(IDirect3DSurface9, LockRect, pLockedRect && !pLockedRect->pBits,
-                   d9fail::LockArgs(-1, false, d9fail::RegionOfRect(pRect), Flags, d9fail::ResourceArgs(m_desc.Format, m_desc.Pool, m_desc.Usage))); // MYIOSDECK spec 07 clarification 5
+                   d9fail::LockArgs(-1, false, d9fail::RegionOfRect(pRect), Flags, d9fail::TextureArgs("surface", m_desc.Width, m_desc.Height, 0, -1, m_desc.Format, m_desc.Usage, m_desc.Pool))); // MYIOSDECK spec 07 clarifications 5 and 7
 }
 
 HRESULT

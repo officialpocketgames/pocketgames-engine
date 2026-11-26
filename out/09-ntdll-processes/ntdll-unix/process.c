@@ -453,6 +453,18 @@ static NTSTATUS ios_spawn_child( const RTL_USER_PROCESS_PARAMETERS *params, int 
     name[len > 0 ? len : 0] = 0;
     snprintf( proc->name, sizeof(proc->name), "%s", ios_file_part( name ));
 
+    /* MYIOSDECK (spec 09 round 7, 11): the command line a Windows program gave its child, once,
+     * cut at 512 characters (no environment); converted up to 1024 UTF-16 units, enough for
+     * 512 characters and to know there were more */
+    {
+        char text[4100], line[MAX_PATH * 3 + 2200];
+        int n = cmdline.Buffer ? ntdll_wcstoumbs( cmdline.Buffer, min( cmdline.Length / sizeof(WCHAR), 1024 ),
+                                                  text, sizeof(text) - 1, FALSE ) : 0;
+
+        text[n > 0 ? n : 0] = 0;
+        ios_log( "%s\n", ios_format_cmdline( line, sizeof(line), proc->serial, proc->name, text ));
+    }
+
     /* the main image's machine is known from the parent's image information; an IL-only .NET
      * image without 32BITREQUIRED runs as a 64-bit process (no guest window) */
     proc->machine = machine;

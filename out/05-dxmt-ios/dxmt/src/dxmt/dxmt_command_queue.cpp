@@ -4,9 +4,13 @@
 // clarifications 24, 27 and 28: logging the frame trace's read-backs, writing the frame dump;
 // clarifications 56 and 57: the residency switch, the serialize switch).
 // Upstream: DXMT a3a6e8f, MIT.
+// Changed for MYIOSDECK (spec 05 item 90: Metal objects in the memory ledger).
+// Changed for MYIOSDECK (spec 06 round 3: a command block that can't be had: wait, retry, never write through
+// null; a 32-bit process at most 3 frames ahead).
 #include "dxmt_command_queue.hpp"
 #include "Metal.hpp"
 #include "dxmt_chunk_slots.hpp"
+#include "dxmt_mem_report.hpp" // MYIOSDECK spec 05 item 90
 #include "dxmt_statistics.hpp"
 #include "util_atomic_wait.hpp"
 #include "util_bitness.hpp"
@@ -39,7 +43,8 @@ CommandQueue::CommandQueue(WMT::Device device) :
     copy_temp_allocator({device, WMTResourceHazardTrackingModeUntracked | WMTResourceStorageModePrivate}),
     argbuf_allocator({
         device,
-        WMTResourceHazardTrackingModeUntracked | WMTResourceCPUCacheModeWriteCombined | WMTResourceStorageModeShared
+        WMTResourceHazardTrackingModeUntracked | WMTResourceCPUCacheModeWriteCombined | WMTResourceStorageModeShared,
+        true, "argument buffers" // MYIOSDECK spec 05 item 90: the ring's name in the ledger
     }),
     cpu_command_allocator({}),
     reftracker_storage_allocator({}),
@@ -110,6 +115,8 @@ CommandQueue::CommandQueue(WMT::Device device) :
     } catch (const std::invalid_argument &) {
     }
   }
+
+  memledger::StartReport(); // MYIOSDECK spec 05 item 90: the [dxmt-mem] lines, once per process
 }
 
 CommandQueue::~CommandQueue() {
@@ -357,9 +364,40 @@ void CommandQueue::Retain(uint64_t seq, Allocation* allocaiton) {
   constexpr size_t block_size = decltype(reftracker_storage_allocator)::block_size;
   while (unlikely(!tracker.track(allocaiton))) {
     auto [temp_buffer, _] = reftracker_storage_allocator.allocate(seq, cpu_coherent.signaledValue(), block_size, 1);
+    if (unlikely(!temp_buffer.ptr)) {
+      /* MYIOSDECK spec 06 round 3 (item 2): no memory to track it with. It is kept alive for good
+         instead, so the GPU never reads freed memory (the encoder thread can't wait here) */
+      allocaiton->incRef();
+      NoteCommandMemoryLost();
+      return;
+    }
     tracker.addStorage(temp_buffer.ptr, block_size);
   }
 };
+
+/* MYIOSDECK spec 06 round 3 (item 2) */
+void *
+CommandQueue::AllocateCommandDataAfterWait(size_t size, size_t alignment) {
+  uint64_t committed = ready_for_encode.load(std::memory_order_relaxed) - 1;
+  if (committed)
+    WaitCPUFence(committed);
+  cpu_command_allocator.free_blocks(cpu_coherent.signaledValue());
+  auto [block, offset] =
+      cpu_command_allocator.allocate(ready_for_encode, cpu_coherent.signaledValue(), size, alignment);
+  if (block.ptr)
+    return ptr_add(block.ptr, offset);
+  NoteCommandMemoryLost();
+  return nullptr;
+}
+
+void
+CommandQueue::NoteCommandMemoryLost() {
+  static std::atomic<bool> logged = false;
+  if (!logged.exchange(true))
+    Logger::err("[dxmt-wow] no memory for commands even after the GPU finished: what can't be recorded is "
+                "dropped and the device is lost");
+  MarkDeviceError();
+}
 
 /* spec 07: LGPL-2.1-or-later, from dxmt-d3d9 v0.4-d3d9 (e8dd4c6) */
 void

@@ -4,14 +4,23 @@
 // an LGPL-2.1-or-later block from steamac's DXMT patch 0002, marked inline). Upstream: DXMT a3a6e8f, MIT.
 // Changed for MYIOSDECK (spec 33 B2: ring memory of the ios_wow_native build from the native heap).
 // Changed for MYIOSDECK (spec 06 round 2: placed blocks counted as guest memory; a failed one dropped).
+// Changed for MYIOSDECK (spec 05 item 90: each block's Metal buffer in the memory ledger, by ring; a
+// finished one-off block freed wherever it is).
+// Changed for MYIOSDECK (spec 06 round 3: host blocks from a free list, in guest memory in the i386
+// build, checked).
 
 #include "Metal.hpp"
+#include "dxmt_mem_track.hpp" // MYIOSDECK spec 05 item 90
 #include "log/log.hpp"
 #include "thread.hpp"
 #include "util_bitness.hpp"
 #include "util_math.hpp"
+#include "util_guest_memory.hpp" // MYIOSDECK spec 06 round 3: command blocks, every build
 #include <cassert>
+#include <cstdlib>
+#include <vector>
 #include <mutex>
+#include <list> // MYIOSDECK spec 05 item 90
 #include <queue>
 #ifdef DXMT_IOS
 #include "util_ios_switch.hpp"
@@ -62,7 +71,7 @@ public:
   void
   preallocate(unsigned count) {
     for (unsigned i = 0; i < count; ++i) {
-      fifo.push({
+      fifo.push_back({
           .allocated_size = 0,
           .total_size = BlockSize,
           .last_used_seq_id = 0,
@@ -114,7 +123,7 @@ private:
     if (fifo.front().reusable_oversize)
       kept_oversize_--;
 #endif
-    fifo.pop();
+    fifo.pop_front();
   }
 
 #ifdef DXMT_IOS
@@ -145,27 +154,38 @@ private:
     return {allocation.block, offset};
   };
 
-  std::queue<Allocation> fifo;
+  /* MYIOSDECK spec 05 item 90: a list (upstream: a queue), so that free_blocks can drop a finished
+     one-off block from anywhere while references to the other blocks stay valid */
+  std::list<Allocation> fifo;
   mutex mutex_;
   Allocator allocator_;
 };
 
 class GpuPrivateBufferBlockAllocator {
 public:
-  GpuPrivateBufferBlockAllocator(WMT::Device device, WMTResourceOptions block_options) {
+  /* MYIOSDECK spec 05 item 90: `name` (static) says which ring a block is of in the ledger */
+  GpuPrivateBufferBlockAllocator(
+      WMT::Device device, WMTResourceOptions block_options, const char *name = "copy temporaries"
+  ) {
     device_ = device;
     buffer_info_.memory.set(nullptr);
     buffer_info_.options = block_options;
+    name_ = name;
   }
 
   class Block {
   public:
     WMT::Reference<WMT::Buffer> buffer;
     uint64_t gpu_address;
+    memledger::Entry mem_record; // MYIOSDECK spec 05 item 90
 
     Block() = default;
     Block(const Block &copy) = delete;
     Block(Block &&move) = default;
+    ~Block() {
+      mem_record.reset(); // item 90: the record goes with the buffer
+      buffer = WMT::Reference<WMT::Buffer>();
+    }
   };
 
   Block
@@ -174,19 +194,28 @@ public:
     buffer_info_.length = block_size;
     block.buffer = device_.newBuffer(buffer_info_);
     block.gpu_address = buffer_info_.gpu_address;
+    if (block.buffer) // MYIOSDECK spec 05 item 90
+      block.mem_record = memledger::Entry(memledger::Add(
+          memledger::BufferRecord(memledger::Kind::Staging, block_size, buffer_info_.options, name_)
+      ));
     return block;
   };
 
 private:
   WMT::Device device_;
   WMTBufferInfo buffer_info_;
+  const char *name_;
 };
 
 class StagingBufferBlockAllocator {
 public:
-  StagingBufferBlockAllocator(WMT::Device device, WMTResourceOptions block_options, bool placed_buffer = true) {
+  StagingBufferBlockAllocator(
+      WMT::Device device, WMTResourceOptions block_options, bool placed_buffer = true,
+      const char *name = "staging" // MYIOSDECK spec 05 item 90: the ring, in the ledger
+  ) {
     device_ = device;
     buffer_info_ = block_options;
+    name_ = name;
     // Spec 06 B2: in the i386 build the rings upstream lets Metal allocate use
     // DLL-allocated memory too; Metal's own has no 32-bit address.
     // MYIOSDECK spec 33 B2: not in the ios_wow_native build, whose rings the
@@ -242,6 +271,7 @@ public:
     void *placed_address;
     size_t placed_size = 0; // MYIOSDECK spec 06 round 2: for the guest-memory ledger
     bool placed_failed = false;
+    memledger::Entry mem_record; // MYIOSDECK spec 05 item 90
 
     /* MYIOSDECK spec 06 round 2: its placed memory couldn't be had */
     bool
@@ -250,6 +280,7 @@ public:
     }
 
     ~Block() {
+      mem_record.reset(); // MYIOSDECK spec 05 item 90: the record goes with the buffer
 #ifdef DXMT_IOS
       // Spec 05 D6: the Metal buffer was made on this memory with
       // newBufferWithBytesNoCopy:, so release it before freeing the memory.
@@ -272,6 +303,7 @@ public:
       placed_address = move.placed_address;
       placed_size = move.placed_size;
       placed_failed = move.placed_failed;
+      mem_record = std::move(move.mem_record); // MYIOSDECK spec 05 item 90
       move.mapped_address = nullptr;
       move.placed_address = nullptr;
     };
@@ -296,6 +328,10 @@ public:
     /* CPU writes go where newBuffer says the contents are, as BufferAllocation does */
     block.mapped_address = placed_buffer_ ? info.memory.get() : nullptr;
     /* end of LGPL block */
+    if (block.buffer) // MYIOSDECK spec 05 item 90
+      block.mem_record = memledger::Entry(
+          memledger::Add(memledger::BufferRecord(memledger::Kind::Staging, info.length, buffer_info_, name_))
+      );
     return block;
   };
 
@@ -303,34 +339,148 @@ private:
   WMT::Device device_;
   WMTResourceOptions buffer_info_;
   bool placed_buffer_;
+  const char *name_; // MYIOSDECK spec 05 item 90
+};
+
+/* MYIOSDECK spec 06 round 3 (item 2): the command rings' host blocks (the command queue's, each
+   deferred command list's, the reference trackers') come from a free list when one of the size
+   is there, and go back to it when their ring lets them go; only the bytes past
+   kHostBlockKeepBytes are freed. Upstream mallocs a block each time and frees it with its ring:
+   a deferred command list, reset after each use, made a fresh 2 MB block every time it was
+   recorded again.
+   In a guest window (the i386 build) a block is guest memory, counted under "commands" and
+   checked (guest_memory::Alloc). A block may then come back without memory (failed()): its
+   users wait for the GPU and try again, or drop what they were writing; never a write through
+   null. g_host_blocks_in_guest lets the host benchmark take that path in a 64-bit build. */
+inline bool g_host_blocks_in_guest = guest_memory::kGuestWindowHeap;
+constexpr size_t kHostBlockKeepBytes = kI386Build ? (16ull << 20) : (64ull << 20);
+
+class HostBlockPool {
+public:
+  struct Entry {
+    void *ptr;
+    size_t size;
+    bool guest;
+  };
+
+  static Entry
+  take(size_t size) {
+    List &l = list();
+    {
+      std::lock_guard<dxmt::mutex> lock(l.mutex);
+      for (size_t i = 0; i < l.blocks.size(); i++) {
+        if (l.blocks[i].size == size && l.blocks[i].guest == g_host_blocks_in_guest) {
+          Entry e = l.blocks[i];
+          l.blocks[i] = l.blocks.back();
+          l.blocks.pop_back();
+          l.bytes -= size;
+          return e;
+        }
+      }
+    }
+    Entry e{nullptr, size, g_host_blocks_in_guest};
+    e.ptr = e.guest ? guest_memory::Alloc(size, 64, guest_memory::Use::Commands, "a command block") : malloc(size);
+    return e;
+  }
+
+  static void
+  give(const Entry &e) {
+    if (!e.ptr)
+      return;
+    List &l = list();
+    {
+      std::lock_guard<dxmt::mutex> lock(l.mutex);
+      if (l.bytes + e.size <= kHostBlockKeepBytes) {
+        l.blocks.push_back(e);
+        l.bytes += e.size;
+        return;
+      }
+    }
+    release(e);
+  }
+
+  /* the free list's bytes, and every block in it released (the host tests) */
+  static size_t
+  keptBytes() {
+    List &l = list();
+    std::lock_guard<dxmt::mutex> lock(l.mutex);
+    return l.bytes;
+  }
+
+  static void
+  releaseKept() {
+    List &l = list();
+    std::vector<Entry> blocks;
+    {
+      std::lock_guard<dxmt::mutex> lock(l.mutex);
+      blocks.swap(l.blocks);
+      l.bytes = 0;
+    }
+    for (const Entry &e : blocks)
+      release(e);
+  }
+
+private:
+  struct List {
+    dxmt::mutex mutex;
+    std::vector<Entry> blocks;
+    size_t bytes = 0;
+  };
+
+  static List &
+  list() {
+    static List *l = new List(); // never destroyed: rings may give blocks back during exit
+    return *l;
+  }
+
+  static void
+  release(const Entry &e) {
+    if (e.guest)
+      guest_memory::Free(e.ptr, e.size, guest_memory::Use::Commands);
+    else
+      free(e.ptr);
+  }
 };
 
 class HostBufferBlockAllocator {
 public:
   class Block {
   public:
-    void *ptr;
+    void *ptr = nullptr;
+    size_t size = 0;    // MYIOSDECK spec 06 round 3: for the free list
+    bool guest = false; // MYIOSDECK spec 06 round 3: guest memory (released through the ledger)
 
     Block() = default;
 
     Block(const Block &) = delete;
     Block(Block &&move) {
       ptr = move.ptr;
+      size = move.size;
+      guest = move.guest;
       move.ptr = nullptr;
     };
 
     ~Block() {
       if (ptr) {
-        free(ptr);
+        HostBlockPool::give({ptr, size, guest}); // MYIOSDECK spec 06 round 3 (upstream: free)
         ptr = nullptr;
       }
     };
+
+    /* MYIOSDECK spec 06 round 3: its memory couldn't be had (guest memory only) */
+    bool
+    failed() const {
+      return !ptr;
+    }
   };
 
   Block
   allocate(size_t block_size) {
     Block block{};
-    block.ptr = malloc(block_size);
+    HostBlockPool::Entry e = HostBlockPool::take(block_size); // MYIOSDECK spec 06 round 3
+    block.ptr = e.ptr;
+    block.size = e.size;
+    block.guest = e.guest;
     return block;
   };
 };
@@ -377,6 +527,18 @@ RingBumpState<Allocator, BlockSize, mutex>::free_blocks(uint64_t coherent_id) {
     front.inc_time_to_live++;
     break;
   }
+  /* MYIOSDECK spec 05 item 90 (round 20's second fix): a block made for one request larger than
+     the ring's blocks goes as soon as the GPU has finished with it, wherever it is. Upstream
+     dropped it only on reaching the front, and a finished block kept for reuse holds the front
+     until it is reused or kStagingBlockLifetime chunks pass, so a run of large uploads could
+     pile such blocks up behind it. A block a caller may still be writing belongs to a chunk the
+     GPU hasn't finished, so it is never one of these. */
+  for (auto it = fifo.begin(); it != fifo.end();) {
+    if (is_adhoc(*it) && it->last_used_seq_id <= coherent_id)
+      it = fifo.erase(it);
+    else
+      ++it;
+  }
 };
 
 template <typename Allocator, size_t BlockSize, class mutex>
@@ -403,8 +565,7 @@ RingBumpState<Allocator, BlockSize, mutex>::allocate_or_reuse_block(
         front.last_used_seq_id = seq_id;
         front.allocated_size = 0;
         front.inc_time_to_live = 0;
-        fifo.push(std::move(front));
-        fifo.pop();
+        fifo.splice(fifo.end(), fifo, fifo.begin()); // item 90: the node moves, not the block
         return fifo.back();
       }
       WARN("forced to allocate new block of size ", block_size);
@@ -419,7 +580,7 @@ RingBumpState<Allocator, BlockSize, mutex>::allocate_or_reuse_block(
     kept_oversize_++;
   }
 #endif
-  fifo.push({
+  fifo.push_back({
       .allocated_size = 0,
       .total_size = block_size,
       .last_used_seq_id = seq_id,

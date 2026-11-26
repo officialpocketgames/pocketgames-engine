@@ -1,6 +1,8 @@
 // Changed for MYIOSDECK (spec 05 clarification 24: RecordingPresent; 57: SerializeBeforeCpuWrite). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 // Also changed for MYIOSDECK (spec 05 clarifications 63, 66, 67: call statistics, discards).
 // Also changed for MYIOSDECK (spec 06 round 2: a discard with no guest memory fails with E_OUTOFMEMORY).
+// Changed for MYIOSDECK (spec 05 item 90: the memory ledger's scopes and ring names).
+// Changed for MYIOSDECK (spec 06 round 3: a command block that can't be had is never written through).
 #include "d3d11_device.hpp"
 #include "d3d11_private.h"
 #include "d3d11_context_impl.cpp"
@@ -185,6 +187,7 @@ public:
   Map(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
       D3D11_MAPPED_SUBRESOURCE *pMappedResource) override {
     D11_CTX_CALL(Map);
+    DXMT_MEM_SCOPE_CALL(11, "Map"); // MYIOSDECK spec 05 item 90
     D11_WORK(MapType == D3D11_MAP_WRITE_DISCARD          ? work_.map_discard++
              : MapType == D3D11_MAP_WRITE_NO_OVERWRITE ? work_.map_no_overwrite++
                                                         : work_.map_other++); // spec 05 clarification 63
@@ -436,6 +439,19 @@ public:
     );
     ctx_state.current_dynamic_buffer_allocations.clear();
     ctx_state.current_dynamic_texture_allocations.clear();
+
+    /* MYIOSDECK spec 06 round 3 (item 2): a command block couldn't be had while the list was
+       recorded, and part of it was dropped: no list. The recording starts again from empty. */
+    if (unlikely(ctx_state.current_cmdlist->outOfMemory())) {
+      ctx_state.current_cmdlist->Reset();
+      if (ppCommandList)
+        *ppCommandList = nullptr;
+      if (RestoreDeferredContextState)
+        RestoreEncodingContextState();
+      else
+        ResetD3D11ContextState();
+      return E_OUTOFMEMORY;
+    }
 
     *ppCommandList = std::move(ctx_state.current_cmdlist);
     device->CreateCommandList((ID3D11CommandList **)&ctx_state.current_cmdlist);

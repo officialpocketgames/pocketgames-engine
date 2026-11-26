@@ -109,7 +109,7 @@ EOF
         objs="$objs $o"
     done
     # shellcheck disable=SC2086
-    $cc -std=c11 -Wall -Wextra -Werror -I"$driver_inc" -I"$top/pe/dlls/d3dcompiler_43" -o "$out/hlslc" "$cases/hlslc.c" $objs -lm -lpthread ||
+    $cc -std=c11 -Wall -Wextra -Werror -I"$driver_inc" -I"$top/pe/libs/vkd3d/libs/vkd3d-utils" -o "$out/hlslc" "$cases/hlslc.c" $objs -lm -lpthread ||
         { fail "$1: link hlslc"; return 1; }
 }
 
@@ -290,6 +290,39 @@ if "$upstream" -p ps_4_0 "$cases/ternary-struct.hlsl" > /dev/null 2> "$build/ter
         ! grep -q 'E5017: .*Copying from unsupported node type' "$build/ternary-struct.upstream.err"; then
     fail "ternary-struct.hlsl: Wine's unchanged vkd3d didn't fail with E5017 (the test no longer shows the bug)"
 fi
+# A22: bool and int uniforms in b and i registers (Shader Model 2/3 with static flow control):
+# reserved ones, a bool used only in a branch and an int used only as a loop count in the next
+# free register, a bool used in arithmetic in c; the program starts by copying them into temps;
+# loops are rep over a defi count with break
+code vs_3_0 -c sm3-bool-int.hlsl '^// constant table: 8 constants, .* target "vs_3_0"$' \
+    '^//   bLight: BOOL b3 count 1, SCALAR BOOL 1x1$' '^//   n: INT4 i1 count 1, SCALAR INT 1x1$' \
+    '^//   bFog: BOOL b0 count 1, SCALAR BOOL 1x1$' '^//   count2: INT4 i0 count 1, SCALAR INT 1x1$' \
+    '^//   bTint: FLOAT4 c[0-9]+ count 1, SCALAR BOOL 1x1$' '^defi i2 = 255, 0, 0, 0$' \
+    '^if[_a-z]* b3(\.xyzw)?$' '^if[_a-z]* b0(\.xyzw)?$' '^rep i1(\.xyzw)?$' '^rep i0(\.xyzw)?$' \
+    '^ +add r([0-9]+)\.([xyzw]), r\1\.\2, c[0-9]+\.y$' '^ +break$'
+if [ "$(grep -Ec '^rep i2(\.xyzw)?$' "$build/sm3-bool-int.vs_3_0.code.asm")" -ne 2 ]; then
+    fail "sm3-bool-int.hlsl: expected the two loops as rep i2"
+fi
+if "$upstream" -p vs_3_0 "$cases/sm3-bool-int.hlsl" > /dev/null 2> "$build/sm3-bool-int.upstream.err" ||
+        ! grep -q 'E5017: .*HLSL_IR_LOOP\|E5017: .*loop' "$build/sm3-bool-int.upstream.err"; then
+    fail "sm3-bool-int.hlsl: Wine's unchanged vkd3d didn't fail its loops with E5017 (the test no longer shows the change)"
+fi
+# pixel shaders: b3 with static flow control (ps_3_0, ps_2_a), c with none (ps_2_0); A22 item 3:
+# both colour outputs written
+for p in ps_3_0 ps_2_a; do
+    code $p -c sm2-bool-colors.hlsl '^//   bLight: BOOL b3 count 1, SCALAR BOOL 1x1$' '^if[_a-z]* b3(\.xyzw)?$' \
+        '^mov oC0\.xyzw, r[0-9]+\.xyzw$' '^mov oC1\.xyzw, r[0-9]+\.xyzw$'
+done
+code ps_2_0 -c sm2-bool-colors.hlsl '^//   bLight: FLOAT4 c0 count 1, SCALAR BOOL 1x1$' \
+    '^mov oC0\.xyzw, r[0-9]+\.xyzw$' '^mov oC1\.xyzw, r[0-9]+\.xyzw$'
+if grep -Eq '^(if|rep)' "$build/sm2-bool-colors.ps_2_0.code.asm"; then
+    fail "sm2-bool-colors.hlsl: flow control in ps_2_0"
+fi
+"$upstream" -c -p ps_3_0 "$cases/sm2-bool-colors.hlsl" > "$build/sm2-bool-colors.upstream.asm" 2>&1 || true
+grep -q '^//   bLight: FLOAT4 c' "$build/sm2-bool-colors.upstream.asm" ||
+    fail "sm2-bool-colors.hlsl: Wine's unchanged vkd3d didn't put bLight in a c register (the test no longer shows the change)"
+# vs_2_0: static if (no break, so no loops)
+code vs_2_0 -c vs20-bool.hlsl '^//   bSkin: BOOL b2 count 1, SCALAR BOOL 1x1$' '^if[_a-z]* b2(\.xyzw)?$'
 # vkd3d can't compile this for ps_1_1, which is why d3dcompiler compiles ps_1_x as ps_2_0 with flag 0x1000
 if "$fixed" -p ps_1_1 "$cases/sm1-samplers-ps20.hlsl" > /dev/null 2>&1; then
     fail "sm1-samplers-ps20.hlsl: vkd3d compiled it for ps_1_1 (check A19's ps_1_x promotion is still needed)"

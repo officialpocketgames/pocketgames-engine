@@ -85,6 +85,10 @@ if [ -d "$vk" ] && command -v bison >/dev/null 2>&1; then
             bison -d -o preproc.tab.c preproc.y 2>> "$gen/bison.log"); then
         # plus every file the overlay replaces (tpf.c doesn't include hlsl.h)
         vkfiles="$s/hlsl.tab.c $s/preproc.tab.c $( (grep -l '#include "hlsl.h"' "$s"/*.c; cd "$vk/libs/vkd3d-shader" && ls *.c 2>/dev/null | sed "s|^|$s/|") | sort -u | tr '\n' ' ')"
+        # and the overlay's vkd3d-utils files (A22: D3DCompile2VKD3D with the compile dumps)
+        if [ -d "$vk/libs/vkd3d-utils" ]; then
+            vkfiles="$vkfiles $(cd "$vk/libs/vkd3d-utils" && ls *.c 2>/dev/null | sed "s|^|$t/libs/vkd3d-utils/|" | tr '\n' ' ')"
+        fi
         for target in arm64ec aarch64 i686; do
             for f in $vkfiles; do
                 # shellcheck disable=SC2086

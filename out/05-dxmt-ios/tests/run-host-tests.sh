@@ -49,7 +49,7 @@ $cxx -std=c++20 -O2 -Wall -Wextra -Werror -DDXMT_PAGE_SIZE=4096 -DDXMT_NATIVE=1 
   -I"$src/../include/native/windows" -I"$src/../include/native/directx" \
   -o "$build/bench_dynamic_discard" "$here/bench_dynamic_discard.cpp" \
   "$src/dxmt/dxmt_dynamic.cpp" "$src/dxmt/dxmt_buffer.cpp" "$src/dxmt/dxmt_allocation.cpp" "$src/util/util_bloom.cpp" \
-  "$src/util/util_guest_memory.cpp"
+  "$src/util/util_guest_memory.cpp" "$src/dxmt/dxmt_mem_ledger.cpp"
 # Spec 06 round 2: the guest-memory ledger, its lines and the per-resource cap's rule.
 $cxx $flags -I"$src/util" -I"$src/dxmt" -o "$build/test_guest_memory" "$here/test_guest_memory.cpp"
 # Spec 05 clarification 10 (steamac's DXMT patches): 0019's slot reservation, 0017's integer
@@ -68,7 +68,17 @@ $cxx $flags $native_flags -I"$src/winemetal" -o "$build/test_metal_reference" "$
 $cxx $flags -I"$src/d3d11" -I"$src/airconv" -o "$build/test_shader_bitcode" "$here/test_shader_bitcode.cpp"
 $cxx $flags -pthread $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
   -o "$build/test_core_fixes" "$here/test_core_fixes.cpp" "$src/dxmt/dxmt_allocation.cpp" \
-  "$src/util/util_guest_memory.cpp"
+  "$src/util/util_guest_memory.cpp" "$src/dxmt/dxmt_mem_ledger.cpp"
+# Spec 06 round 3 (item 3): shader bytecode checked before use, each create and each refusal.
+$cxx $flags -I"$src/d3d11" -o "$build/test_bytecode_check" "$here/test_bytecode_check.cpp"
+# Spec 05 item 90: the Metal memory ledger on its own, and fed by DXMT's own allocation, buffer,
+# texture and ring code against fake Metal.
+$cxx $flags -pthread -I"$src/dxmt" -o "$build/test_mem_ledger" "$here/test_mem_ledger.cpp" \
+  "$src/dxmt/dxmt_mem_ledger.cpp"
+$cxx $flags -pthread $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
+  -o "$build/test_mem_track" "$here/test_mem_track.cpp" "$src/dxmt/dxmt_buffer.cpp" "$src/dxmt/dxmt_texture.cpp" \
+  "$src/dxmt/dxmt_allocation.cpp" "$src/dxmt/dxmt_mem_ledger.cpp" "$src/dxmt/dxmt_bc_emulation.cpp" \
+  "$src/dxmt/dxmt_bc_decode.cpp" "$src/util/util_guest_memory.cpp" "$src/util/util_bloom.cpp"
 # Spec 05 clarification 12: when the shader cache's lookups are logged, and what a cache
 # database holds (on small SQLite databases; the system's libsqlite3 with the declarations in
 # tests/sqlite3-api, so no SQLite development package is needed; skipped without the library).
@@ -171,6 +181,9 @@ sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_metal_reference" || status=1
 "$build/test_shader_bitcode" || status=1
 "$build/test_core_fixes" || status=1
+"$build/test_bytecode_check" || status=1
+"$build/test_mem_ledger" || status=1
+"$build/test_mem_track" || status=1
 "$build/test_shader_cache_log" || status=1
 "$build/test_shader_fixes" || status=1
 "$build/test_format_support2" || status=1

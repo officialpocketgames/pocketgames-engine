@@ -1,4 +1,5 @@
 // Changed for MYIOSDECK (spec 05; FLIP_SEQUENTIAL accepted, see d3d11_swap_effect.hpp; clarification 63: Present counted). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 06 round 3: an occluded Present paces a 32-bit process too).
 // Also changed for MYIOSDECK (spec 05 round 19, item 88: rotation, background colour, source size
 // and restrict-to output answer instead of aborting; see d3d11_swapchain_state.hpp).
 // Also changed for MYIOSDECK (spec 06 round 2: the guest-memory line is checked at each Present).
@@ -785,6 +786,18 @@ public:
     device_context_->PrepareFlush();
     if (hr == DXGI_STATUS_OCCLUDED) {
       // flush commands without presenting
+      if constexpr (kI386Build) {
+        /* MYIOSDECK spec 06 round 3 (item 2): in a 32-bit process an occluded Present paces the
+           CPU like any other: its chunk ends a frame, and PresentBoundary waits for the frame
+           kI386MaxLatency before it. A loop presenting hundreds of times a second while occluded
+           otherwise ran ahead of the GPU without bound. */
+        auto &cmd_queue = device_->GetDXMTDevice().queue();
+        cmd_queue.CurrentChunk()->signal_frame_latency_fence_ = cmd_queue.CurrentFrameSeq();
+        device_context_->Commit();
+        lock.unlock();
+        cmd_queue.PresentBoundary();
+        return hr;
+      }
       device_context_->Commit();
       return hr;
     }

@@ -10,6 +10,13 @@
  * Changed for MYIOSDECK (spec 19 A19): ctab_write_uniforms() writes the target string (the
  * profile name) into the Direct3D 9 constant table.
  *
+ * Changed for MYIOSDECK (spec 19 A22): for Shader Model 2/3 with static flow control, a bool or
+ * int uniform declared in a b or i register, or a bool used only in branch conditions and an
+ * int used only in loop conditions, goes in a constant bool or int register
+ * (sm1_assign_static_registers); the program starts by copying it into a temp (if bN / rep
+ * iN), loads read the temp, and the constant table lists it in the BOOL or INT4 set. Loops
+ * become "rep" over a "defi" count of 255 with "break" (version 2.1 and later).
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
@@ -7222,12 +7229,277 @@ static void allocate_sincos_const_registers(struct hlsl_ctx *ctx, struct hlsl_bl
     }
 }
 
+/* MYIOSDECK (spec 19 A22): bool and int uniforms in constant bool ('b') and int ('i') registers
+ * for Shader Model 2/3, as Microsoft's compiler places them: one declared with register(bN) /
+ * register(iN), a bool used only in branch conditions, and an int used only in loop conditions.
+ * vkd3d keeps reading them as floats: the program starts by copying each into a temp
+ * ("if bN" sets it to 1, "rep iN" counts to N), and loads of the uniform read that temp. */
+static bool sm1_has_static_flow_control(const struct hlsl_ctx *ctx)
+{
+    if (ctx->profile->major_version >= 3)
+        return true;
+    if (ctx->profile->major_version < 2)
+        return false;
+    /* vs_2_0 has if bN and rep iN; ps_2_0 has neither, ps_2_x has them */
+    return ctx->profile->type == VKD3D_SHADER_TYPE_VERTEX || ctx->profile->minor_version >= 1;
+}
+
+/* SM1 loops are "rep" over a "defi" count with "break", which needs version 2.1 */
+static bool sm1_can_loop(const struct hlsl_ctx *ctx)
+{
+    return hlsl_version_ge(ctx, 2, 1);
+}
+
+struct sm1_node_set
+{
+    const struct hlsl_ir_node **nodes;
+    size_t count, capacity;
+};
+
+static void sm1_node_set_add(struct hlsl_ctx *ctx, struct sm1_node_set *set, const struct hlsl_ir_node *node)
+{
+    for (size_t i = 0; i < set->count; ++i)
+    {
+        if (set->nodes[i] == node)
+            return;
+    }
+    if (hlsl_array_reserve(ctx, (void **)&set->nodes, &set->capacity, set->count + 1, sizeof(*set->nodes)))
+        set->nodes[set->count++] = node;
+}
+
+static bool sm1_node_set_has(const struct sm1_node_set *set, const struct hlsl_ir_node *node)
+{
+    for (size_t i = 0; i < set->count; ++i)
+    {
+        if (set->nodes[i] == node)
+            return true;
+    }
+    return false;
+}
+
+/* the loads an expression is computed from (through expressions and swizzles) */
+static void sm1_collect_operand_loads(struct hlsl_ctx *ctx, struct sm1_node_set *set,
+        const struct hlsl_ir_node *node, unsigned int depth)
+{
+    if (!node || depth > 64)
+        return;
+
+    switch (node->type)
+    {
+        case HLSL_IR_LOAD:
+            sm1_node_set_add(ctx, set, node);
+            break;
+
+        case HLSL_IR_SWIZZLE:
+            sm1_collect_operand_loads(ctx, set, hlsl_ir_swizzle(node)->val.node, depth + 1);
+            break;
+
+        case HLSL_IR_EXPR:
+            for (unsigned int i = 0; i < HLSL_MAX_OPERANDS; ++i)
+                sm1_collect_operand_loads(ctx, set, hlsl_ir_expr(node)->operands[i].node, depth + 1);
+            break;
+
+        default:
+            break;
+    }
+}
+
+/* an "if (cond) break;" with nothing else: the condition a loop tests */
+static bool sm1_is_loop_break(const struct hlsl_ir_if *iff)
+{
+    const struct hlsl_ir_node *first;
+
+    if (!list_empty(&iff->else_block.instrs) || list_count(&iff->then_block.instrs) != 1)
+        return false;
+    first = LIST_ENTRY(list_head(&iff->then_block.instrs), const struct hlsl_ir_node, entry);
+    return first->type == HLSL_IR_JUMP && hlsl_ir_jump(first)->type == HLSL_IR_JUMP_BREAK;
+}
+
+/* branch: the loads conditions of ifs and selections are computed from; loop: those of loops'
+ * break conditions. has_loop: whether a loop is left. */
+static void sm1_collect_condition_loads(struct hlsl_ctx *ctx, const struct hlsl_block *block,
+        struct sm1_node_set *branch, struct sm1_node_set *loop, bool *has_loop)
+{
+    const struct hlsl_ir_node *instr;
+
+    LIST_FOR_EACH_ENTRY(instr, &block->instrs, struct hlsl_ir_node, entry)
+    {
+        switch (instr->type)
+        {
+            case HLSL_IR_IF:
+            {
+                const struct hlsl_ir_if *iff = hlsl_ir_if(instr);
+
+                sm1_collect_operand_loads(ctx, branch, iff->condition.node, 0);
+                if (sm1_is_loop_break(iff))
+                    sm1_collect_operand_loads(ctx, loop, iff->condition.node, 0);
+                sm1_collect_condition_loads(ctx, &iff->then_block, branch, loop, has_loop);
+                sm1_collect_condition_loads(ctx, &iff->else_block, branch, loop, has_loop);
+                break;
+            }
+
+            case HLSL_IR_LOOP:
+                *has_loop = true;
+                sm1_collect_condition_loads(ctx, &hlsl_ir_loop(instr)->body, branch, loop, has_loop);
+                break;
+
+            case HLSL_IR_SWITCH:
+            {
+                const struct hlsl_ir_switch_case *c;
+
+                LIST_FOR_EACH_ENTRY(c, &hlsl_ir_switch(instr)->cases, struct hlsl_ir_switch_case, entry)
+                    sm1_collect_condition_loads(ctx, &c->body, branch, loop, has_loop);
+                break;
+            }
+
+            case HLSL_IR_EXPR:
+            {
+                const struct hlsl_ir_expr *expr = hlsl_ir_expr(instr);
+
+                /* a flattened if: the selection's condition */
+                if (expr->op == HLSL_OP3_TERNARY || expr->op == HLSL_OP3_CMP)
+                    sm1_collect_operand_loads(ctx, branch, expr->operands[0].node, 0);
+                break;
+            }
+
+            default:
+                break;
+        }
+    }
+}
+
+/* whether every load of var in the block is in set */
+static bool sm1_loads_only_in(const struct hlsl_block *block, const struct hlsl_ir_var *var,
+        const struct sm1_node_set *set)
+{
+    const struct hlsl_ir_node *instr;
+
+    LIST_FOR_EACH_ENTRY(instr, &block->instrs, struct hlsl_ir_node, entry)
+    {
+        switch (instr->type)
+        {
+            case HLSL_IR_LOAD:
+                if (hlsl_ir_load(instr)->src.var == var && !sm1_node_set_has(set, instr))
+                    return false;
+                break;
+
+            case HLSL_IR_IF:
+                if (!sm1_loads_only_in(&hlsl_ir_if(instr)->then_block, var, set)
+                        || !sm1_loads_only_in(&hlsl_ir_if(instr)->else_block, var, set))
+                    return false;
+                break;
+
+            case HLSL_IR_LOOP:
+                if (!sm1_loads_only_in(&hlsl_ir_loop(instr)->body, var, set))
+                    return false;
+                break;
+
+            case HLSL_IR_SWITCH:
+            {
+                const struct hlsl_ir_switch_case *c;
+
+                LIST_FOR_EACH_ENTRY(c, &hlsl_ir_switch(instr)->cases, struct hlsl_ir_switch_case, entry)
+                {
+                    if (!sm1_loads_only_in(&c->body, var, set))
+                        return false;
+                }
+                break;
+            }
+
+            default:
+                break;
+        }
+    }
+    return true;
+}
+
+/* places the bool and int uniforms that go in b and i registers (sm1_static_set), picks the i
+ * register for loops, and returns whether any uniform was placed */
+static bool sm1_assign_static_registers(struct hlsl_ctx *ctx, struct hlsl_block *body)
+{
+    struct sm1_node_set branch = {0}, loop = {0};
+    uint32_t used[2] = {0};    /* b, i */
+    bool has_loop = false, any = false;
+    struct hlsl_ir_var *var;
+    unsigned int pass, i;
+
+    ctx->sm1_loop_counter = ~0u;
+    if (!sm1_has_static_flow_control(ctx))
+        return false;
+
+    sm1_collect_condition_loads(ctx, body, &branch, &loop, &has_loop);
+
+    /* reservations first, then the next free registers in declaration order */
+    for (pass = 0; pass < 2; ++pass)
+    {
+        LIST_FOR_EACH_ENTRY(var, &ctx->extern_vars, struct hlsl_ir_var, extern_entry)
+        {
+            const struct hlsl_type *type = var->data_type;
+            char set, reserved = var->reg_reservation.reg_type;
+            unsigned int index;
+
+            if (!var->is_uniform || var->sm1_static_set || !var->bind_count[HLSL_REGSET_NUMERIC]
+                    || type->class != HLSL_CLASS_SCALAR)
+                continue;
+            if (type->e.numeric.type == HLSL_TYPE_BOOL)
+                set = 'b';
+            else if (type->e.numeric.type == HLSL_TYPE_INT)
+                set = 'i';
+            else
+                continue;
+
+            if (pass == 0)
+            {
+                if (reserved != set || var->reg_reservation.reg_index >= 16)
+                    continue;
+                index = var->reg_reservation.reg_index;
+            }
+            else
+            {
+                if (reserved || !sm1_loads_only_in(body, var, set == 'b' ? &branch : &loop))
+                    continue;
+                for (index = 0; index < 16 && (used[set == 'i'] & (1u << index)); ++index)
+                    ;
+                if (index == 16)
+                    continue;
+            }
+
+            used[set == 'i'] |= 1u << index;
+            var->sm1_static_set = set;
+            var->sm1_static_index = index;
+            var->regs[HLSL_REGSET_NUMERIC].type = VKD3DSPR_TEMP;
+            var->regs[HLSL_REGSET_NUMERIC].id = 0;  /* the temp is picked in sm1_generate_vsir() */
+            var->regs[HLSL_REGSET_NUMERIC].allocation_size = 1;
+            var->regs[HLSL_REGSET_NUMERIC].writemask = VKD3DSP_WRITEMASK_0;
+            var->regs[HLSL_REGSET_NUMERIC].allocated = true;
+            any = true;
+            TRACE("Placed %s in %c%u.\n", var->name, set, index);
+        }
+    }
+
+    if (has_loop && sm1_can_loop(ctx))
+    {
+        for (i = 0; i < 16 && (used[1] & (1u << i)); ++i)
+            ;
+        if (i < 16)
+            ctx->sm1_loop_counter = i;
+    }
+
+    vkd3d_free(branch.nodes);
+    vkd3d_free(loop.nodes);
+    return any;
+}
+
 static void allocate_const_registers(struct hlsl_ctx *ctx, struct hlsl_block *body)
 {
     struct register_allocator allocator = {.type = VKD3DSPR_CONST}, allocator_used = {.type = VKD3DSPR_CONST};
     struct hlsl_ir_var *var;
+    bool any_static;
 
     sort_uniforms_by_bind_count(ctx, HLSL_REGSET_NUMERIC);
+
+    /* MYIOSDECK (spec 19 A22): before the float registers, so these get none */
+    any_static = sm1_assign_static_registers(ctx, body);
 
     LIST_FOR_EACH_ENTRY(var, &ctx->extern_vars, struct hlsl_ir_var, extern_entry)
     {
@@ -7287,6 +7559,20 @@ static void allocate_const_registers(struct hlsl_ctx *ctx, struct hlsl_block *bo
     allocate_const_registers_recurse(ctx, body, &allocator);
 
     allocate_sincos_const_registers(ctx, body, &allocator);
+
+    /* MYIOSDECK (spec 19 A22): 0 and 1 for the prologue copying b and i registers into temps */
+    memset(&ctx->sm1_static_consts, 0, sizeof(ctx->sm1_static_consts));
+    if (any_static)
+    {
+        struct hlsl_type *type = hlsl_get_vector_type(ctx, HLSL_TYPE_FLOAT, 4);
+        const struct vkd3d_shader_location loc = {0};
+
+        ctx->sm1_static_consts = allocate_numeric_registers_for_type(ctx, &allocator, type);
+        record_constant(ctx, ctx->sm1_static_consts.id * 4 + 0, 0.0f, &loc);
+        record_constant(ctx, ctx->sm1_static_consts.id * 4 + 1, 1.0f, &loc);
+        record_constant(ctx, ctx->sm1_static_consts.id * 4 + 2, 0.0f, &loc);
+        record_constant(ctx, ctx->sm1_static_consts.id * 4 + 3, 0.0f, &loc);
+    }
 
     vkd3d_free(allocator.allocations);
 }
@@ -10402,6 +10688,14 @@ static void sm1_generate_vsir_init_src_operand_from_deref(struct hlsl_ctx *ctx,
         register_index = deref->var->regs[HLSL_REGSET_SAMPLERS].index + sampler_offset;
         writemask = VKD3DSP_WRITEMASK_ALL;
     }
+    else if (deref->var->is_uniform && deref->var->sm1_static_set)
+    {
+        /* MYIOSDECK (spec 19 A22): a bool or int uniform in a b or i register: its value as a
+         * float is in a temp the program's start fills */
+        type = VKD3DSPR_TEMP;
+        register_index = deref->var->sm1_static_temp;
+        writemask = VKD3DSP_WRITEMASK_0;
+    }
     else if (deref->var->is_uniform)
     {
         unsigned int offset = deref->const_offset;
@@ -10600,6 +10894,11 @@ static void sm1_generate_vsir_instr_jump(struct hlsl_ctx *ctx,
 
         vsir_src_from_hlsl_node(&ins->src[0], ctx, condition, VKD3DSP_WRITEMASK_ALL);
     }
+    else if (jump->type == HLSL_IR_JUMP_BREAK && ctx->sm1_loop_counter != ~0u)
+    {
+        /* MYIOSDECK (spec 19 A22): out of the loop's rep (version 2.1 and later) */
+        generate_vsir_add_program_instruction(ctx, program, &instr->loc, VSIR_OP_BREAK, 0, 0);
+    }
     else
     {
         hlsl_fixme(ctx, &instr->loc, "Jump type %s.", hlsl_jump_type_to_string(jump->type));
@@ -10643,6 +10942,35 @@ static void sm1_generate_vsir_instr_if(struct hlsl_ctx *ctx, struct vsir_program
         return;
 }
 
+/* MYIOSDECK (spec 19 A22): a loop is "rep iK" (K: the "defi iK, 255, 0, 0, 0" register), its
+ * body (with its iteration step and "if (!cond) break"), "endrep"; at most 255 iterations, as
+ * Direct3D 9's own loops. Version 2.1 and later (break). */
+static void sm1_generate_vsir_instr_loop(struct hlsl_ctx *ctx, struct vsir_program *program,
+        struct hlsl_ir_loop *loop)
+{
+    struct hlsl_ir_node *instr = &loop->node;
+    struct vkd3d_shader_instruction *ins;
+    struct vsir_src_operand *src;
+
+    if (ctx->sm1_loop_counter == ~0u)
+    {
+        hlsl_fixme(ctx, &instr->loc, "Loops for profile %s.", ctx->profile->name);
+        return;
+    }
+
+    if (!(ins = generate_vsir_add_program_instruction(ctx, program, &instr->loc, VSIR_OP_REP, 0, 1)))
+        return;
+    src = &ins->src[0];
+    vsir_src_operand_init(src, VKD3DSPR_CONSTINT, VSIR_DATA_I32, 1);
+    src->reg.dimension = VSIR_DIMENSION_VEC4;
+    src->reg.idx[0].offset = ctx->sm1_loop_counter;
+    src->swizzle = VKD3D_SHADER_NO_SWIZZLE;
+
+    sm1_generate_vsir_block(ctx, &loop->body, program);
+
+    generate_vsir_add_program_instruction(ctx, program, &instr->loc, VSIR_OP_ENDREP, 0, 0);
+}
+
 static void sm1_generate_vsir_block(struct hlsl_ctx *ctx, struct hlsl_block *block, struct vsir_program *program)
 {
     struct hlsl_ir_node *instr, *next;
@@ -10683,6 +11011,10 @@ static void sm1_generate_vsir_block(struct hlsl_ctx *ctx, struct hlsl_block *blo
                 sm1_generate_vsir_instr_load(ctx, program, hlsl_ir_load(instr));
                 break;
 
+            case HLSL_IR_LOOP:  /* MYIOSDECK (spec 19 A22) */
+                sm1_generate_vsir_instr_loop(ctx, program, hlsl_ir_loop(instr));
+                break;
+
             case HLSL_IR_RESOURCE_LOAD:
                 sm1_generate_vsir_instr_resource_load(ctx, program, hlsl_ir_resource_load(instr));
                 break;
@@ -10702,6 +11034,126 @@ static void sm1_generate_vsir_block(struct hlsl_ctx *ctx, struct hlsl_block *blo
     }
 }
 
+/* MYIOSDECK (spec 19 A22): the bool and int uniforms in b and i registers */
+static void sm1_assign_static_temps(struct hlsl_ctx *ctx)
+{
+    struct hlsl_ir_var *var;
+
+    LIST_FOR_EACH_ENTRY(var, &ctx->extern_vars, struct hlsl_ir_var, extern_entry)
+    {
+        if (var->is_uniform && var->sm1_static_set)
+            var->sm1_static_temp = ctx->temp_count++;
+    }
+}
+
+static void sm1_vsir_dst_temp_x(struct vsir_dst_operand *dst, uint32_t temp)
+{
+    vsir_dst_operand_init(dst, VKD3DSPR_TEMP, VSIR_DATA_F32, 1);
+    dst->reg.dimension = VSIR_DIMENSION_VEC4;
+    dst->reg.idx[0].offset = temp;
+    dst->write_mask = VKD3DSP_WRITEMASK_0;
+}
+
+static void sm1_vsir_src_reg(struct vsir_src_operand *src, enum vkd3d_shader_register_type type,
+        enum vsir_data_type data_type, uint32_t index, uint32_t swizzle)
+{
+    vsir_src_operand_init(src, type, data_type, 1);
+    src->reg.dimension = VSIR_DIMENSION_VEC4;
+    src->reg.idx[0].offset = index;
+    src->swizzle = swizzle;
+}
+
+/* "defi iK, 255, 0, 0, 0": the count of every loop's rep */
+static void sm1_generate_vsir_loop_counter_def(struct hlsl_ctx *ctx, struct vsir_program *program)
+{
+    const struct vkd3d_shader_location loc = {0};
+    struct vkd3d_shader_instruction *ins;
+    struct vsir_src_operand *src;
+    struct vsir_dst_operand *dst;
+
+    if (ctx->sm1_loop_counter == ~0u)
+        return;
+
+    if (!(ins = vsir_program_append(program)))
+    {
+        ctx->result = VKD3D_ERROR_OUT_OF_MEMORY;
+        return;
+    }
+    if (!vsir_instruction_init_with_params(program, ins, &loc, VSIR_OP_DEFI, 1, 1))
+    {
+        vsir_instruction_init(ins, &loc, VSIR_OP_NOP);
+        ctx->result = VKD3D_ERROR_OUT_OF_MEMORY;
+        return;
+    }
+
+    dst = &ins->dst[0];
+    vsir_dst_operand_init(dst, VKD3DSPR_CONSTINT, VSIR_DATA_I32, 1);
+    dst->reg.dimension = VSIR_DIMENSION_VEC4;
+    dst->reg.idx[0].offset = ctx->sm1_loop_counter;
+    dst->write_mask = VKD3DSP_WRITEMASK_ALL;
+
+    src = &ins->src[0];
+    vsir_src_operand_init(src, VKD3DSPR_IMMCONST, VSIR_DATA_I32, 0);
+    src->reg.dimension = VSIR_DIMENSION_VEC4;
+    src->reg.u.immconst_u32[0] = 255;
+    src->reg.u.immconst_u32[1] = 0;
+    src->reg.u.immconst_u32[2] = 0;
+    src->reg.u.immconst_u32[3] = 0;
+    src->swizzle = VKD3D_SHADER_NO_SWIZZLE;
+}
+
+/* the program's start: each bool uniform in bN and int uniform in iN copied into its temp,
+ *     mov rT.x, c.x (0)    if bN        mov rT.x, c.y (1)    endif
+ *     mov rT.x, c.x (0)    rep iN       add rT.x, rT.x, c.y  endrep */
+static void sm1_generate_vsir_static_prologue(struct hlsl_ctx *ctx, struct vsir_program *program)
+{
+    const struct vkd3d_shader_location loc = {0};
+    const uint32_t consts = ctx->sm1_static_consts.id;
+    const uint32_t zero = VKD3D_SHADER_SWIZZLE(X, X, X, X), one = VKD3D_SHADER_SWIZZLE(Y, Y, Y, Y);
+    struct vkd3d_shader_instruction *ins;
+    struct hlsl_ir_var *var;
+
+    LIST_FOR_EACH_ENTRY(var, &ctx->extern_vars, struct hlsl_ir_var, extern_entry)
+    {
+        bool is_bool;
+
+        if (!var->is_uniform || !var->sm1_static_set)
+            continue;
+        is_bool = var->sm1_static_set == 'b';
+
+        if (!(ins = generate_vsir_add_program_instruction(ctx, program, &loc, VSIR_OP_MOV, 1, 1)))
+            return;
+        sm1_vsir_dst_temp_x(&ins->dst[0], var->sm1_static_temp);
+        sm1_vsir_src_reg(&ins->src[0], VKD3DSPR_CONST, VSIR_DATA_F32, consts, zero);
+
+        if (!(ins = generate_vsir_add_program_instruction(ctx, program, &loc,
+                is_bool ? VSIR_OP_IF : VSIR_OP_REP, 0, 1)))
+            return;
+        sm1_vsir_src_reg(&ins->src[0], is_bool ? VKD3DSPR_CONSTBOOL : VKD3DSPR_CONSTINT,
+                is_bool ? VSIR_DATA_BOOL : VSIR_DATA_I32, var->sm1_static_index, VKD3D_SHADER_NO_SWIZZLE);
+
+        if (is_bool)
+        {
+            if (!(ins = generate_vsir_add_program_instruction(ctx, program, &loc, VSIR_OP_MOV, 1, 1)))
+                return;
+            sm1_vsir_dst_temp_x(&ins->dst[0], var->sm1_static_temp);
+            sm1_vsir_src_reg(&ins->src[0], VKD3DSPR_CONST, VSIR_DATA_F32, consts, one);
+        }
+        else
+        {
+            if (!(ins = generate_vsir_add_program_instruction(ctx, program, &loc, VSIR_OP_ADD, 1, 2)))
+                return;
+            sm1_vsir_dst_temp_x(&ins->dst[0], var->sm1_static_temp);
+            sm1_vsir_src_reg(&ins->src[0], VKD3DSPR_TEMP, VSIR_DATA_F32, var->sm1_static_temp, zero);
+            sm1_vsir_src_reg(&ins->src[1], VKD3DSPR_CONST, VSIR_DATA_F32, consts, one);
+        }
+
+        if (!generate_vsir_add_program_instruction(ctx, program, &loc,
+                is_bool ? VSIR_OP_ENDIF : VSIR_OP_ENDREP, 0, 0))
+            return;
+    }
+}
+
 static void sm1_generate_vsir(struct hlsl_ctx *ctx, const struct vkd3d_shader_compile_info *compile_info,
         struct hlsl_ir_function_decl *func, struct list *semantic_vars,
         struct hlsl_block *body, uint64_t config_flags, struct vsir_program *program)
@@ -10714,11 +11166,17 @@ static void sm1_generate_vsir(struct hlsl_ctx *ctx, const struct vkd3d_shader_co
     if (ctx->result)
         return;
 
+    /* MYIOSDECK (spec 19 A22): a temp for each bool or int uniform in a b or i register, after
+     * every temp the program uses */
+    sm1_assign_static_temps(ctx);
+
     hlsl_block_init(&block);
     sm1_generate_vsir_constant_defs(ctx, program, &block);
+    sm1_generate_vsir_loop_counter_def(ctx, program);  /* MYIOSDECK (spec 19 A22) */
     sm1_generate_vsir_sampler_dcls(ctx, program, &block);
     list_move_head(&body->instrs, &block.instrs);
 
+    sm1_generate_vsir_static_prologue(ctx, program);  /* MYIOSDECK (spec 19 A22) */
     sm1_generate_vsir_block(ctx, body, program);
 
     program->ssa_count = ctx->ssa_count;
@@ -11054,7 +11512,14 @@ static void ctab_write_uniforms(struct ctab_ctx *ctab)
                 continue;
 
             put_u32(buffer, 0); /* name */
-            if (r == HLSL_REGSET_NUMERIC)
+            if (r == HLSL_REGSET_NUMERIC && var->sm1_static_set)
+            {
+                /* MYIOSDECK (spec 19 A22): the BOOL or INT4 register set */
+                put_u32(buffer, vkd3d_make_u32(var->sm1_static_set == 'b' ? D3DXRS_BOOL : D3DXRS_INT4,
+                        var->sm1_static_index));
+                put_u32(buffer, 1);
+            }
+            else if (r == HLSL_REGSET_NUMERIC)
             {
                 put_u32(buffer, vkd3d_make_u32(D3DXRS_FLOAT4, var->regs[r].id));
                 put_u32(buffer, var->bind_count[r]);

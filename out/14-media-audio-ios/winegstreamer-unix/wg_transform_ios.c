@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: LGPL-2.1-or-later
 // Copyright (c) 2026 the MYIOSDECK author
 //
-// Spec 14 Part B2: wg_transform_* on iOS: the WMA decoder only, as wma_decoder.c (the WMA
-// decoder MFT / DMO) drives it. This file translates media types and samples; the decoding is
-// wma_core.c.
+// Spec 14 Part B2: wg_transform_* on iOS: the WMA decoder, as wma_decoder.c (the WMA decoder
+// MFT / DMO) drives it, and (round 5 item 6) raw video conversion at the same size, as the
+// video processor and colour converter drive it. This file translates media types and samples;
+// the decoding is wma_core.c, the conversion wg_vconv.c.
 
 #if 0
 #pragma makedep unix
@@ -14,12 +15,34 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "wg_ios.h"
 #include "ios_media_wow.h"
+#include "media_log.h"
 #include "wg_handles.h"
+#include "wg_vconv.h"
 #include "wma_core.h"
 #include "wma_params.h"
+
+#define VLOG_PREFIX "[wg-transform] "
+#define VSAMPLE_FLAGS (WG_SAMPLE_FLAG_HAS_PTS | WG_SAMPLE_FLAG_HAS_DURATION | WG_SAMPLE_FLAG_SYNC_POINT | \
+                       WG_SAMPLE_FLAG_DISCONTINUITY)
+
+/* round 5 item 6: one held input frame */
+struct video_state
+{
+    struct wgv_conv conv;
+    uint8_t *held;
+    size_t held_cap;
+    int has_held;
+    struct wgv_layout held_layout;
+    INT64 pts;
+    UINT64 duration;
+    UINT32 flags;
+    uint64_t frames, ns, period_start;   /* the 10 s statistics */
+    GUID in_guid;                        /* the input subtype, for logs */
+};
 
 #define WAVE_TAG_PCM 0x0001
 #define WAVE_TAG_FLOAT 0x0003
@@ -31,7 +54,8 @@ const GUID wg_ios_mf_video = { 0x73646976, 0x0000, 0x0010, { 0x80, 0x00, 0x00, 0
 struct transform
 {
     pthread_mutex_t lock;
-    struct wma_core *core;
+    struct wma_core *core;       /* audio */
+    struct video_state *video;   /* video (round 5 item 6) */
     uint32_t rate;               /* the input's rate: the output must keep it */
     WAVEFORMATEX *out_format;    /* the exact format last set */
     UINT32 out_size;
@@ -125,6 +149,117 @@ static void describe( const struct wg_media_type *mt, char *buf, size_t size )
     else snprintf( buf, size, "major %08x", (unsigned int)mt->major.Data1 );
 }
 
+/* ---------------------------------------------------------------- video (round 5 item 6) */
+
+static uint64_t now_ns( void )
+{
+    struct timespec ts;
+
+    clock_gettime( CLOCK_MONOTONIC, &ts );
+    return (uint64_t)ts.tv_sec * 1000000000u + (uint64_t)ts.tv_nsec;
+}
+
+/* a raw video type this side converts: its MFVIDEOFORMAT and format (rgb: RGB allowed) */
+static const MFVIDEOFORMAT *parse_video( const struct wg_media_type *mt, int rgb, enum wgv_format *format )
+{
+    static const BYTE tail[8] = { 0x80, 0x00, 0x00, 0xaa, 0x00, 0x38, 0x9b, 0x71 };
+    const MFVIDEOFORMAT *v = mt->u.video;
+
+    if (memcmp( &mt->major, &wg_ios_mf_video, sizeof(GUID) )) return NULL;
+    if (!v || mt->format_size < sizeof(MFVIDEOFORMAT)) return NULL;
+    if (v->guidFormat.Data2 || v->guidFormat.Data3 != 0x0010 || memcmp( v->guidFormat.Data4, tail, 8 )) return NULL;
+    if (wgv_format_from_subtype( v->guidFormat.Data1, rgb, format )) return NULL;
+    return v;
+}
+
+static void video_free( struct video_state *v )
+{
+    if (!v) return;
+    wgv_conv_free( &v->conv );
+    free( v->held );
+    free( v );
+}
+
+/* rule: no scaling; the matrix and range of the input type, else BT.709 from 720 lines up and
+ * BT.601 below, limited range (as the parser decides) */
+static NTSTATUS video_conv_init( struct wgv_conv *conv, const MFVIDEOFORMAT *in, enum wgv_format in_fmt,
+                                 const MFVIDEOFORMAT *out, enum wgv_format out_fmt )
+{
+    static int d3d_logged;
+    UINT32 w = in->videoInfo.dwWidth, h = in->videoInfo.dwHeight;
+    int bt709, full, bottom_up = !!(out->videoInfo.VideoFlags & MFVideoFlag_BottomUpLinearRep);
+
+    if (out->videoInfo.dwWidth != w || out->videoInfo.dwHeight != h)
+    {
+        iom_log( VLOG_PREFIX, "video convert refused: %s %ux%u -> %s %ux%u (a size change; no scaling)",
+                 wgv_subtype_name( in->guidFormat.Data1 ), w, h, wgv_subtype_name( out->guidFormat.Data1 ),
+                 (unsigned int)out->videoInfo.dwWidth, (unsigned int)out->videoInfo.dwHeight );
+        return STATUS_NOT_SUPPORTED;
+    }
+    if (in->videoInfo.TransferMatrix == MFVideoTransferMatrix_BT709) bt709 = 1;
+    else if (in->videoInfo.TransferMatrix == MFVideoTransferMatrix_BT601) bt709 = 0;
+    else bt709 = h >= 720;
+    full = in->videoInfo.NominalRange == MFNominalRange_0_255;
+    if (wgv_conv_init( conv, in_fmt, out_fmt, w, h, bt709, full, bottom_up ))
+    {
+        iom_log( VLOG_PREFIX, "video convert refused: %s %ux%u -> %s (an odd or too large size)",
+                 wgv_subtype_name( in->guidFormat.Data1 ), w, h, wgv_subtype_name( out->guidFormat.Data1 ) );
+        return STATUS_NOT_SUPPORTED;
+    }
+    /* the processor leaves RGB top-down only when it has a DXGI device manager (D3D-aware) */
+    if (wgv_is_rgb( out_fmt ) && !bottom_up && !__atomic_exchange_n( &d3d_logged, 1, __ATOMIC_RELAXED ))
+        iom_log( VLOG_PREFIX, "D3D-aware output asked; using system memory" );
+    iom_log( VLOG_PREFIX, "video convert %s %ux%u -> %s%s", wgv_subtype_name( in->guidFormat.Data1 ), w, h,
+             wgv_subtype_name( out->guidFormat.Data1 ), conv->bottom_up ? " bottom-up" : "" );
+    return STATUS_SUCCESS;
+}
+
+static NTSTATUS create_video( struct wg_transform_create_params *params )
+{
+    const MFVIDEOFORMAT *in, *out;
+    enum wgv_format in_fmt, out_fmt;
+    struct transform *t;
+    NTSTATUS status;
+    char a[96], b[96];
+
+    if (!(in = parse_video( &params->input_type, 0, &in_fmt )) ||
+        !(out = parse_video( &params->output_type, 1, &out_fmt )))
+    {
+        describe( &params->input_type, a, sizeof(a) );
+        describe( &params->output_type, b, sizeof(b) );
+        iom_log( VLOG_PREFIX, "video convert refused: %s -> %s (NV12, I420, IYUV, YV12, YUY2 to those or RGB32, "
+                 "ARGB32, ABGR32)", a, b );
+        return STATUS_NOT_SUPPORTED;
+    }
+    if (!(t = calloc( 1, sizeof(*t) )) || !(t->video = calloc( 1, sizeof(*t->video) )) ||
+        !(t->out_format = malloc( params->output_type.format_size )))
+    {
+        if (t) free( t->video );
+        free( t );
+        return STATUS_NO_MEMORY;
+    }
+    if ((status = video_conv_init( &t->video->conv, in, in_fmt, out, out_fmt )))
+    {
+        video_free( t->video );
+        free( t->out_format );
+        free( t );
+        return status;
+    }
+    memcpy( t->out_format, params->output_type.u.format, params->output_type.format_size );
+    t->out_size = params->output_type.format_size;
+    t->video->in_guid = in->guidFormat;
+    pthread_mutex_init( &t->lock, NULL );
+    if (!(params->transform = wgh_alloc( WG_HANDLE_TRANSFORM, t )))
+    {
+        pthread_mutex_destroy( &t->lock );
+        video_free( t->video );
+        free( t->out_format );
+        free( t );
+        return STATUS_NO_MEMORY;
+    }
+    return STATUS_SUCCESS;
+}
+
 static NTSTATUS create( struct wg_transform_create_params *params )
 {
     struct audio_info in, out_info;
@@ -135,6 +270,7 @@ static NTSTATUS create( struct wg_transform_create_params *params )
     int ret;
 
     params->transform = 0;
+    if (!memcmp( &params->input_type.major, &wg_ios_mf_video, sizeof(GUID) )) return create_video( params );
     if (!parse_audio( &params->input_type, &in ) || !is_wma_family( in.tag ) ||
         !in.wfx->nChannels || !in.wfx->nSamplesPerSec || !in.wfx->nBlockAlign ||
         !parse_output( &params->output_type, in.wfx->nSamplesPerSec, &out, &out_info ))
@@ -195,7 +331,8 @@ NTSTATUS wg_ios_transform_destroy( void *args )
     struct transform *t;
 
     if (!(t = wgh_free( handle, WG_HANDLE_TRANSFORM ))) return STATUS_INVALID_HANDLE;
-    wma_core_destroy( t->core );
+    if (t->core) wma_core_destroy( t->core );
+    video_free( t->video );
     pthread_mutex_destroy( &t->lock );
     free( t->out_format );
     free( t );
@@ -209,7 +346,7 @@ static NTSTATUS get_output_type( wg_transform_t handle, GUID *major, UINT32 *for
 
     if (!(t = wgh_get( handle, WG_HANDLE_TRANSFORM ))) return STATUS_INVALID_HANDLE;
     pthread_mutex_lock( &t->lock );
-    *major = wg_ios_mf_audio;
+    *major = t->video ? wg_ios_mf_video : wg_ios_mf_audio;
     if (*format_size < t->out_size) status = STATUS_BUFFER_TOO_SMALL;
     else if (!format) status = STATUS_INVALID_PARAMETER;
     else memcpy( format, t->out_format, t->out_size );
@@ -225,6 +362,48 @@ NTSTATUS wg_ios_transform_get_output_type( void *args )
                             params->media_type.u.format );
 }
 
+/* any listed format at the same size; the input's matrix and range are kept */
+static NTSTATUS set_video_output( struct transform *t, const struct wg_media_type *mt )
+{
+    const MFVIDEOFORMAT *out;
+    enum wgv_format out_fmt;
+    MFVIDEOFORMAT in;
+    struct wgv_conv conv;
+    NTSTATUS status;
+    void *copy;
+    char a[96];
+
+    if (!(out = parse_video( mt, 1, &out_fmt )))
+    {
+        describe( mt, a, sizeof(a) );
+        iom_log( VLOG_PREFIX, "set output refused: %s", a );
+        return STATUS_NOT_SUPPORTED;
+    }
+    if (!(copy = malloc( mt->format_size ))) return STATUS_NO_MEMORY;
+    memcpy( copy, mt->u.format, mt->format_size );
+
+    pthread_mutex_lock( &t->lock );
+    /* the input as created: its size, format, matrix and range */
+    memset( &in, 0, sizeof(in) );
+    in.videoInfo.dwWidth = t->video->conv.width;
+    in.videoInfo.dwHeight = t->video->conv.height;
+    in.videoInfo.TransferMatrix = t->video->conv.bt709 ? MFVideoTransferMatrix_BT709 : MFVideoTransferMatrix_BT601;
+    in.videoInfo.NominalRange = t->video->conv.full_range ? MFNominalRange_0_255 : MFNominalRange_16_235;
+    in.guidFormat = t->video->in_guid;
+    if (!(status = video_conv_init( &conv, &in, t->video->conv.in, out, out_fmt )))
+    {
+        wgv_conv_free( &t->video->conv );
+        t->video->conv = conv;
+        free( t->out_format );
+        t->out_format = copy;
+        t->out_size = mt->format_size;
+        copy = NULL;
+    }
+    pthread_mutex_unlock( &t->lock );
+    free( copy );
+    return status;
+}
+
 static NTSTATUS set_output_type( wg_transform_t handle, const struct wg_media_type *mt )
 {
     struct wma_core_output out;
@@ -234,6 +413,7 @@ static NTSTATUS set_output_type( wg_transform_t handle, const struct wg_media_ty
     char a[96];
 
     if (!(t = wgh_get( handle, WG_HANDLE_TRANSFORM ))) return STATUS_INVALID_HANDLE;
+    if (t->video) return set_video_output( t, mt );
     if (!parse_output( mt, t->rate, &out, &info ))
     {
         describe( mt, a, sizeof(a) );
@@ -258,15 +438,113 @@ NTSTATUS wg_ios_transform_set_output_type( void *args )
     return set_output_type( params->transform, &params->media_type );
 }
 
+/* round 5 item 6: the input frame's layout. A sample with a stride is a 2D buffer; one without
+ * has the default layout, or rows without padding when that is what its size holds. */
+static int video_in_layout( const struct wgv_conv *c, const struct wg_sample *sample, struct wgv_layout *l )
+{
+    uint32_t tight = wgv_is_rgb( c->in ) ? 4 * c->width : c->in == WGV_YUY2 ? 2 * c->width : c->width;
+
+    if (wgv_layout_stride( c->in, c->width, c->height, sample->stride, l )) return -1;
+    if (sample->size >= l->size) return 0;
+    if (!sample->stride && !wgv_layout_stride( c->in, c->width, c->height, tight, l ) && sample->size >= l->size)
+        return 0;
+    return -1;
+}
+
+/* push: copies one frame; MF_E_NOTACCEPTING while one is held (lock held) */
+static NTSTATUS push_video( struct video_state *v, const struct wg_sample *sample, const BYTE *data, HRESULT *result )
+{
+    struct wgv_layout l;
+
+    if (v->has_held)
+    {
+        *result = MF_E_NOTACCEPTING;
+        return STATUS_SUCCESS;
+    }
+    if (!data || video_in_layout( &v->conv, sample, &l ))
+    {
+        iom_log( VLOG_PREFIX, "video push refused: %u bytes, stride %u for %ux%u", (unsigned int)sample->size,
+                 (unsigned int)sample->stride, v->conv.width, v->conv.height );
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (v->held_cap < l.size)
+    {
+        uint8_t *p = realloc( v->held, l.size );
+        if (!p) return STATUS_NO_MEMORY;
+        v->held = p;
+        v->held_cap = l.size;
+    }
+    memcpy( v->held, data, l.size );
+    v->held_layout = l;
+    v->pts = sample->pts;
+    v->duration = sample->duration;
+    v->flags = sample->flags & VSAMPLE_FLAGS;
+    v->has_held = 1;
+    *result = S_OK;
+    return STATUS_SUCCESS;
+}
+
+/* read: converts the held frame at the output layout's strides (lock held) */
+static NTSTATUS read_video( struct video_state *v, struct wg_sample *sample, BYTE *data, HRESULT *result )
+{
+    struct wgv_layout l;
+    uint64_t start, end;
+
+    if (!v->has_held)
+    {
+        sample->size = 0;
+        *result = MF_E_TRANSFORM_NEED_MORE_INPUT;
+        return STATUS_SUCCESS;
+    }
+    if (wgv_layout_stride( v->conv.out, v->conv.width, v->conv.height, sample->stride, &l )) return STATUS_INVALID_PARAMETER;
+    if (sample->max_size < l.size) return STATUS_BUFFER_TOO_SMALL;   /* the frame stays held */
+    if (!data) return STATUS_INVALID_PARAMETER;
+
+    start = now_ns();
+    if (wgv_conv_run( &v->conv, v->held, &v->held_layout, data, &l ))
+    {
+        iom_log( VLOG_PREFIX, "video convert failed (%ux%u); frame dropped", v->conv.width, v->conv.height );
+        v->has_held = 0;
+        return STATUS_UNSUCCESSFUL;
+    }
+    end = now_ns();
+    v->has_held = 0;
+
+    sample->size = l.size;
+    sample->pts = v->pts;
+    sample->duration = v->duration;
+    sample->flags = v->flags;
+    *result = S_OK;
+
+    /* the statistics, per 10 s while frames flow */
+    if (!v->frames) v->period_start = start;
+    v->frames++;
+    v->ns += end - start;
+    if (end - v->period_start >= 10000000000ull)
+    {
+        iom_log( VLOG_PREFIX, "video convert: %llu frames in %.1f s, %.2f ms per frame", (unsigned long long)v->frames,
+                 (end - v->period_start) / 1e9, v->ns / 1e6 / v->frames );
+        v->frames = v->ns = 0;
+    }
+    return STATUS_SUCCESS;
+}
+
 /* rule 10; `data` is the sample's bytes as a host pointer */
 static NTSTATUS push_data( wg_transform_t handle, struct wg_sample *sample, const BYTE *data, HRESULT *result )
 {
     struct transform *t;
+    NTSTATUS status;
     int ret;
 
     if (!(t = wgh_get( handle, WG_HANDLE_TRANSFORM ))) return STATUS_INVALID_HANDLE;
     if (!sample) return STATUS_INVALID_PARAMETER;
     pthread_mutex_lock( &t->lock );
+    if (t->video)
+    {
+        status = push_video( t->video, sample, data, result );
+        pthread_mutex_unlock( &t->lock );
+        return status;
+    }
     if (wma_core_pending( t->core ))
     {
         /* input and output alternate: read first */
@@ -301,11 +579,18 @@ static NTSTATUS read_data( wg_transform_t handle, struct wg_sample *sample, BYTE
 {
     struct wma_core_read_info info;
     struct transform *t;
+    NTSTATUS status;
     UINT32 flags;
 
     if (!(t = wgh_get( handle, WG_HANDLE_TRANSFORM ))) return STATUS_INVALID_HANDLE;
     if (!sample) return STATUS_INVALID_PARAMETER;
     pthread_mutex_lock( &t->lock );
+    if (t->video)
+    {
+        status = read_video( t->video, sample, data, result );
+        pthread_mutex_unlock( &t->lock );
+        return status;
+    }
     /* no PCM, or no room for one whole frame (Clarification 2): the PCM stays queued */
     if (!wma_core_pending( t->core ) || sample->max_size < wma_core_frame_bytes( t->core ))
     {
@@ -350,7 +635,7 @@ NTSTATUS wg_ios_transform_get_status( void *args )
 
     if (!(t = wgh_get( params->transform, WG_HANDLE_TRANSFORM ))) return STATUS_INVALID_HANDLE;
     pthread_mutex_lock( &t->lock );
-    params->accepts_input = !wma_core_pending( t->core );
+    params->accepts_input = t->video ? !t->video->has_held : !wma_core_pending( t->core );
     pthread_mutex_unlock( &t->lock );
     return STATUS_SUCCESS;
 }
@@ -361,7 +646,8 @@ NTSTATUS wg_ios_transform_drain( void *args )
 
     if (!(t = wgh_get( *(wg_transform_t *)args, WG_HANDLE_TRANSFORM ))) return STATUS_INVALID_HANDLE;
     pthread_mutex_lock( &t->lock );
-    wma_core_drain( t->core );
+    if (t->video) t->video->has_held = 0;   /* round 5 item 6: drain drops the held frame */
+    else wma_core_drain( t->core );
     pthread_mutex_unlock( &t->lock );
     return STATUS_SUCCESS;
 }
@@ -372,7 +658,8 @@ NTSTATUS wg_ios_transform_flush( void *args )
 
     if (!(t = wgh_get( *(wg_transform_t *)args, WG_HANDLE_TRANSFORM ))) return STATUS_INVALID_HANDLE;
     pthread_mutex_lock( &t->lock );
-    wma_core_flush( t->core );
+    if (t->video) t->video->has_held = 0;
+    else wma_core_flush( t->core );
     pthread_mutex_unlock( &t->lock );
     return STATUS_SUCCESS;
 }

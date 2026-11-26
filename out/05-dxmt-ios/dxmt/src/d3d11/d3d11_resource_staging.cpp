@@ -1,3 +1,5 @@
+// Changed for MYIOSDECK (spec 05 item 90: the release marked in the memory ledger). Upstream: DXMT
+// a3a6e8f, MIT (see LICENSE).
 #include "d3d11_private.h"
 #include "d3d11_enumerable.hpp"
 #include "dxmt_dynamic.hpp"
@@ -16,6 +18,12 @@ public:
                 Rc<StagingResource> &&internal)
       : TResourceBase<tag_buffer>(*pDesc, device),
         internal(std::move(internal)) {}
+
+  /* MYIOSDECK spec 05 item 90: what of this buffer still lives waits for the GPU */
+  ~StagingBuffer() {
+    if (internal.ptr() && internal->buffer().ptr())
+      internal->buffer()->releasedByProgram();
+  }
 
   void OnSetDebugObjectName(LPCSTR Name) override {
   }
@@ -80,6 +88,14 @@ public:
       : TResourceBase<tag_texture>(*pDesc, pDevice),
         subresources(std::move(subresources)),
         subresource_count(this->subresources.size()) {}
+
+  /* MYIOSDECK spec 05 item 90: what of this texture still lives waits for the GPU */
+  ~StagingTexture() {
+    for (auto &subresource : subresources) {
+      if (subresource.ptr() && subresource->buffer().ptr())
+        subresource->buffer()->releasedByProgram();
+    }
+  }
 
   void OnSetDebugObjectName(LPCSTR Name) override {
     if (!Name) {

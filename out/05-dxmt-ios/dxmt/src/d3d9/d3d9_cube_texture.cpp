@@ -518,7 +518,7 @@ MTLD3D9CubeTexture::GetCubeMapSurface(D3DCUBEMAP_FACES FaceType, UINT Level, IDi
   *ppCubeMapSurface = ::dxmt::ref<IDirect3DSurface9>(m_levels[idx].ptr());
   return D3D_OK;
   } D9_CHECKED_END(IDirect3DCubeTexture9, GetCubeMapSurface, ppCubeMapSurface && !*ppCubeMapSurface,
-                   "face " + std::to_string(FaceType) + ", level " + std::to_string(Level)); // MYIOSDECK spec 07 clarification 5
+                   "face " + std::to_string(FaceType) + ", level " + std::to_string(Level) + ", " + d9fail::TextureArgs("cube texture", m_edge_length, m_edge_length, 0, int(m_level_count), m_format, m_usage, m_pool)); // MYIOSDECK spec 07 clarifications 5 and 7
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -536,7 +536,7 @@ MTLD3D9CubeTexture::LockRect(
   uint32_t idx = static_cast<uint32_t>(FaceType) * m_level_count + Level;
   return m_levels[idx]->lockRectImpl(pLockedRect, pRect, Flags); // uncounted: MYIOSDECK spec 07 clarification 3
   } D9_CHECKED_END(IDirect3DCubeTexture9, LockRect, pLockedRect && !pLockedRect->pBits,
-                   "face " + std::to_string(FaceType) + ", " + d9fail::LockArgs(int(Level), false, d9fail::RegionOfRect(pRect), Flags, d9fail::ResourceArgs(m_format, m_pool, m_usage))); // MYIOSDECK spec 07 clarification 5
+                   "face " + std::to_string(FaceType) + ", " + d9fail::LockArgs(int(Level), false, d9fail::RegionOfRect(pRect), Flags, d9fail::TextureArgs("cube texture", m_edge_length, m_edge_length, 0, int(m_level_count), m_format, m_usage, m_pool))); // MYIOSDECK spec 07 clarifications 5 and 7
 }
 
 HRESULT STDMETHODCALLTYPE

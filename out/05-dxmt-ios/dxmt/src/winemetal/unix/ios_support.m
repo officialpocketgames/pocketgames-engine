@@ -266,6 +266,48 @@ dxmt_ios_footprint(void) {
   return info.phys_footprint;
 }
 
+/* Spec 05 item 90. The graphics ledger came with task_vm_info's third revision (Apple's
+   <mach/task_info.h>); an SDK without TASK_VM_INFO_REV3_COUNT, or a kernel that fills fewer
+   fields, leaves it out. */
+bool
+dxmt_ios_graphics_footprint(uint64_t *bytes) {
+#ifdef TASK_VM_INFO_REV3_COUNT
+  task_vm_info_data_t info;
+  mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+  if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&info, &count) != KERN_SUCCESS)
+    return false;
+  if (count < TASK_VM_INFO_REV3_COUNT || info.ledger_tag_graphics_footprint < 0)
+    return false;
+  *bytes = (uint64_t)info.ledger_tag_graphics_footprint;
+  return true;
+#else
+  (void)bytes;
+  return false;
+#endif
+}
+
+static _Atomic uint64_t g_memory_warnings = 0;
+
+uint64_t
+dxmt_ios_memory_warnings(void) {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    /* kept for the life of the app; libdispatch's memory-pressure source, which reports the
+       same warn and critical events UIKit turns into its memory warning */
+    dispatch_source_t source = dispatch_source_create(
+        DISPATCH_SOURCE_TYPE_MEMORYPRESSURE, 0, DISPATCH_MEMORYPRESSURE_WARN | DISPATCH_MEMORYPRESSURE_CRITICAL,
+        dispatch_get_global_queue(QOS_CLASS_UTILITY, 0)
+    );
+    if (!source)
+      return;
+    dispatch_source_set_event_handler(source, ^{
+      atomic_fetch_add(&g_memory_warnings, 1);
+    });
+    dispatch_resume(source);
+  });
+  return atomic_load(&g_memory_warnings);
+}
+
 uint64_t
 dxmt_ios_available_memory(void) {
   return (uint64_t)os_proc_available_memory();

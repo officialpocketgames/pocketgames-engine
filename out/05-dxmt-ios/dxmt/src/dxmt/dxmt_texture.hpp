@@ -3,6 +3,7 @@
 // v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10: an
 // LGPL-2.1-or-later block from steamac's DXMT patch 0023, marked inline; spec 05 clarification 33:
 // two view accessors; clarification 71: the discard marks). Upstream: DXMT a3a6e8f, MIT.
+// Changed for MYIOSDECK (spec 05 item 90: releasedByProgram; the depth rename pool bounded).
 #include "Metal.hpp"
 #include "dxmt_deptrack.hpp"
 #include "dxmt_residency.hpp"
@@ -131,6 +132,7 @@ public:
   Texture *descriptor;
   void *mappedMemory;
   size_t placedLength = 0; // MYIOSDECK spec 06 round 2: the placed memory's length, for its ledger
+  uint64_t allocatedBytes = 0; // MYIOSDECK spec 05 item 90: its size in the memory ledger (0 unknown)
   uint64_t gpuResourceID;
   mach_port_t machPort;
   EncoderDepKey depkey;
@@ -292,6 +294,10 @@ public:
 
   Rc<TextureAllocation> rename(Rc<TextureAllocation> &&newAllocation);
 
+  /* MYIOSDECK spec 05 item 90: the program has released the resource this is; whatever of it
+     still lives in the memory ledger waits for the GPU. Called by the frontend's destructor. */
+  void releasedByProgram();
+
   Texture(const WMTTextureInfo &info, WMT::Device device);
 
   Texture(unsigned bytes_per_image, unsigned bytes_per_row, const WMTTextureInfo &info, WMT::Device device);
@@ -371,6 +377,26 @@ private:
   WMT::Device device_;
 };
 
+/* MYIOSDECK spec 05 item 90 (round 20's first fix). A single-subresource depth-stencil texture of
+   Direct3D 11 gets a pool of up to 32 copies: each full clear within one command chunk renames it
+   to the next copy, and the copies are kept for the texture's life. On iOS the copies are bounded:
+   one pool's (the first included) to kRenamePoolBytes, and every pool's beyond their first to
+   kRenameExtraBytes in all. Past either, a clear takes a copy the pool already has, as a texture
+   without a pool clears in place. DXMT_DEPTH_RENAME_CAP=0 gives upstream's 32. */
+constexpr uint64_t kRenamePoolBytes = 64ull << 20;
+constexpr uint64_t kRenameExtraBytes = 256ull << 20;
+
+/* Whether a pool that has made `made` copies of `copy_bytes` each may make one more, while all
+   pools' extra copies hold `extra_in_use` bytes. The first copy is always made. */
+inline bool
+RenamePoolMayGrow(unsigned made, uint64_t copy_bytes, uint64_t extra_in_use) {
+  if (made == 0)
+    return true;
+  if (uint64_t(made + 1) * copy_bytes > kRenamePoolBytes)
+    return false;
+  return extra_in_use + copy_bytes <= kRenameExtraBytes;
+}
+
 class RenamableTexturePool {
 public:
   void incRef();
@@ -378,14 +404,26 @@ public:
   Rc<TextureAllocation> getNext(uint64_t frame_);
 
   RenamableTexturePool(Texture *texture, size_t capacity,Flags<TextureAllocationFlag> allocation_flags);
+  ~RenamableTexturePool(); // MYIOSDECK spec 05 item 90: gives its extra copies' bytes back
+
+  /* MYIOSDECK spec 05 item 90: the copies made so far, and all pools' extra copies' bytes */
+  unsigned
+  copiesMade() const {
+    return made_;
+  }
+  static uint64_t extraBytesInUse();
 
 private:
+  bool reserveCopy(); // item 90: whether one more copy fits the budgets (and takes its bytes)
+
   Rc<Texture> texture_;
   std::vector<Rc<TextureAllocation>> allocations_;
   uint64_t last_frame_ = 0;
   Flags<TextureAllocationFlag> allocation_flags_;
   unsigned capacity_;
   unsigned current_index_ = 0;
+  unsigned made_ = 0;         // item 90: copies made (slots fill in order)
+  uint64_t extra_bytes_ = 0;  // item 90: bytes of this pool's copies beyond the first
   std::atomic<uint32_t> refcount_ = {0u};
 };
 

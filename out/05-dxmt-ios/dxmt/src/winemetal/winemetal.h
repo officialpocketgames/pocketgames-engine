@@ -1,4 +1,4 @@
-/* Changed for MYIOSDECK (spec 05 B8, E2, H6, clarifications 10, 20 and 25; spec 07: LGPL-2.1-or-later blocks
+/* Changed for MYIOSDECK (spec 05 B8, E2, H6, clarifications 10, 20 and 25, item 90; spec 07: LGPL-2.1-or-later blocks
    from dxmt-d3d9 v0.4-d3d9, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 #ifndef _WINEMETAL_H
 #define _WINEMETAL_H
@@ -506,7 +506,9 @@ struct WMTTextureInfo {
   uint32_t sample_count       : 8;
   enum WMTTextureUsage usage  : 8;
   enum WMTResourceOptions options;
-  uint32_t reserved;
+  /* MYIOSDECK spec 05 item 90 (was `reserved`): out, the made texture's allocatedSize in KB
+     (rounded up; 0 for a texture made on a buffer, whose memory is the buffer's) */
+  uint32_t allocated_kb;
   mach_port_t mach_port; // in/out
   uint64_t gpu_resource_id; // out
 };
@@ -1917,6 +1919,14 @@ WINEMETAL_API bool WMTControl(uint32_t op, uint64_t ptr, uint64_t *ret);
 /* H6 op 7: os_proc_available_memory() in bytes. Returns false if the query
    isn't available (or reports 0). */
 WINEMETAL_API bool WMTQueryAvailableMemory(uint64_t *bytes);
+
+/* Spec 05 item 90, H6 ops 8-10 (no pointers, so 32-bit callers have them too): the process's
+   phys_footprint; task_vm_info's graphics ledger (ledger_tag_graphics_footprint) where the SDK
+   has it; how many memory warnings the app has had (the first call starts counting them). Each
+   returns false where the unix half can't say. */
+WINEMETAL_API bool WMTQueryFootprint(uint64_t *bytes);
+WINEMETAL_API bool WMTQueryGraphicsFootprint(uint64_t *bytes);
+WINEMETAL_API bool WMTQueryMemoryWarnings(uint64_t *count);
 
 /* H6 op 3: a command buffer's GPUStartTime and GPUEndTime (seconds). */
 WINEMETAL_API bool MTLCommandBuffer_getGPUTimes(obj_handle_t cmdbuf, double *start, double *end);

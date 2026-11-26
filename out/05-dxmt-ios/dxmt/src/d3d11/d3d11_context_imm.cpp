@@ -6,6 +6,8 @@
 // uncounted for the front end's own callers; the event value read at most once; query counts).
 // Also changed for MYIOSDECK (spec 06 round 2: guest memory per dynamic resource capped, map and
 // staging failures seen; the staging bound).
+// Changed for MYIOSDECK (spec 05 item 90: the memory ledger's scopes and ring names).
+// Changed for MYIOSDECK (spec 06 round 3: a command block that can't be had is never written through).
 #include "config/config.hpp"
 #include "d3d11_fence.hpp"
 #include "d3d11_private.h"
@@ -53,7 +55,10 @@ template <typename T>
 moveonly_list<T>
 ImmediateContextBase::AllocateCommandData(size_t n) {
   CommandChunk *chk = ctx_state.cmd_queue.CurrentChunk();
-  return moveonly_list<T>((T *)chk->allocate_cpu_heap(sizeof(T) * n, alignof(T)), n);
+  void *storage = chk->allocate_cpu_heap(sizeof(T) * n, alignof(T));
+  if (unlikely(!storage)) // MYIOSDECK spec 06 round 3: an empty list; the caller checks data()
+    return moveonly_list<T>(nullptr, 0);
+  return moveonly_list<T>((T *)storage, n);
 }
 
 template <>
@@ -252,6 +257,7 @@ public:
   Map(ID3D11Resource *pResource, UINT Subresource, D3D11_MAP MapType, UINT MapFlags,
       D3D11_MAPPED_SUBRESOURCE *pMappedResource) override {
     D11_CTX_CALL(Map);
+    DXMT_MEM_SCOPE_CALL(11, "Map"); // MYIOSDECK spec 05 item 90
     D11_WORK(MapType == D3D11_MAP_WRITE_DISCARD          ? work_.map_discard++
              : MapType == D3D11_MAP_WRITE_NO_OVERWRITE ? work_.map_no_overwrite++
                                                         : work_.map_other++); // spec 05 clarification 63
@@ -720,6 +726,14 @@ public:
     promote_flush = cmdlist->promote_flush;
 
     auto query_list = AllocateCommandData<Rc<VisibilityResultQuery>>(cmdlist->visibility_query_count);
+    if (unlikely(cmdlist->visibility_query_count && !query_list.data())) {
+      // MYIOSDECK spec 06 round 3: no command memory; the list isn't executed
+      if (RestoreContextState)
+        RestoreEncodingContextState();
+      else
+        ResetD3D11ContextState();
+      return;
+    }
     for (const auto &[query, index] : cmdlist->issued_visibility_query) {
       query_list[index] = new VisibilityResultQuery();
       query->DoDeferredQuery(query_list[index]);

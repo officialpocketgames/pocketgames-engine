@@ -61,6 +61,27 @@ int ios_unixlib_init_symbol( const char *dll_name, char *buf, size_t size )
     return unixlib_name( dll_name, "_unix_lib_init", buf, size );
 }
 
+/* spec 09 round 7 item 11 */
+char *ios_format_cmdline( char *buf, size_t len, unsigned int serial, const char *name, const char *cmdline )
+{
+    const unsigned char *p = (const unsigned char *)(cmdline ? cmdline : "");
+    size_t bytes = 0, chars = 0;
+
+    /* the first IOS_CMDLINE_MAX code points: a byte that isn't a continuation byte starts one */
+    while (p[bytes])
+    {
+        if ((p[bytes] & 0xc0) != 0x80)
+        {
+            if (chars == IOS_CMDLINE_MAX) break;
+            chars++;
+        }
+        bytes++;
+    }
+    if (len) snprintf( buf, len, "process %u (%s): command line %.*s%s", serial, name ? name : "",
+                       (int)bytes, (const char *)p, p[bytes] ? "\xe2\x80\xa6" : "" );
+    return buf;
+}
+
 /* spec 09 round 6 item 6 */
 unsigned int ios_unix_call_check( int has_table, int count_known, unsigned int count, unsigned int code )
 {

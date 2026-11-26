@@ -14,6 +14,8 @@ and should be not used as a compilation unit
 since it is for internal use only
 (and I don't want to deal with several thousands line of code)
 */
+// Changed for MYIOSDECK (spec 05 item 90: the memory ledger's scopes and ring names).
+// Changed for MYIOSDECK (spec 06 round 3: a command block that can't be had is never written through).
 #include "Metal.hpp"
 #include "d3d11_annotation.hpp"
 #include "d3d11_context.hpp"
@@ -1277,6 +1279,7 @@ public:
       UINT SrcRowPitch, UINT SrcDepthPitch
   ) override {
     D11_CTX_CALL(UpdateSubresource);
+    DXMT_MEM_SCOPE_CALL(11, "UpdateSubresource"); // MYIOSDECK spec 05 item 90
     UpdateSubresource1(pDstResource, DstSubresource, pDstBox, pSrcData, SrcRowPitch, SrcDepthPitch, 0);
   }
 
@@ -1287,6 +1290,7 @@ public:
       UINT SrcRowPitch, UINT SrcDepthPitch, UINT CopyFlags
   ) override {
     D11_CTX_CALL(UpdateSubresource1);
+    DXMT_MEM_SCOPE_CALL(11, "UpdateSubresource"); // MYIOSDECK spec 05 item 90
     NotePassReason(d11cs::PassStart::Copy); // spec 05 clarification 63
     D11_WORK(work_.updates++); // spec 05 clarification 63
     std::lock_guard<mutex_t> lock(mutex);
@@ -5055,6 +5059,8 @@ public:
       // FIXME: is this value always valid?
       uint32_t render_target_array = state_.OutputMerger.ArrayLength;
       auto rtvs = AllocateCommandData<RENDER_TARGET_STATE>(state_.OutputMerger.NumRTVs);
+      if (unlikely(state_.OutputMerger.NumRTVs && !rtvs.data()))
+        return false; // MYIOSDECK spec 06 round 3: no command memory; the draw is dropped
       for (unsigned i = 0; i < state_.OutputMerger.NumRTVs; i++) {
         auto &rtv = state_.OutputMerger.RTVs[i];
         if (rtv) {
@@ -5550,6 +5556,8 @@ public:
     bool allow_scissor = current_rs->IsScissorEnabled();
     if (dirty_state.any(DirtyState::Viewport)) {
       auto viewports = AllocateCommandData<WMTViewport>(state_.Rasterizer.NumViewports);
+      if (unlikely(state_.Rasterizer.NumViewports && !viewports.data()))
+        return DrawCallStatus::Invalid; // MYIOSDECK spec 06 round 3: no command memory
       for (unsigned i = 0; i < state_.Rasterizer.NumViewports; i++) {
         auto &d3dViewport = state_.Rasterizer.viewports[i];
         viewports[i] = {d3dViewport.TopLeftX, d3dViewport.TopLeftY, d3dViewport.Width,
@@ -5570,6 +5578,8 @@ public:
                                       ? (UINT)state_.Rasterizer.viewports[0].Height
                                       : state_.OutputMerger.RenderTargetHeight;
       auto scissors = AllocateCommandData<WMTScissorRect>(state_.Rasterizer.NumViewports);
+      if (unlikely(state_.Rasterizer.NumViewports && !scissors.data()))
+        return DrawCallStatus::Invalid; // MYIOSDECK spec 06 round 3: no command memory
       for (unsigned i = 0; i < state_.Rasterizer.NumViewports; i++) {
         if (allow_scissor) {
           if (i < state_.Rasterizer.NumScissorRects) {
@@ -6519,7 +6529,8 @@ public:
       context_flag(context_flag),
       cmdlist_pool(pPool),
       staging_allocator({pDevice->GetMTLDevice(), WMTResourceOptionCPUCacheModeWriteCombined |
-                                       WMTResourceHazardTrackingModeUntracked | WMTResourceStorageModeManaged, false
+                                       WMTResourceHazardTrackingModeUntracked | WMTResourceStorageModeManaged, false,
+                         "deferred context staging" // MYIOSDECK spec 05 item 90
       }),
       cpu_command_allocator({}) {};
 
@@ -6553,10 +6564,18 @@ public:
     issued_event_query.clear();
     list.reset();
     staging_allocator.free_blocks(~0uLL);
-    cpu_command_allocator.free_blocks(~0uLL);
+    cpu_command_allocator.free_blocks(~0uLL); // MYIOSDECK spec 06 round 3: the blocks go to the free list
 
     promote_flush = false;
+    out_of_memory_ = false; // MYIOSDECK spec 06 round 3
   };
+
+  /* MYIOSDECK spec 06 round 3 (item 2): a command block couldn't be had while this list was
+     recorded; what couldn't be recorded was dropped, and FinishCommandList returns E_OUTOFMEMORY */
+  bool
+  outOfMemory() const {
+    return out_of_memory_;
+  }
 
   HRESULT
   STDMETHODCALLTYPE
@@ -6589,7 +6608,10 @@ public:
   template <typename T>
   moveonly_list<T>
   AllocateCommandData(size_t n) {
-    return moveonly_list<T>((T *)allocate_cpu_heap(sizeof(T) * n, alignof(T)), n);
+    void *storage = allocate_cpu_heap(sizeof(T) * n, alignof(T));
+    if (unlikely(!storage)) // MYIOSDECK spec 06 round 3: an empty list; the caller checks data()
+      return moveonly_list<T>(nullptr, 0);
+    return moveonly_list<T>((T *)storage, n);
   }
 
   std::tuple<WMT::Buffer, uint64_t>
@@ -6601,7 +6623,25 @@ public:
   void *
   allocate_cpu_heap(size_t size, size_t alignment) {
     auto [block, offset] = cpu_command_allocator.allocate(1, 0, size, alignment);
+    if (unlikely(!block.ptr)) // MYIOSDECK spec 06 round 3: no block (guest memory only)
+      return allocateAfterWait(size, alignment);
     return ptr_add(block.ptr, offset);
+  }
+
+  /* MYIOSDECK spec 06 round 3 (item 2): waits until the GPU has finished every committed chunk
+     (the command lists they hold give their blocks back) and tries once more; null, with the
+     list marked out of memory, when that fails too */
+  void *
+  allocateAfterWait(size_t size, size_t alignment) {
+    auto &queue = m_parent->GetDXMTDevice().queue();
+    uint64_t committed = queue.CurrentSeqId() - 1;
+    if (committed)
+      queue.WaitCPUFence(committed);
+    auto [block, offset] = cpu_command_allocator.allocate(1, 0, size, alignment);
+    if (block.ptr)
+      return ptr_add(block.ptr, offset);
+    out_of_memory_ = true;
+    return nullptr;
   }
 
   template <typename T>
@@ -6612,8 +6652,10 @@ public:
 
   template <CommandWithContext<ArgumentEncodingContext> cmd>
   void Emit(cmd &&fn) {
-    list.emit(std::forward<cmd>(fn),
-              allocate_cpu_heap(list.calculateCommandSize<cmd>(), 16));
+    void *storage = allocate_cpu_heap(list.calculateCommandSize<cmd>(), 16);
+    if (unlikely(!storage))
+      return; // MYIOSDECK spec 06 round 3: dropped; FinishCommandList returns E_OUTOFMEMORY
+    list.emit(std::forward<cmd>(fn), storage);
   }
 
 #pragma endregion
@@ -6627,6 +6669,7 @@ public:
 #pragma endregion
 
   bool promote_flush = false;
+  bool out_of_memory_ = false; // MYIOSDECK spec 06 round 3
 
   std::vector<used_dynamic_buffer> used_dynamic_buffers;
   std::vector<used_dynamic_lineartexture> used_dynamic_lineartextures;

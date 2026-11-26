@@ -1,10 +1,12 @@
 #pragma once
 // Changed for MYIOSDECK (spec 05 B8, D3; spec 06 B3). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 item 90: Metal objects in the memory ledger).
 #include "Metal.hpp"
 #include <cstring>
 #include "dxmt_buffer.hpp"
 #include "dxmt_context.hpp"
 #include "dxmt_ring_bump_allocator.hpp"
+#include "dxmt_mem_track.hpp" // MYIOSDECK spec 05 item 90
 #include "dxmt_texture.hpp"
 #include "util_bitness.hpp"
 
@@ -150,6 +152,7 @@ private:
   WMT::Reference<WMT::CommandQueue> upload_queue_;
   WMT::Reference<WMT::SharedEvent> upload_queue_event_;
   WMT::Reference<WMT::Buffer> zero_buffer_;
+  memledger::Entry zero_buffer_record_; // MYIOSDECK spec 05 item 90
   size_t zero_buffer_size_ = 0;
   dxmt::mutex mutex_;
 

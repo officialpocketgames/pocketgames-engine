@@ -6,6 +6,8 @@
 // Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 // Also changed for MYIOSDECK (spec 05 round 17: the serialize level and fence, the pass-cut notes and discard marks).
 
+// Changed for MYIOSDECK (spec 05 item 90: Metal objects in the memory ledger).
+// Changed for MYIOSDECK (spec 06 round 3: the encoder heaps in guest memory, checked).
 #include "Metal.hpp"
 #include <cstring>
 #include <optional>
@@ -824,7 +826,7 @@ public:
       if (unlikely(cpu_buffer_offset_ >= kEncodingContextCPUHeapSize)) {
         current_buffer_chunk_++;
         while (current_buffer_chunk_ >= cpu_buffer_chunks_.size()) {
-          cpu_buffer_chunks_.emplace_back();
+          newEncoderHeap(); // MYIOSDECK spec 06 round 3 (upstream: emplace_back)
         }
         auto &chunk = cpu_buffer_chunks_[current_buffer_chunk_];
         chunk.underused_times = 0;
@@ -1078,6 +1080,7 @@ private:
   WMT::Reference<WMT::SamplerState> dummy_sampler_;
   WMTSamplerInfo dummy_sampler_info_;
   WMT::Reference<WMT::Buffer> dummy_cbuffer_;
+  memledger::Entry dummy_cbuffer_record_; // MYIOSDECK spec 05 item 90
   void *dummy_cbuffer_host_;
   WMTBufferInfo dummy_cbuffer_info_;
 
@@ -1089,12 +1092,17 @@ private:
   uint64_t seq_id_;
   uint64_t frame_id_;
 
+  /* MYIOSDECK spec 06 round 3 (item 2): in a guest window (the i386 build) the encoder's heaps are
+     guest memory, counted under "commands"; `ptr` is null when none could be had, and
+     newEncoderHeap waits for the GPU and tries again */
   struct chunk {
     void *ptr;
     size_t underused_times;
 
     chunk() {
-      ptr = malloc(kEncodingContextCPUHeapSize);
+      ptr = guest_memory::kGuestWindowHeap
+                ? guest_memory::Alloc(kEncodingContextCPUHeapSize, 64, guest_memory::Use::Commands, "an encoder heap")
+                : malloc(kEncodingContextCPUHeapSize);
       underused_times = 0;
     }
     chunk(const chunk &copy) = delete;
@@ -1104,10 +1112,15 @@ private:
       move.ptr = nullptr;
     };
     ~chunk() {
-      free(ptr);
+      if constexpr (guest_memory::kGuestWindowHeap)
+        guest_memory::Free(ptr, kEncodingContextCPUHeapSize, guest_memory::Use::Commands);
+      else
+        free(ptr);
       ptr = nullptr;
     }
   };
+  /* item 2: the next encoder heap, appended; waits for the GPU while none can be had */
+  void newEncoderHeap();
   std::vector<chunk> cpu_buffer_chunks_;
   uint32_t current_buffer_chunk_ = 0;
   void *cpu_buffer_;

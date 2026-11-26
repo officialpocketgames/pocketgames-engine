@@ -521,6 +521,9 @@ static void test_compile_dump_sm1(void)
     CHECK( !compile_dump_all_log( 0 ) && !compile_dump_all_log( 1 ) && !compile_dump_all_log( 49 ) && !compile_dump_all_log( 51 ) );
     snprintf( out, sizeof(out), COMPILE_DUMP_ALL_LOG_FORMAT, 50L, "0a1b2c3d.hlsl" );
     CHECK( !strcmp( out, "[d3dcompiler] successful shaders dumped: 50, the last 0a1b2c3d.hlsl\n" ) );
+    /* A22: the line at the first compile */
+    snprintf( out, sizeof(out), COMPILE_DUMP_FIRST_LOG_FORMAT, "off", "on", 35u );
+    CHECK( !strcmp( out, "[d3dcompiler] dump: failed off, all on (entry vkd3d_D3DCompile2VKD3D, compiler version 35)\n" ) );
 
     /* ps_1_x with the backwards-compatibility flag is compiled as ps_2_0, nothing else changes */
     CHECK( !strcmp( compile_effective_profile( "ps_1_1", 0x1000 ), "ps_2_0" ) );

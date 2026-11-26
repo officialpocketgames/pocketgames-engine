@@ -1,12 +1,20 @@
 // Changed for MYIOSDECK (spec 05 clarification 10: an LGPL-2.1-or-later block from steamac's
 // DXMT patch 0023, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 item 90: the memory ledger's record, the command chunks' share).
 #include "dxmt_allocation.hpp"
+#include "dxmt_mem_ledger.hpp"
 #include "util_likely.hpp"
 #include <cassert>
 #include <iterator>
 #include <new>
 
 namespace dxmt {
+
+/* MYIOSDECK spec 05 item 90: the record goes before the base's members do, so the ledger
+   (which reads them under its lock) never sees them gone */
+Allocation::~Allocation() {
+  memledger::Remove(mem_record);
+}
 
 void
 Allocation::incRef() {
@@ -39,6 +47,7 @@ AllocationRefTracking::track(Allocation *allocation) {
     return false;
   dxmt::Allocation **list = std::launder(chunk_last->allocations);
   allocation->incRef();
+  allocation->gpu_refs_.fetch_add(1u, std::memory_order_release); // MYIOSDECK spec 05 item 90
   list[chunk_last->size++] = allocation;
   return true;
 };
@@ -59,8 +68,10 @@ AllocationRefTracking::clear() {
   RefAddChunk<> *chunk = reinterpret_cast<RefAddChunk<> *>(&chunk_placed);
   while (chunk) {
     dxmt::Allocation **list = std::launder(chunk->allocations);
-    for (unsigned i = 0; i < chunk->size; i++)
+    for (unsigned i = 0; i < chunk->size; i++) {
+      list[i]->gpu_refs_.fetch_sub(1u, std::memory_order_release); // MYIOSDECK spec 05 item 90
       list[i]->decRef();
+    }
     chunk->size = 0;
     chunk = chunk->next_chunk;
   }

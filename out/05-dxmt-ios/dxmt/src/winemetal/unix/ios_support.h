@@ -67,6 +67,14 @@ uint64_t dxmt_ios_footprint(void);
 /* os_proc_available_memory(); 0 if unknown. */
 uint64_t dxmt_ios_available_memory(void);
 
+/* Spec 05 item 90: task_vm_info's graphics ledger (ledger_tag_graphics_footprint) in *bytes;
+   false where the SDK or the kernel doesn't report it. */
+bool dxmt_ios_graphics_footprint(uint64_t *bytes);
+
+/* Spec 05 item 90: the memory warnings so far: memory-pressure events (warn or critical), the
+   signal UIKit's memory warning comes from. The first call starts listening. */
+uint64_t dxmt_ios_memory_warnings(void);
+
 /* min(footprint + os_proc_available_memory(), cap), cap = hw.memsize -
    1536 MB (spec 00 Part I). UINT64_MAX if neither is known. */
 uint64_t dxmt_ios_memory_limit(uint64_t footprint);

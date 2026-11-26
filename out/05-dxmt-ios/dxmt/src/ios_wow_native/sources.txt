@@ -54,6 +54,8 @@ dxmt/dxmt_resource_initializer.cpp
 dxmt/dxmt_shader_cache.cpp
 dxmt/dxmt_bc_decode.cpp
 dxmt/dxmt_bc_emulation.cpp
+dxmt/dxmt_mem_ledger.cpp
+dxmt/dxmt_mem_report.cpp
 
 # util, with the iOS window system (spec 05 E1) and this build's platform layer
 util/util_atomic_wait.cpp

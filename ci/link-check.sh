@@ -108,7 +108,7 @@ frameworks="-framework Foundation -framework CoreFoundation -framework Metal -fr
  -framework GameController -framework CoreHaptics -framework AudioToolbox -framework AVFoundation \
  -framework CoreAudio -framework CoreMedia -framework CoreVideo -framework VideoToolbox \
  -framework Security -framework Network -framework SystemConfiguration -framework CFNetwork \
- -framework MetalFX -lresolv -lobjc -lz -liconv -lbz2 -lsqlite3 -lc++"
+ -framework MetalFX -framework Accelerate -lresolv -lobjc -lz -liconv -lbz2 -lsqlite3 -lc++"
 
 w="$rep/work"
 rm -rf "$w"

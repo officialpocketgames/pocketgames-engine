@@ -37,6 +37,7 @@
 #include <cstring>
 #include <deque>
 #include <map>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -142,12 +143,21 @@ Texture::allocate(Flags<TextureAllocationFlag>) {
 }
 
 bool g_fail_alloc = false; // spec 06 round 2: the guest window is full
+uint64_t g_guest_allocs = 0; // spec 06 round 3: guest allocations made (not taken from a free list)
 
 /* spec 06 round 2: the staging ring's warnings (log.cpp in the DLL) */
 void
 Logger::warn(const std::string &message) {
   std::printf("warn: %s\n", message.c_str());
 }
+
+/* spec 06 round 3: the rings' switch (DXMT_RING_OVERSIZE_REUSE; util_env.cpp in the DLL): unset */
+namespace env {
+std::string
+getEnvVar(const char *) {
+  return "";
+}
+} // namespace env
 
 /* spec 06 round 2: the guest-memory lines (util_guest_memory_log.cpp in the DLL) */
 namespace guest_memory {
@@ -162,6 +172,7 @@ void *
 aligned_malloc(size_t size, size_t alignment) {
   if (g_fail_alloc)
     return nullptr;
+  g_guest_allocs++;
   return std::aligned_alloc(alignment, (size + alignment - 1) / alignment * alignment);
 }
 void
@@ -551,6 +562,117 @@ CheckGuestWindow() {
   return failures;
 }
 
+/* spec 06 round 3 (item 2): the command blocks of a 32-bit program's deferred command lists, 1000
+   frames on a GPU that finishes a chunk only when the CPU waits for it. Each frame records one
+   list of about 3 MB of commands (two 2 MB blocks of its ring, as MTLD3D11CommandList's), the
+   immediate context executes it in the frame's chunk, which holds it until the GPU has finished
+   (then Reset gives its blocks back), and Present waits for the frame kI386MaxLatency (3) before.
+   Blocks are guest memory here, as in the i386 build. Then a block that can't be had. */
+int
+CheckCommandBlocks() {
+  int failures = 0;
+  auto fail = [&](const char *what) {
+    std::printf("FAIL command blocks: %s\n", what);
+    failures++;
+  };
+  constexpr uint64_t kMB = 1ull << 20;
+  constexpr size_t kListBlock = 0x200000; // kStagingBlockSizeForDeferredContext
+  using ListRing = RingBumpState<HostBufferBlockAllocator, kListBlock, dxmt::null_mutex>;
+  struct List {
+    ListRing ring{HostBufferBlockAllocator{}};
+    uint64_t seq = 0;
+  };
+  const bool was_guest = g_host_blocks_in_guest;
+  g_host_blocks_in_guest = true;
+  HostBlockPool::releaseKept();
+  guest_memory::Ledger &ledger = guest_memory::ProcessLedger();
+  const uint64_t commands_before = ledger.snapshot().bytes[unsigned(guest_memory::Use::Commands)];
+
+  std::vector<std::unique_ptr<List>> idle;
+  std::deque<std::unique_ptr<List>> in_flight;
+  auto recycle = [&](uint64_t coherent) { // MTLD3D11CommandList::Recycle once its chunk is done
+    while (!in_flight.empty() && in_flight.front()->seq <= coherent) {
+      in_flight.front()->ring.free_blocks(~0ull);
+      idle.push_back(std::move(in_flight.front()));
+      in_flight.pop_front();
+    }
+  };
+  {
+    Model m(true);
+    m.gpu_lag = 1u << 30;
+    m.max_latency = 3; // CommandQueue::kI386MaxLatency
+    uint64_t allocs_after_warmup = 0, peak = 0;
+    size_t most_in_flight = 0;
+    for (unsigned f = 0; f < 1000; f++) {
+      if (f == 20)
+        allocs_after_warmup = g_guest_allocs;
+      recycle(m.coherent_seq);
+      std::unique_ptr<List> list;
+      if (idle.empty()) {
+        list = std::make_unique<List>();
+      } else {
+        list = std::move(idle.back());
+        idle.pop_back();
+      }
+      for (size_t recorded = 0; recorded < 3 * kMB;) {
+        size_t n = 1024 + (recorded * 7919u) % 5120; // commands of 1-6 KB
+        auto [block, offset] = list->ring.allocate(1, 0, n, 16);
+        if (!block.ptr) {
+          fail("a command got no memory");
+          break;
+        }
+        std::memset(static_cast<char *>(block.ptr) + offset, int(f), n);
+        recorded += n;
+      }
+      list->seq = m.current_seq; // executed in this chunk, which holds it
+      in_flight.push_back(std::move(list));
+      most_in_flight = std::max(most_in_flight, in_flight.size());
+      m.present();
+      peak = std::max(peak, ledger.snapshot().bytes[unsigned(guest_memory::Use::Commands)] - commands_before);
+    }
+    const uint64_t fresh = g_guest_allocs - allocs_after_warmup;
+    const uint64_t bound = (m.max_latency + 3) * 2 * kListBlock;
+    std::printf("command blocks: 1000 frames of a 3 MB deferred list: peak %.1f MiB (bound %.1f), %zu lists at "
+                "most in flight, %llu guest allocations after frame 20, %.1f MiB kept for reuse\n",
+                peak / 1048576.0, bound / 1048576.0, most_in_flight, (unsigned long long)fresh,
+                HostBlockPool::keptBytes() / 1048576.0);
+    if (peak > bound)
+      fail("command memory above the bound");
+    if (fresh)
+      fail("blocks were allocated again instead of reused");
+    m.commit(); // the chunk being recorded too
+    while (!m.committed.empty())
+      m.finishOne();
+    recycle(~0ull);
+  }
+  idle.clear();
+  HostBlockPool::releaseKept();
+  if (ledger.snapshot().bytes[unsigned(guest_memory::Use::Commands)] != commands_before)
+    fail("command blocks left after every list went");
+
+  /* a block that can't be had: no memory and the failure counted (FinishCommandList returns
+     E_OUTOFMEMORY from it); with memory again the ring goes on */
+  {
+    ListRing ring{HostBufferBlockAllocator{}};
+    const uint64_t failures_before = guest_memory::ThreadFailures();
+    g_fail_alloc = true;
+    auto first = ring.allocate(1, 0, 4096, 16);
+    const bool got = first.first.ptr != nullptr;
+    g_fail_alloc = false;
+    if (got)
+      fail("a block without memory has memory");
+    if (guest_memory::ThreadFailures() != failures_before + 1)
+      fail("the failure wasn't counted");
+    auto again = ring.allocate(1, 0, 4096, 16);
+    if (!again.first.ptr)
+      fail("the next block, with memory again, failed");
+    ring.free_blocks(~0ull);
+  }
+  HostBlockPool::releaseKept();
+  g_host_blocks_in_guest = was_guest;
+  return failures;
+}
+
 int
 main(int argc, char **argv) {
   bool check = false;
@@ -661,6 +783,8 @@ main(int argc, char **argv) {
     failures += CheckDeferredRing(); // spec 05 clarification 67
   if (new_mode)
     failures += CheckGuestWindow(); // spec 06 round 2
+  if (new_mode)
+    failures += CheckCommandBlocks(); // spec 06 round 3 (item 2)
   std::printf("bench_dynamic_discard --check: %d failures\n", failures);
   return failures ? 1 : 0;
 }

@@ -1,4 +1,5 @@
 // Changed for MYIOSDECK (spec 05 B7, C, D5; spec 06 A). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 item 90: the release marked in the memory ledger).
 #include "util_bitness.hpp"
 #include "com/com_pointer.hpp"
 #include "d3d11_device.hpp"
@@ -168,6 +169,8 @@ public:
       underlying_texture_(std::move(u_texture)), local_kmt_(localHandle), global_kmt_(globalHandle) {}
 
   ~DeviceTexture() {
+    if (underlying_texture_.ptr()) // MYIOSDECK spec 05 item 90: what still lives waits for the GPU
+      underlying_texture_->releasedByProgram();
     if (local_kmt_) {
       D3DKMT_DESTROYALLOCATION destroy = {};
       destroy.hDevice = this->m_parent->GetLocalD3DKMT();

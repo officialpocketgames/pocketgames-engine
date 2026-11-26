@@ -1,7 +1,9 @@
 // Changed for MYIOSDECK (spec 06 B1; multi-slice allocations for dynamic-buffer discards). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 // Changed for MYIOSDECK (spec 33 B2: no placed buffers in the ios_wow_native build).
 // Changed for MYIOSDECK (spec 06 round 2: placed memory counted as guest memory, its failure seen).
+// Changed for MYIOSDECK (spec 05 item 90: each allocation in the memory ledger).
 #include "dxmt_buffer.hpp"
+#include "dxmt_mem_track.hpp"
 #include "util_guest_memory.hpp"
 #include "dxmt_format.hpp"
 #include "thread.hpp"
@@ -176,8 +178,21 @@ Buffer::allocate(Flags<BufferAllocationFlag> flags, uint32_t min_slices) {
   info.memory.set(0);
   info.length = length_;
   info.options = options;
-  return new BufferAllocation(device_, info, flags, min_slices);
+  auto allocation = new BufferAllocation(device_, info, flags, min_slices);
+  // MYIOSDECK spec 05 item 90: in the memory ledger, as part of this buffer
+  if (allocation->obj_)
+    allocation->mem_record = memledger::Add(
+        memledger::BufferRecord(memledger::Kind::Buffer, allocation->info_.length, allocation->info_.options),
+        static_cast<Allocation *>(allocation), this
+    );
+  return allocation;
 };
+
+/* MYIOSDECK spec 05 item 90: what of this buffer still lives waits for the GPU */
+void
+Buffer::releasedByProgram() {
+  memledger::MarkReleased(this);
+}
 
 Rc<BufferAllocation>
 Buffer::rename(Rc<BufferAllocation> &&newAllocation) {

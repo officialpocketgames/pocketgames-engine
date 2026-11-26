@@ -17,11 +17,19 @@
 //
 // The ledger and the lines are pure (the host test builds them); util_guest_memory.cpp does
 // the allocation and the logging.
+//
+// Spec 06 round 3 (item 2): a fourth use, commands (the command rings' host blocks, the encoder's
+// heap, the resource initializer's heap); the live ring and command blocks counted by size and
+// added to the line; the line also at the first failure and each time the total passes another
+// 256 MB (a 4-second run never reaches the 10 s line):
+//   [dxmt-wow] guest memory: <n> blocks, <MB> MB (maps <MB>, staging <MB>, commands <MB>, other
+//   <MB>); ring and command blocks: <MB> MB x <n>, …
 
 #pragma once
 
 #include "util_bitness.hpp"
 
+#include <algorithm>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -34,13 +42,23 @@ namespace dxmt::guest_memory {
    (not the ios_wow_native one, whose memory comes from spec 33's allocator) */
 constexpr bool kGuestWindowHeap = kI386Build && !kIosWowNative;
 
-enum class Use : unsigned { Maps, Staging, Other, Count };
+enum class Use : unsigned { Maps, Staging, Commands, Other, Count };
 
 constexpr uint64_t kReportPeriodNs = 10ull * 1000 * 1000 * 1000;
+/* spec 06 round 3: the line again each time the total passes another this many bytes */
+constexpr uint64_t kReportStepBytes = 256ull << 20;
+
+/* spec 06 round 3: live ring and command blocks (staging and commands) of one size */
+struct SizeCount {
+  uint64_t size = 0;
+  uint64_t count = 0;
+};
+constexpr unsigned kSizeSlots = 12;
 
 struct Snapshot {
   uint64_t blocks = 0;
   uint64_t bytes[unsigned(Use::Count)] = {};
+  SizeCount sizes[kSizeSlots] = {};
 };
 
 inline std::string
@@ -55,9 +73,28 @@ ReportLine(const Snapshot &s) {
   uint64_t total = 0;
   for (uint64_t b : s.bytes)
     total += b;
-  return "[dxmt-wow] guest memory: " + std::to_string(s.blocks) + " blocks, " + Megabytes(total) + " MB (maps " +
-         Megabytes(s.bytes[unsigned(Use::Maps)]) + ", staging " + Megabytes(s.bytes[unsigned(Use::Staging)]) +
-         ", other " + Megabytes(s.bytes[unsigned(Use::Other)]) + ")";
+  std::string line = "[dxmt-wow] guest memory: " + std::to_string(s.blocks) + " blocks, " + Megabytes(total) +
+                     " MB (maps " + Megabytes(s.bytes[unsigned(Use::Maps)]) + ", staging " +
+                     Megabytes(s.bytes[unsigned(Use::Staging)]) + ", commands " +
+                     Megabytes(s.bytes[unsigned(Use::Commands)]) + ", other " +
+                     Megabytes(s.bytes[unsigned(Use::Other)]) + ")";
+  /* spec 06 round 3: the live ring and command blocks by size, largest first */
+  SizeCount sizes[kSizeSlots];
+  unsigned n = 0;
+  for (const SizeCount &c : s.sizes) {
+    if (!c.count)
+      continue;
+    unsigned i = n++; // insertion, largest first (at most kSizeSlots)
+    while (i > 0 && sizes[i - 1].size < c.size) {
+      sizes[i] = sizes[i - 1];
+      i--;
+    }
+    sizes[i] = c;
+  }
+  for (unsigned i = 0; i < n; i++)
+    line += (i ? ", " : "; ring and command blocks: ") + Megabytes(sizes[i].size) + " MB x " +
+            std::to_string(sizes[i].count);
+  return line;
 }
 
 inline std::string
@@ -72,12 +109,16 @@ public:
   add(Use use, uint64_t bytes) {
     blocks_.fetch_add(1, std::memory_order_relaxed);
     bytes_[unsigned(use)].fetch_add(bytes, std::memory_order_relaxed);
+    if (use == Use::Staging || use == Use::Commands)
+      countSize(bytes, 1);
   }
 
   void
   remove(Use use, uint64_t bytes) {
     blocks_.fetch_sub(1, std::memory_order_relaxed);
     bytes_[unsigned(use)].fetch_sub(bytes, std::memory_order_relaxed);
+    if (use == Use::Staging || use == Use::Commands)
+      countSize(bytes, -1);
   }
 
   Snapshot
@@ -86,7 +127,30 @@ public:
     s.blocks = blocks_.load(std::memory_order_relaxed);
     for (unsigned u = 0; u < unsigned(Use::Count); u++)
       s.bytes[u] = bytes_[u].load(std::memory_order_relaxed);
+    lock();
+    for (unsigned i = 0; i < kSizeSlots; i++)
+      s.sizes[i] = sizes_[i];
+    unlock();
     return s;
+  }
+
+  uint64_t
+  totalBytes() const {
+    uint64_t total = 0;
+    for (const auto &b : bytes_)
+      total += b.load(std::memory_order_relaxed);
+    return total;
+  }
+
+  /* spec 06 round 3: true once each time `total` reaches another kReportStepBytes */
+  bool
+  passedStep(uint64_t total) {
+    uint64_t next = next_step_.load(std::memory_order_relaxed);
+    if (total < next)
+      return false;
+    return next_step_.compare_exchange_strong(
+        next, (total / kReportStepBytes + 1) * kReportStepBytes, std::memory_order_relaxed
+    );
   }
 
   /* true at most once per kReportPeriodNs: the first call starts the period, and each call
@@ -110,10 +174,44 @@ public:
   }
 
 private:
+  /* spec 06 round 3: the size table under a spin lock (blocks of these uses are few and large) */
+  void
+  lock() const {
+    while (size_lock_.test_and_set(std::memory_order_acquire)) {
+    }
+  }
+  void
+  unlock() const {
+    size_lock_.clear(std::memory_order_release);
+  }
+  void
+  countSize(uint64_t size, int delta) {
+    lock();
+    SizeCount *slot = nullptr, *empty = nullptr;
+    for (auto &c : sizes_) {
+      if (c.count && c.size == size) {
+        slot = &c;
+        break;
+      }
+      if (!c.count && !empty)
+        empty = &c;
+    }
+    if (!slot && delta > 0 && empty) {
+      slot = empty;
+      slot->size = size;
+    }
+    if (slot)
+      slot->count = delta > 0 ? slot->count + 1 : (slot->count ? slot->count - 1 : 0);
+    unlock();
+  }
+
   std::atomic<uint64_t> blocks_{0};
   std::atomic<uint64_t> bytes_[unsigned(Use::Count)] = {};
   std::atomic<uint64_t> start_ns_{0};
   std::atomic<bool> failure_logged_{false};
+  std::atomic<uint64_t> next_step_{kReportStepBytes};
+  mutable std::atomic_flag size_lock_ = ATOMIC_FLAG_INIT;
+  SizeCount sizes_[kSizeSlots] = {};
 };
 
 /* ---- util_guest_memory.cpp ---- */

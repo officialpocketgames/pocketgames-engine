@@ -1,8 +1,10 @@
 // Changed for MYIOSDECK (spec 05 E2). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 item 90: Metal objects in the memory ledger).
 #include <algorithm>
 #include "Metal.hpp"
 #include "dxmt_format.hpp"
 #include "dxmt_presenter.hpp"
+#include "dxmt_mem_track.hpp" // MYIOSDECK spec 05 item 90
 #include "util_likely.hpp"
 
 
@@ -32,6 +34,11 @@ Presenter::Presenter(WMT::Device device, WMT::MetalLayer layer, InternalCommandL
   texture_info.sample_count = 1;
   texture_info.array_length = 1;
   gamma_lut_texture_ = device.newTexture(texture_info);
+  if (gamma_lut_texture_) { // MYIOSDECK spec 05 item 90
+    auto record = memledger::TextureRecord(texture_info, memledger::TextureBytes(texture_info), false, "gamma table");
+    record.kind = memledger::Kind::Internal;
+    gamma_lut_record_ = memledger::Entry(memledger::Add(record));
+  }
 }
 
 bool

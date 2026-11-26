@@ -1,6 +1,6 @@
 // Changed for MYIOSDECK (spec 06 B1: CPU-placed subresource buffers in the i386 build; round 2: a
 // texture whose guest memory couldn't be had fails with E_OUTOFMEMORY). Upstream: DXMT a3a6e8f, MIT
-// (see LICENSE).
+// (see LICENSE). Changed for MYIOSDECK (spec 05 item 90: the release marked in the memory ledger).
 #include "com/com_pointer.hpp"
 #include "d3d11_device.hpp"
 #include "d3d11_texture.hpp"
@@ -53,6 +53,16 @@ public:
       TResourceBase<tag_texture, IMTLMinLODClampable>(*pDesc, pDevice),
       underlying_texture_(std::move(u_texture)),
       subresources_(std::move(subresources)) {}
+
+  /* MYIOSDECK spec 05 item 90: what of this texture still lives waits for the GPU */
+  ~DynamicTexture() {
+    if (underlying_texture_.ptr())
+      underlying_texture_->releasedByProgram();
+    for (auto &subresource : subresources_) {
+      if (subresource.buffer.ptr())
+        subresource.buffer->releasedByProgram();
+    }
+  }
 
   Rc<Buffer> buffer() final { return {}; };
   Rc<Texture> texture() final { return this->underlying_texture_; };

@@ -10,7 +10,8 @@
  * clarification 13: the 32-bit common argument's flags. Spec 05 clarification 20: the compute
  * pipeline's maxTotalThreadsPerThreadgroup (23: its guard). Spec 05 clarification 25: the
  * compute memory barrier record. Spec 05 item 89: what a program is handed is counted per
- * pseudo-process and released at its end (ios_support.m). Upstream: DXMT a3a6e8f, MIT (see
+ * pseudo-process and released at its end (ios_support.m). Spec 05 item 90: a texture's
+ * allocatedSize written back, the control call's ops 8-10. Upstream: DXMT a3a6e8f, MIT (see
  * LICENSE).
  */
 #include <stdatomic.h>
@@ -345,6 +346,16 @@ fill_texture_descriptor(MTLTextureDescriptor *desc, struct WMTTextureInfo *info)
 #endif
 };
 
+/* MYIOSDECK spec 05 item 90: a made texture's allocatedSize in KB (rounded up), which the Windows
+   half's memory ledger counts */
+static uint32_t
+texture_allocated_kb(id<MTLTexture> texture) {
+  if (!texture)
+    return 0;
+  uint64_t kb = ((uint64_t)[texture allocatedSize] + 1023) / 1024;
+  return kb > UINT32_MAX ? UINT32_MAX : (uint32_t)kb;
+}
+
 void
 extract_texture_descriptor(id<MTLTexture> desc, struct WMTTextureInfo *info) {
   info->type = desc.textureType;
@@ -357,7 +368,7 @@ extract_texture_descriptor(id<MTLTexture> desc, struct WMTTextureInfo *info) {
   info->sample_count = desc.sampleCount;
   info->usage = desc.usage;
   info->options = (enum WMTResourceOptions)desc.resourceOptions;
-  info->reserved = 0;
+  info->allocated_kb = texture_allocated_kb(desc); /* spec 05 item 90 (was `reserved`, 0) */
 };
 
 static NTSTATUS
@@ -372,6 +383,7 @@ _MTLDevice_newTexture(void *obj) {
   params->ret = (obj_handle_t)ret;
   info->gpu_resource_id = [ret gpuResourceID]._impl;
   info->mach_port = 0;
+  info->allocated_kb = texture_allocated_kb(ret); /* spec 05 item 90 */
 
   [desc release];
   DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
@@ -396,6 +408,7 @@ _MTLBuffer_newTexture(void *obj) {
   params->ret = (obj_handle_t)ret;
   info->gpu_resource_id = [ret gpuResourceID]._impl;
   info->mach_port = 0;
+  info->allocated_kb = 0; /* spec 05 item 90: its memory is the buffer's */
 
   [desc release];
   DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
@@ -3123,11 +3136,13 @@ _MTLDevice_newSharedTexture(void *obj) {
     }
     params->ret = (obj_handle_t)ret;
     info->gpu_resource_id = [ret gpuResourceID]._impl;
+    info->allocated_kb = texture_allocated_kb(ret); /* spec 05 item 90 */
 #else
     id<MTLTexture> ret = [device newSharedTextureWithDescriptor:desc];
     MTLSharedTextureHandle *handle = [ret newSharedTextureHandle];
     params->ret = (obj_handle_t)ret;
     info->gpu_resource_id = [ret gpuResourceID]._impl;
+    info->allocated_kb = texture_allocated_kb(ret); /* spec 05 item 90 */
     info->mach_port = [handle createMachPort]; // implicitly add ref to underlying IOSurface
     [handle release];
 #endif
@@ -3266,6 +3281,32 @@ _DXMTIOS_control(void *obj) {
     params->ret = 0;
 #endif
     return STATUS_SUCCESS;
+  /* spec 05 item 90: the [dxmt-mem] lines' footprint, graphics ledger and memory warnings */
+  case DXMT_IOS_CONTROL_FOOTPRINT:
+#if defined(DXMT_IOS)
+    params->ret = dxmt_ios_footprint();
+#else
+    params->ret = 0;
+#endif
+    return STATUS_SUCCESS;
+  case DXMT_IOS_CONTROL_GRAPHICS_FOOTPRINT: {
+#if defined(DXMT_IOS)
+    uint64_t bytes = 0;
+    if (!dxmt_ios_graphics_footprint(&bytes))
+      return STATUS_NOT_IMPLEMENTED;
+    params->ret = bytes;
+    return STATUS_SUCCESS;
+#else
+    return STATUS_NOT_IMPLEMENTED;
+#endif
+  }
+  case DXMT_IOS_CONTROL_MEMORY_WARNINGS:
+#if defined(DXMT_IOS)
+    params->ret = dxmt_ios_memory_warnings();
+    return STATUS_SUCCESS;
+#else
+    return STATUS_NOT_IMPLEMENTED;
+#endif
   default:
     return STATUS_NOT_IMPLEMENTED;
   }
@@ -3675,7 +3716,7 @@ const void *DXMT_UNIX_CALL_WOW64_FUNCS[] = {
     &_MTLDevice_newSharedEventWithMachPort,
     &_MTLDevice_registryID,
     &_MTLSharedEvent_waitUntilSignaledValue,
-    &wow_DXMTIOS_control,                         /* 127: op 7 only */
+    &wow_DXMTIOS_control,                         /* 127: ops 7-10 only */
     &_DXMTIOS_layer_display_sync,                 /* 128 */
     /* spec 07 A3: DXSO; thunk32_* convert the i386 argument blocks (spec 06 C) */
     &thunk32_DXSOInitialize,                      /* 129 */

@@ -7,6 +7,7 @@
 // Also changed for MYIOSDECK (spec 05 clarification 63: the encoding time for the call statistics).
 // Also changed for MYIOSDECK (spec 05 round 18: ParkUntilChunk, the bounded park of a polled query,
 // and the highest shared-event value read, items 80 and 82).
+// Also changed for MYIOSDECK (spec 06 round 3: command memory that can't be had; the 32-bit latency cap).
 
 #include "Metal.hpp"
 #include "dxmt_allocation.hpp"
@@ -114,7 +115,10 @@ public:
   template <CommandWithContext<ArgumentEncodingContext> F>
   void
   emitcc(F &&func) {
-    list_enc.emit(std::forward<F>(func), allocate_cpu_heap(list_enc.calculateCommandSize<F>(), 16));
+    void *storage = allocate_cpu_heap(list_enc.calculateCommandSize<F>(), 16);
+    if (unlikely(!storage))
+      return; // MYIOSDECK spec 06 round 3: no command memory even after the GPU finished; dropped
+    list_enc.emit(std::forward<F>(func), storage);
   }
 
   /* MYIOSDECK spec 05 E2.3 */
@@ -373,7 +377,11 @@ public:
 
   uint32_t GetMaxLatency() { return max_latency_; }
 
-  void SetMaxLatency(uint32_t value) { max_latency_ = value; };
+  /* MYIOSDECK spec 06 round 3 (item 2): a 32-bit process's CPU runs at most kI386MaxLatency
+     frames ahead of the GPU, whatever the program asks for, so the command memory a fast loop
+     holds stays bounded in its 4 GB window */
+  static constexpr uint32_t kI386MaxLatency = 3;
+  void SetMaxLatency(uint32_t value) { max_latency_ = kI386Build ? std::min(value, kI386MaxLatency) : value; };
 
   /* ---- spec 07: LGPL-2.1-or-later block, from dxmt-d3d9 v0.4-d3d9 (e8dd4c6)
      dxmt_command_queue.hpp ---- */
@@ -451,8 +459,16 @@ public:
   AllocateCommandData(size_t size, size_t alignment) {
     auto [block, offset] =
         cpu_command_allocator.allocate(ready_for_encode, cpu_coherent.signaledValue(), size, alignment);
+    if (unlikely(!block.ptr)) // MYIOSDECK spec 06 round 3: no block (guest memory only)
+      return AllocateCommandDataAfterWait(size, alignment);
     return ptr_add(block.ptr, offset);
   }
+
+  /* MYIOSDECK spec 06 round 3 (item 2): a command block couldn't be had. Waits until the GPU has
+     finished every committed chunk, so that their blocks are free again, and tries once more;
+     null when that fails too: the caller drops what it was writing, and the device is lost. */
+  void *AllocateCommandDataAfterWait(size_t size, size_t alignment);
+  void NoteCommandMemoryLost();
 
   void Retain(uint64_t seq, Allocation *allocation);
 };

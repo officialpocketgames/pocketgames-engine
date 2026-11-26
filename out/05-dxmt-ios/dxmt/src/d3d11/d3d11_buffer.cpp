@@ -1,5 +1,6 @@
 // Changed for MYIOSDECK (spec 06 B1: CPU-placed buffers in the i386 build; round 2: a buffer whose
 // guest memory couldn't be had fails with E_OUTOFMEMORY). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 item 90: the release marked in the memory ledger).
 #include "com/com_pointer.hpp"
 #include "d3d11_device.hpp"
 #include "dxmt_buffer.hpp"
@@ -110,6 +111,12 @@ public:
     if (!(desc.BindFlags & kD3D11OuputBindFlags)) {
       dynamic_ = new DynamicBuffer(buffer_.ptr(), flags);
     }
+  }
+
+  /* MYIOSDECK spec 05 item 90: what of this buffer still lives waits for the GPU */
+  ~D3D11Buffer() {
+    if (buffer_.ptr())
+      buffer_->releasedByProgram();
   }
 
   HRESULT

@@ -1,10 +1,12 @@
 #pragma once
 // Changed for MYIOSDECK (spec 05 H1; spec 06 B and round 2). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
+// Changed for MYIOSDECK (spec 05 item 90: Metal objects in the memory ledger).
 #include "Metal.hpp"
 #include "rc/util_rc_ptr.hpp"
 #include "util_placed_memory.hpp"
 #include "util_guest_memory.hpp" // MYIOSDECK spec 06 round 2
+#include "dxmt_mem_track.hpp" // MYIOSDECK spec 05 item 90
 #include "wsi_platform.hpp"
 #include <atomic>
 #include <cassert>
@@ -186,6 +188,11 @@ public:
         ));
 #endif
         visibility_result_heap = device.newBuffer(visibility_result_heap_info);
+        if (visibility_result_heap) // MYIOSDECK spec 05 item 90
+          visibility_result_record = memledger::Entry(memledger::Add(memledger::BufferRecord(
+              memledger::Kind::Internal, visibility_result_heap_info.length, visibility_result_heap_info.options,
+              "occlusion results"
+          )));
       }
   /* MYIOSDECK spec 05 H1: an empty readback, with no buffer, for a submission
      without visibility samples that ends `queries`. Destroyed by the finish
@@ -227,6 +234,7 @@ public:
   std::vector<Rc<VisibilityResultQuery>> queries;
   WMTBufferInfo visibility_result_heap_info;
   WMT::Reference<WMT::Buffer> visibility_result_heap;
+  memledger::Entry visibility_result_record; // MYIOSDECK spec 05 item 90
   bool empty = false;
 };
 

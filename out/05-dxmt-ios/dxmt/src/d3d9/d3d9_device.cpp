@@ -4,6 +4,7 @@
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
 // Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
 // Changed for MYIOSDECK (spec 33): the ios_wow_native build; see out/05-dxmt-ios/CHANGES.md, section "spec 33".
+// Changed for MYIOSDECK (spec 05 item 90): the rings' names in the memory ledger.
 #include "d3d9_device.hpp"
 #ifdef DXMT_IOS_WOW_NATIVE
 #include "d3d9_native_focus.hpp" // MYIOSDECK spec 33
@@ -497,19 +498,19 @@ MTLD3D9Device::MTLD3D9Device(
         {m_metalDevice, static_cast<WMTResourceOptions>(
                             WMTResourceCPUCacheModeWriteCombined | WMTResourceHazardTrackingModeUntracked |
                             WMTResourceStorageModeShared
-                        )}
+                        ), true, "d3d9 constants"} // MYIOSDECK spec 05 item 90: names in the ledger
     ),
     m_uploadRing(
         {m_metalDevice, static_cast<WMTResourceOptions>(
                             WMTResourceCPUCacheModeWriteCombined | WMTResourceHazardTrackingModeUntracked |
                             WMTResourceStorageModeShared
-                        )}
+                        ), true, "d3d9 uploads"}
     ),
     m_constRingResolve(
         {m_metalDevice, static_cast<WMTResourceOptions>(
                             WMTResourceCPUCacheModeWriteCombined | WMTResourceHazardTrackingModeUntracked |
                             WMTResourceStorageModeShared
-                        )},
+                        ), true, "d3d9 resolve constants"},
         // Written only by the encode thread (Resolve allocates, commit seals);
         // opt into the DXMT_DEBUG single-writer assertion.
         /*single_writer=*/true
@@ -3020,6 +3021,7 @@ MTLD3D9Device::CreateTexture(
     HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateTexture);
+  ::dxmt::memledger::Scope d9_mem_scope(9, Usage, Pool, 0, 0, __builtin_return_address(0)); // MYIOSDECK spec 05 item 90
   return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppTexture)
@@ -3278,6 +3280,7 @@ MTLD3D9Device::CreateVolumeTexture(
     IDirect3DVolumeTexture9 **ppVolumeTexture, HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateVolumeTexture);
+  ::dxmt::memledger::Scope d9_mem_scope(9, Usage, Pool, 0, 0, __builtin_return_address(0)); // MYIOSDECK spec 05 item 90
   return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppVolumeTexture)
@@ -3397,6 +3400,7 @@ MTLD3D9Device::CreateCubeTexture(
     HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateCubeTexture);
+  ::dxmt::memledger::Scope d9_mem_scope(9, Usage, Pool, 0, 0, __builtin_return_address(0)); // MYIOSDECK spec 05 item 90
   return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppCubeTexture)
@@ -3606,6 +3610,7 @@ MTLD3D9Device::CreateVertexBuffer(
     UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool, IDirect3DVertexBuffer9 **ppVertexBuffer, HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateVertexBuffer);
+  ::dxmt::memledger::Scope d9_mem_scope(9, Usage, Pool, 0, 0, __builtin_return_address(0)); // MYIOSDECK spec 05 item 90
   return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppVertexBuffer)
@@ -3694,6 +3699,7 @@ MTLD3D9Device::CreateIndexBuffer(
     HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateIndexBuffer);
+  ::dxmt::memledger::Scope d9_mem_scope(9, Usage, Pool, 0, 0, __builtin_return_address(0)); // MYIOSDECK spec 05 item 90
   return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppIndexBuffer)
@@ -3771,6 +3777,7 @@ MTLD3D9Device::CreateRenderTarget(
     IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateRenderTarget);
+  ::dxmt::memledger::Scope d9_mem_scope(9, D3DUSAGE_RENDERTARGET, D3DPOOL_DEFAULT, 0, 0, __builtin_return_address(0)); // MYIOSDECK spec 05 item 90
   return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
@@ -3928,6 +3935,7 @@ MTLD3D9Device::CreateDepthStencilSurface(
     IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateDepthStencilSurface);
+  ::dxmt::memledger::Scope d9_mem_scope(9, D3DUSAGE_DEPTHSTENCIL, D3DPOOL_DEFAULT, 0, 0, __builtin_return_address(0)); // MYIOSDECK spec 05 item 90
   return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
@@ -5700,6 +5708,7 @@ MTLD3D9Device::CreateOffscreenPlainSurface(
     UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateOffscreenPlainSurface);
+  ::dxmt::memledger::Scope d9_mem_scope(9, 0, Pool, 0, 0, __builtin_return_address(0)); // MYIOSDECK spec 05 item 90
   return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)

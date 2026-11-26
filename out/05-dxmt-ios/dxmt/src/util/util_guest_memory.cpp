@@ -35,11 +35,18 @@ Alloc(size_t bytes, size_t alignment, Use use, const char *what) {
   void *ptr = wsi::aligned_malloc(bytes, alignment);
   if (!ptr) {
     t_failures++;
-    if (ProcessLedger().takeFailureLine())
+    if (ProcessLedger().takeFailureLine()) {
       Write(FailureLine(bytes, what), true);
+      Write(ReportLine(ProcessLedger().snapshot()), false); // spec 06 round 3: what holds it
+    }
     return nullptr;
   }
   ProcessLedger().add(use, bytes);
+  /* spec 06 round 3: the line each time the total passes another 256 MB */
+  if constexpr (kGuestWindowHeap) {
+    if (ProcessLedger().passedStep(ProcessLedger().totalBytes()))
+      Write(ReportLine(ProcessLedger().snapshot()), false);
+  }
   Tick();
   return ptr;
 }

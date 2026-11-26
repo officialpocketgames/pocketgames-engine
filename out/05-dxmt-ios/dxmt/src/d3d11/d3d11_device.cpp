@@ -4,7 +4,10 @@
 // read at device creation; clarifications 63 and 73: call statistics, the
 // round-17 switch line; round 19, item 88: the DXGI device's CreateSurface and
 // QueryResourceResidency no longer abort). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 item 90: the memory ledger's scopes and ring names).
+// Changed for MYIOSDECK (spec 06 round 3, item 3: shader bytecode checked before use).
 #include "com/com_guid.hpp"
+#include "d3d11_bytecode_check.hpp"
 #include "d3d11_format_support2.hpp"
 #include "dxmt_frame_trace.hpp" // spec 05 clarification 21
 #include "dxmt_cuts.hpp"        // spec 05 clarification 73
@@ -101,11 +104,20 @@ public:
 
   bool IsTraced() override { return is_traced_; }
 
+  /* MYIOSDECK spec 06 round 3 (item 3): whether `method` refuses this bytecode (d3d11_bytecode_check.hpp);
+     its line once per method per process */
+  static bool
+  RefuseBytecodeOf(BytecodeMethod method, const void *code, SIZE_T length) {
+    static BytecodeRefusalLog log;
+    return RefuseBytecode(log, method, code, length, [](const std::string &line) { Logger::warn(line); });
+  }
+
   HRESULT STDMETHODCALLTYPE
   CreateBuffer(const D3D11_BUFFER_DESC *pDesc,
                const D3D11_SUBRESOURCE_DATA *pInitialData,
                ID3D11Buffer **ppBuffer) override {
     D11_DEVICE_CALL(CreateBuffer);
+    DXMT_MEM_SCOPE_D3D11(pDesc); // MYIOSDECK spec 05 item 90: what the memory ledger records
     InitReturnPtr(ppBuffer);
 
     if (pDesc->ByteWidth == 0 && !(pDesc->MiscFlags & D3D11_RESOURCE_MISC_TILE_POOL))
@@ -133,6 +145,7 @@ public:
                   const D3D11_SUBRESOURCE_DATA *pInitialData,
                   ID3D11Texture1D **ppTexture1D) override {
     D11_DEVICE_CALL(CreateTexture1D);
+    DXMT_MEM_SCOPE_D3D11(pDesc); // MYIOSDECK spec 05 item 90: what the memory ledger records
 
     InitReturnPtr(ppTexture1D);
 
@@ -171,6 +184,7 @@ public:
                   const D3D11_SUBRESOURCE_DATA *pInitialData,
                   ID3D11Texture2D **ppTexture2D) override {
     D11_DEVICE_CALL(CreateTexture2D);
+    DXMT_MEM_SCOPE_D3D11(pDesc); // MYIOSDECK spec 05 item 90: what the memory ledger records
     D3D11_TEXTURE2D_DESC1 desc1;
     UpgradeResourceDescription(pDesc, desc1);
     return CreateTexture2D1(&desc1, pInitialData,
@@ -182,6 +196,7 @@ public:
                   const D3D11_SUBRESOURCE_DATA *pInitialData,
                   ID3D11Texture3D **ppTexture3D) override {
     D11_DEVICE_CALL(CreateTexture3D);
+    DXMT_MEM_SCOPE_D3D11(pDesc); // MYIOSDECK spec 05 item 90: what the memory ledger records
     D3D11_TEXTURE3D_DESC1 desc1;
     UpgradeResourceDescription(pDesc, desc1);
     return CreateTexture3D1(&desc1, pInitialData,
@@ -254,7 +269,8 @@ public:
 
     if (!pInputElementDescs)
       return E_INVALIDARG;
-    if (!pShaderBytecodeWithInputSignature)
+    // MYIOSDECK spec 06 round 3 (item 3): null, short or not DXBC, before it is parsed
+    if (RefuseBytecodeOf(BytecodeMethod::CreateInputLayout, pShaderBytecodeWithInputSignature, BytecodeLength))
       return E_INVALIDARG;
 
     // TODO: must get shader reflection info
@@ -274,6 +290,8 @@ public:
                      ID3D11VertexShader **ppVertexShader) override {
     D11_DEVICE_CALL(CreateVertexShader);
     InitReturnPtr(ppVertexShader);
+    if (RefuseBytecodeOf(BytecodeMethod::CreateVertexShader, pShaderBytecode, BytecodeLength))
+      return E_INVALIDARG; // MYIOSDECK spec 06 round 3 (item 3): before it is hashed or parsed
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
@@ -287,6 +305,8 @@ public:
                        ID3D11GeometryShader **ppGeometryShader) override {
     D11_DEVICE_CALL(CreateGeometryShader);
     InitReturnPtr(ppGeometryShader);
+    if (RefuseBytecodeOf(BytecodeMethod::CreateGeometryShader, pShaderBytecode, BytecodeLength))
+      return E_INVALIDARG; // MYIOSDECK spec 06 round 3 (item 3): before it is hashed or parsed
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
@@ -305,6 +325,8 @@ public:
       ID3D11GeometryShader **ppGeometryShader) override {
     D11_DEVICE_CALL(CreateGeometryShaderWithStreamOutput);
     InitReturnPtr(ppGeometryShader);
+    if (RefuseBytecodeOf(BytecodeMethod::CreateGeometryShaderWithStreamOutput, pShaderBytecode, BytecodeLength))
+      return E_INVALIDARG; // MYIOSDECK spec 06 round 3 (item 3): before it is hashed or parsed
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
@@ -335,6 +357,8 @@ public:
                     ID3D11PixelShader **ppPixelShader) override {
     D11_DEVICE_CALL(CreatePixelShader);
     InitReturnPtr(ppPixelShader);
+    if (RefuseBytecodeOf(BytecodeMethod::CreatePixelShader, pShaderBytecode, BytecodeLength))
+      return E_INVALIDARG; // MYIOSDECK spec 06 round 3 (item 3): before it is hashed or parsed
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
@@ -348,6 +372,8 @@ public:
                    ID3D11HullShader **ppHullShader) override {
     D11_DEVICE_CALL(CreateHullShader);
     InitReturnPtr(ppHullShader);
+    if (RefuseBytecodeOf(BytecodeMethod::CreateHullShader, pShaderBytecode, BytecodeLength))
+      return E_INVALIDARG; // MYIOSDECK spec 06 round 3 (item 3): before it is hashed or parsed
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
@@ -364,6 +390,8 @@ public:
                      ID3D11DomainShader **ppDomainShader) override {
     D11_DEVICE_CALL(CreateDomainShader);
     InitReturnPtr(ppDomainShader);
+    if (RefuseBytecodeOf(BytecodeMethod::CreateDomainShader, pShaderBytecode, BytecodeLength))
+      return E_INVALIDARG; // MYIOSDECK spec 06 round 3 (item 3): before it is hashed or parsed
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
@@ -380,6 +408,8 @@ public:
                       ID3D11ComputeShader **ppComputeShader) override {
     D11_DEVICE_CALL(CreateComputeShader);
     InitReturnPtr(ppComputeShader);
+    if (RefuseBytecodeOf(BytecodeMethod::CreateComputeShader, pShaderBytecode, BytecodeLength))
+      return E_INVALIDARG; // MYIOSDECK spec 06 round 3 (item 3): before it is hashed or parsed
     if (pClassLinkage != nullptr)
       WARN("Class linkage not supported");
 
@@ -905,6 +935,7 @@ public:
                    const D3D11_SUBRESOURCE_DATA *pInitialData,
                    ID3D11Texture2D1 **ppTexture2D) override {
     D11_DEVICE_CALL(CreateTexture2D1);
+    DXMT_MEM_SCOPE_D3D11(pDesc); // MYIOSDECK spec 05 item 90: what the memory ledger records
     InitReturnPtr(ppTexture2D);
 
     if (!pDesc)
@@ -942,6 +973,7 @@ public:
                    const D3D11_SUBRESOURCE_DATA *pInitialData,
                    ID3D11Texture3D1 **ppTexture3D) override {
     D11_DEVICE_CALL(CreateTexture3D1);
+    DXMT_MEM_SCOPE_D3D11(pDesc); // MYIOSDECK spec 05 item 90: what the memory ledger records
     InitReturnPtr(ppTexture3D);
 
     if (!pDesc)

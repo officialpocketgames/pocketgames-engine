@@ -1,4 +1,5 @@
 // Changed for MYIOSDECK (spec 06 round 2: a texture whose guest memory couldn't be had fails with E_OUTOFMEMORY).
+// Changed for MYIOSDECK (spec 05 item 90: the release marked in the memory ledger).
 // Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "d3d11_private.h"
 #include "com/com_pointer.hpp"
@@ -75,6 +76,12 @@ TDynamicLinearTexture(
       }
     }
     dynamic_ = new DynamicLinearTexture(texture_.ptr(), flags);
+  }
+
+  /* MYIOSDECK spec 05 item 90: what of this texture still lives waits for the GPU */
+  ~TDynamicLinearTexture() {
+    if (texture_.ptr())
+      texture_->releasedByProgram();
   }
 
   Rc<Buffer> buffer() final { return {}; };

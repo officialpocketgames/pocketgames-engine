@@ -22,7 +22,7 @@
 #                                                       them, so a plain link would drop them)
 #   <ffmpeg prefix>/lib/libavformat.a libavcodec.a libswresample.a libavutil.a   (this order)
 #   -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo
-#   -framework CoreFoundation
+#   -framework CoreFoundation -framework Accelerate   (vImage: wg_vconv_vimage.c, round 5 item 6)
 #   -F<openal prefix> -framework OpenALSoft   (dynamic, embedded and signed; openal/README.md)
 # together with specs 08-12's libraries (FreeType comes from spec 12's libwin32u_unix.a; never
 # link a second copy).
@@ -85,7 +85,7 @@ WINEINC="-I$HERE/../09-ntdll-processes/include -I$BUILD/include -I$WINE/include"
 
 # Files that include no Wine header (Part A1: CoreFoundation and winnt.h define clashing names;
 # the pure files are shared with the host tests). They get no Wine include path at all.
-PLAIN_WG="wma_params wma_core wg_avlog wg_handles wg_parser_pure wg_platform_pure wg_platform_apple"
+PLAIN_WG="wma_params wma_core wg_avlog wg_handles wg_parser_pure wg_platform_pure wg_platform_apple wg_vconv wg_vconv_vimage"
 PLAIN_AUDIO="ios_audio_pure ios_audio_apple"
 
 failed=""

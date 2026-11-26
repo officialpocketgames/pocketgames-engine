@@ -17,7 +17,7 @@ top=$(cd "$here/.." && pwd)
 build=${1:-"$here/build"}
 compilers=${COMPILERS:-"gcc clang"}
 pe="$top/pe"
-incs="-I$pe/dlls/kernelbase -I$pe/dlls/kernel32 -I$pe/dlls/dbghelp -I$pe/dlls/nsi -I$pe/programs/services -I$pe/dlls/d3dcompiler_43"
+incs="-I$pe/dlls/kernelbase -I$pe/dlls/kernel32 -I$pe/dlls/dbghelp -I$pe/dlls/nsi -I$pe/programs/services -I$pe/dlls/d3dcompiler_43 -I$pe/libs/vkd3d/libs/vkd3d-utils"
 flags="-std=c11 -O2 -Wall -Wextra -Werror -fsanitize=address,undefined -fno-sanitize-recover=all"
 
 mkdir -p "$build"

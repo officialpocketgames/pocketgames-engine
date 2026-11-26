@@ -8,6 +8,12 @@
 // aren't failures: D3DERR_NOTAVAILABLE from Check*, D3DERR_WASSTILLDRAWING, and any success
 // (S_FALSE included) with its out-pointer set.
 //
+// Spec 07 clarification 7: the level, surface and lock lines of a texture also give the texture
+// (TextureArgs), and a pair that fails again after its line is counted: every 10 s, one line
+// per pair that failed again,
+//   [d3d9] <Interface>::<Method> -> <result> failed <n> more times (last: <its arguments>)
+// (Limiter::repeatLines).
+//
 // Pure: no Windows or Metal types, so the host test (tests/test_d3d9_fail_log.cpp) builds it as
 // it is. HRESULTs are 32-bit values, the D3D enums plain numbers (Microsoft's d3d9.h and
 // d3d9types.h). The covered methods (d3d9_call_stats.cpp's NoteFailure) wrap their body in
@@ -15,14 +21,17 @@
 
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <cstdio>
 #include <mutex>
 #include <string>
+#include <vector>
 
 namespace dxmt::d9fail {
 
 constexpr unsigned kMaxLines = 64;
+constexpr uint64_t kRepeatPeriodNs = 10'000'000'000ull; // clarification 7
 
 constexpr uint32_t kD3DErr(uint32_t code) {
   return 0x88760000u | code; /* MAKE_D3DHRESULT: severity 1, facility 0x876 */
@@ -184,6 +193,20 @@ ResourceArgs(uint32_t format, uint32_t pool, uint32_t usage) {
   return "format " + FormatName(format) + ", pool " + PoolName(pool) + ", usage " + Hex(usage);
 }
 
+/* clarification 7: the texture (or lone surface or volume) a call was on:
+   "<kind> <w>x<h>[x<d>], <n> level(s), format <name>, usage 0x..., pool <name>"; depth 0: none,
+   levels < 0: not given (a surface or volume of its own has no level count) */
+inline std::string
+TextureArgs(const char *kind, uint32_t width, uint32_t height, uint32_t depth, int levels, uint32_t format,
+            uint32_t usage, uint32_t pool) {
+  std::string s = std::string(kind) + " " + std::to_string(width) + "x" + std::to_string(height);
+  if (depth)
+    s += "x" + std::to_string(depth);
+  if (levels >= 0)
+    s += ", " + std::to_string(levels) + (levels == 1 ? " level" : " levels");
+  return s + ", format " + FormatName(format) + ", usage " + Hex(usage) + ", pool " + PoolName(pool);
+}
+
 /* a rect or box, copied out of RECT / D3DBOX (whose field types differ between builds) */
 struct Region {
   bool whole = true;
@@ -241,30 +264,91 @@ PresentArgs(const Params *pp) {
          ", windowed " + std::to_string(int(pp->Windowed));
 }
 
-/* The whole line; `null_out`: the call succeeded but left its out-pointer null. */
+/* The result as a line gives it; `null_out`: the call succeeded but left its out-pointer null. */
+inline std::string
+ResultText(int32_t hr, bool null_out) {
+  if (null_out)
+    return (hr == 0 ? std::string("S_OK") : HResultName(hr)) + " with a null out-pointer";
+  return HResultName(hr);
+}
+
+/* The whole line. */
 inline std::string
 Line(const char *name, int32_t hr, bool null_out, const std::string &args) {
-  std::string result = HResultName(hr);
-  if (null_out)
-    result = (hr == 0 ? std::string("S_OK") : result) + " with a null out-pointer";
-  return std::string("[d3d9] ") + name + " failed: " + result + "; " + args;
+  return std::string("[d3d9] ") + name + " failed: " + ResultText(hr, null_out) + "; " + args;
+}
+
+/* Clarification 7: a pair's repeats since its last line. */
+inline std::string
+RepeatLine(const char *name, int32_t hr, bool null_out, uint32_t repeats, const std::string &last_args) {
+  return std::string("[d3d9] ") + name + " -> " + ResultText(hr, null_out) + " failed " + std::to_string(repeats) +
+         " more times (last: " + last_args + ")";
 }
 
 /* Once per (method, result) pair, at most kMaxLines in all. The null-out case counts as its
-   own result. */
+   own result. Clarification 7: a later failure of a pair already logged is counted and its
+   arguments kept; repeatLines() gives the counts, at most once every kRepeatPeriodNs. A pair
+   past the 64 is neither logged nor counted. */
 class Limiter {
 public:
+  /* true: the pair's first failure, to be logged; false: a repeat counted, or no room. `name`
+     must outlive the limiter (the call-name table, a literal). */
   bool
-  take(unsigned method, int32_t hr, bool null_out) {
+  take(unsigned method, const char *name, int32_t hr, bool null_out, const std::string &args, uint64_t now_ns) {
     const uint64_t key = (uint64_t(method) << 33) | (uint64_t(null_out) << 32) | uint32_t(hr);
     std::lock_guard<std::mutex> lock(mutex_);
-    for (unsigned i = 0; i < used_; i++)
-      if (keys_[i] == key)
-        return false;
+    for (unsigned i = 0; i < used_; i++) {
+      Entry &entry = entries_[i];
+      if (entry.key != key)
+        continue;
+      entry.repeats++;
+      entry.last_args = args;
+      // The period starts with the first repeat not yet reported, so a repeat is reported 10 s
+      // after it at the latest (at the next failing call or Present), and the repeat lines come
+      // at most once every 10 s.
+      if (due_ns_ == 0) {
+        due_ns_ = now_ns + kRepeatPeriodNs;
+        pending_.store(true, std::memory_order_relaxed);
+      }
+      return false;
+    }
     if (used_ == kMaxLines)
       return false;
-    keys_[used_++] = key;
+    Entry &entry = entries_[used_++];
+    entry.key = key;
+    entry.name = name;
+    entry.hr = hr;
+    entry.null_out = null_out;
     return true;
+  }
+
+  /* A repeat waits to be reported: one relaxed load, for the Present path. */
+  bool
+  pending() const {
+    return pending_.load(std::memory_order_relaxed);
+  }
+
+  /* When due, one line per pair that failed again (in the order the pairs were first logged),
+     and the counts start over; otherwise none. */
+  std::vector<std::string>
+  repeatLines(uint64_t now_ns) {
+    std::vector<std::string> lines;
+    if (!pending())
+      return lines;
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (due_ns_ == 0 || now_ns < due_ns_)
+      return lines;
+    for (unsigned i = 0; i < used_; i++) {
+      Entry &entry = entries_[i];
+      if (!entry.repeats)
+        continue;
+      lines.push_back(RepeatLine(entry.name, entry.hr, entry.null_out, entry.repeats, entry.last_args));
+      entry.repeats = 0;
+      entry.last_args.clear();
+    }
+    due_ns_ = 0;
+    pending_.store(false, std::memory_order_relaxed);
+    return lines;
   }
 
   unsigned
@@ -273,20 +357,34 @@ public:
   }
 
 private:
+  struct Entry {
+    uint64_t key = 0;
+    const char *name = "";
+    int32_t hr = 0;
+    bool null_out = false;
+    uint32_t repeats = 0;
+    std::string last_args;
+  };
+
   std::mutex mutex_;
-  uint64_t keys_[kMaxLines] = {};
+  Entry entries_[kMaxLines];
   unsigned used_ = 0;
+  uint64_t due_ns_ = 0; // 0: no repeat waiting
+  std::atomic<bool> pending_{false};
 };
 
-/* The decision and the line, or an empty string when nothing is logged. */
+/* The decision and the line, or an empty string when nothing is logged now. The arguments are
+   built for a failure that isn't expected (clarification 7: a repeat keeps them). */
 template <typename Args>
 std::string
-Consider(Limiter &limiter, unsigned method, const char *name, int32_t hr, bool null_out, Args &&args) {
+Consider(Limiter &limiter, unsigned method, const char *name, int32_t hr, bool null_out, Args &&args,
+         uint64_t now_ns) {
   if (!null_out && Expected(name, hr))
     return std::string();
-  if (!limiter.take(method, hr, null_out))
+  const std::string text = args();
+  if (!limiter.take(method, name, hr, null_out, text, now_ns))
     return std::string();
-  return Line(name, hr, null_out, args());
+  return Line(name, hr, null_out, text);
 }
 
 } // namespace dxmt::d9fail

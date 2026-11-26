@@ -1,5 +1,5 @@
 
-/* Changed for MYIOSDECK (spec 05 E2, H6, clarification 10). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
+/* Changed for MYIOSDECK (spec 05 E2, H6, clarification 10, item 90). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 #ifndef __WINEMETAL_THUNKS_H
 #define __WINEMETAL_THUNKS_H
 
@@ -404,6 +404,12 @@ struct unixcall_dxmt_ios_control {
 enum dxmt_ios_control_op {
   DXMT_IOS_CONTROL_CMDBUF_GPU_TIMES = 3, /* ptr -> struct dxmt_ios_cmdbuf_gpu_times; ret = 1 on success */
   DXMT_IOS_CONTROL_AVAILABLE_MEMORY = 7, /* ret = os_proc_available_memory() in bytes, 0 if unknown */
+  /* spec 05 item 90: no pointers (32-bit callers have them too) */
+  DXMT_IOS_CONTROL_FOOTPRINT = 8,          /* ret = phys_footprint in bytes, 0 if unknown */
+  DXMT_IOS_CONTROL_GRAPHICS_FOOTPRINT = 9, /* ret = task_vm_info's graphics ledger in bytes;
+                                              STATUS_NOT_IMPLEMENTED where the SDK lacks it */
+  DXMT_IOS_CONTROL_MEMORY_WARNINGS = 10,   /* ret = memory warnings so far (the first call starts
+                                              counting) */
 };
 
 struct dxmt_ios_cmdbuf_gpu_times {

@@ -126,7 +126,7 @@ MTLD3D9Volume::LockBox(D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox, DWORD F
   return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   return lockBoxImpl(pLockedVolume, pBox, Flags);
   } D9_CHECKED_END(IDirect3DVolume9, LockBox, pLockedVolume && !pLockedVolume->pBits,
-                   d9fail::LockArgs(-1, true, d9fail::RegionOfBox(pBox), Flags, d9fail::ResourceArgs(m_desc.Format, m_desc.Pool, m_desc.Usage))); // MYIOSDECK spec 07 clarification 5
+                   d9fail::LockArgs(-1, true, d9fail::RegionOfBox(pBox), Flags, d9fail::TextureArgs("volume", m_desc.Width, m_desc.Height, m_desc.Depth, -1, m_desc.Format, m_desc.Usage, m_desc.Pool))); // MYIOSDECK spec 07 clarifications 5 and 7
 }
 
 HRESULT

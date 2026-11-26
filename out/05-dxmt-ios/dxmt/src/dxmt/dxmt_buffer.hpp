@@ -1,6 +1,7 @@
 #pragma once
 // Changed for MYIOSDECK (spec 07 A4; multi-slice allocations for dynamic-buffer discards): contains an LGPL-2.1-or-later block from dxmt-d3d9
 // v0.4-d3d9 (e8dd4c6), marked inline (see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT.
+// Changed for MYIOSDECK (spec 05 item 90: releasedByProgram).
 
 #include "Metal.hpp"
 #include "dxmt_deptrack.hpp"
@@ -160,6 +161,10 @@ public:
   Rc<BufferAllocation> allocate(Flags<BufferAllocationFlag> flags, uint32_t min_slices = 0);
 
   Rc<BufferAllocation> rename(Rc<BufferAllocation> &&newAllocation);
+
+  /* MYIOSDECK spec 05 item 90: the program has released the resource this is; whatever of it
+     still lives in the memory ledger waits for the GPU. Called by the frontend's destructor. */
+  void releasedByProgram();
 
   Buffer(uint64_t length, WMT::Device device) : length_(length), device_(device) {}
 

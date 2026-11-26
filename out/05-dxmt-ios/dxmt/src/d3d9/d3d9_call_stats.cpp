@@ -84,7 +84,8 @@ NoteDeviceThread() {
 
 } // namespace dxmt::d9cs
 
-/* Spec 07 clarification 5: the failed-call lines, in every build. */
+/* Spec 07 clarification 5: the failed-call lines, in every build; clarification 7: their
+   repeat lines. */
 namespace dxmt::d9fail {
 
 Limiter &
@@ -96,6 +97,21 @@ ProcessLimiter() {
 void
 Write(const std::string &line) {
   Logger::warn(line);
+}
+
+uint64_t
+NowNs() {
+  return d9cs::NowNs();
+}
+
+/* Clarification 7: from a failing call and from every Present. */
+void
+Tick() {
+  Limiter &limiter = ProcessLimiter();
+  if (!limiter.pending())
+    return;
+  for (const auto &line : limiter.repeatLines(NowNs()))
+    Write(line);
 }
 
 } // namespace dxmt::d9fail

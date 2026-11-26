@@ -21,7 +21,7 @@
 
 #define PtrToUInt64(v) ((uint64_t)(uintptr_t)(v))
 
-/* Changed for MYIOSDECK (spec 05 B1, E, H, clarification 10). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
+/* Changed for MYIOSDECK (spec 05 B1, E, H, clarification 10, item 90). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 
 #ifdef DXMT_IOS
 /* Spec 05 B1: iOS has no MTLStorageModeManaged (Metal asserts on it). Every
@@ -1173,6 +1173,34 @@ WMTQueryAvailableMemory(uint64_t *bytes) {
   if (bytes)
     *bytes = ret;
   return ret != 0;
+}
+
+/* MYIOSDECK spec 05 item 90 */
+WINEMETAL_API bool
+WMTQueryFootprint(uint64_t *bytes) {
+  uint64_t ret = 0;
+  if (!WMTControl(DXMT_IOS_CONTROL_FOOTPRINT, 0, &ret) || !ret)
+    return false;
+  *bytes = ret;
+  return true;
+}
+
+WINEMETAL_API bool
+WMTQueryGraphicsFootprint(uint64_t *bytes) {
+  uint64_t ret = 0;
+  if (!WMTControl(DXMT_IOS_CONTROL_GRAPHICS_FOOTPRINT, 0, &ret))
+    return false;
+  *bytes = ret;
+  return true;
+}
+
+WINEMETAL_API bool
+WMTQueryMemoryWarnings(uint64_t *count) {
+  uint64_t ret = 0;
+  if (!WMTControl(DXMT_IOS_CONTROL_MEMORY_WARNINGS, 0, &ret))
+    return false;
+  *count = ret;
+  return true;
 }
 
 WINEMETAL_API bool

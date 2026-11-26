@@ -313,7 +313,7 @@ MTLD3D9VolumeTexture::GetVolumeLevel(UINT Level, IDirect3DVolume9 **ppVolumeLeve
   *ppVolumeLevel = ::dxmt::ref<IDirect3DVolume9>(m_levels[Level].ptr());
   return D3D_OK;
   } D9_CHECKED_END(IDirect3DVolumeTexture9, GetVolumeLevel, ppVolumeLevel && !*ppVolumeLevel,
-                   "level " + std::to_string(Level)); // MYIOSDECK spec 07 clarification 5
+                   "level " + std::to_string(Level) + ", " + d9fail::TextureArgs("volume texture", m_width_l0, m_height_l0, m_depth_l0, int(m_level_count), m_format, m_usage, m_pool)); // MYIOSDECK spec 07 clarifications 5 and 7
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -326,7 +326,7 @@ MTLD3D9VolumeTexture::LockBox(UINT Level, D3DLOCKED_BOX *pLockedVolume, const D3
     return D3DERR_INVALIDCALL;
   return m_levels[Level]->lockBoxImpl(pLockedVolume, pBox, Flags); // uncounted: MYIOSDECK spec 07 clarification 3
   } D9_CHECKED_END(IDirect3DVolumeTexture9, LockBox, pLockedVolume && !pLockedVolume->pBits,
-                   d9fail::LockArgs(int(Level), true, d9fail::RegionOfBox(pBox), Flags, d9fail::ResourceArgs(m_format, m_pool, m_usage))); // MYIOSDECK spec 07 clarification 5
+                   d9fail::LockArgs(int(Level), true, d9fail::RegionOfBox(pBox), Flags, d9fail::TextureArgs("volume texture", m_width_l0, m_height_l0, m_depth_l0, int(m_level_count), m_format, m_usage, m_pool))); // MYIOSDECK spec 07 clarifications 5 and 7
 }
 
 HRESULT STDMETHODCALLTYPE

@@ -5,6 +5,10 @@
  * Changed for MYIOSDECK (spec 19 follow-up A14): struct hlsl_ir_var gets is_compile_time_const
  * (upstream vkd3d commit d4007d0aa906, after 1.19), used by hlsl.y.
  *
+ * Changed for MYIOSDECK (spec 19 A22): struct hlsl_ir_var gets sm1_static_set, sm1_static_index
+ * and sm1_static_temp (a bool or int uniform in a b or i register for Shader Model 2/3), and
+ * struct hlsl_ctx gets sm1_static_consts and sm1_loop_counter, used by hlsl_codegen.c.
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
@@ -561,6 +565,14 @@ struct hlsl_ir_var
     /* Whether the initial value of the variable is a compile-time constant
      * expression and therefore it could be moved to ctx->static_initializers. */
     bool is_compile_time_const;
+
+    /* MYIOSDECK (spec 19 A22): for Shader Model 2/3 with static flow control, a scalar bool or
+     * int uniform in a constant bool ('b') or int ('i') register instead of a float 'c' one;
+     * 0 otherwise. Its value is copied into the float temp sm1_static_temp at the start of the
+     * program (if bN / rep iN), and loads of the uniform read that temp. */
+    char sm1_static_set;
+    unsigned int sm1_static_index;
+    uint32_t sm1_static_temp;
 
     uint32_t is_input_semantic : 1;
     uint32_t is_output_semantic : 1;
@@ -1214,6 +1226,10 @@ struct hlsl_ctx
     } constant_defs;
     /* 'c' registers where the constants expected by SM2 sincos are stored. */
     struct hlsl_reg d3dsincosconst1, d3dsincosconst2;
+    /* MYIOSDECK (spec 19 A22): a 'c' register holding (0, 1, 0, 0) for the b/i prologue, and
+     * the 'i' register a "defi" sets to (255, 0, 0, 0) for loops (~0u: none). */
+    struct hlsl_reg sm1_static_consts;
+    unsigned int sm1_loop_counter;
     /* Number of allocated registers, used in translation to vsir. */
     unsigned int ssa_count, temp_count, indexable_temp_count;
 

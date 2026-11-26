@@ -32,6 +32,12 @@ int ios_unixlib_init_symbol( const char *dll_name, char *buf, size_t size );
 #define IOS_UNIX_BAD_INDEX 0xc000000du
 unsigned int ios_unix_call_check( int has_table, int count_known, unsigned int count, unsigned int code );
 
+/* Spec 09 round 7 item 11: "process <serial> (<name>): command line <cmdline>" for a spawned
+ * process, the UTF-8 command line cut at IOS_CMDLINE_MAX characters (code points) with "…"
+ * (U+2026) when it was longer. Returns buf. */
+#define IOS_CMDLINE_MAX 512
+char *ios_format_cmdline( char *buf, size_t len, unsigned int serial, const char *name, const char *cmdline );
+
 /* ---------- Part C5 / C6: names of child programs ---------- */
 
 /* The file name part of a Windows or unix path (after the last '\\' or '/'). */

@@ -47,8 +47,11 @@ void NoteDeviceThread();
       ::dxmt::d9cs::NoteCall(::dxmt::d9cs::D9C_##label##_##method);                                                    \
   } while (0)
 
+/* Clarification 7: a Present also writes the failed-call repeat lines when they are due (one
+   relaxed load when none waits), in every build. */
 #define D9_CALL_PRESENT(label, method)                                                                                 \
   do {                                                                                                                 \
+    ::dxmt::d9fail::Tick();                                                                                            \
     if (unlikely(::dxmt::d9cs::g_enabled))                                                                             \
       ::dxmt::d9cs::NotePresent(::dxmt::d9cs::D9C_##label##_##method);                                                 \
   } while (0)
@@ -58,11 +61,16 @@ void NoteDeviceThread();
    (d3d9_fail_log.hpp). Written as
      D9_CALL(label, method);
      return D9_CHECKED_BEGIN { ...the body... } D9_CHECKED_END(label, method, null_out, args);
-   `null_out` is evaluated only after a success; `args` (a std::string) only when a line is
-   written. A success with its out-pointer set costs one branch. */
+   `null_out` is evaluated only after a success; `args` (a std::string) only for a failure that
+   isn't expected. A success with its out-pointer set costs one branch. Clarification 7: a pair
+   that fails again is counted, and the counts are written every 10 s (Tick). */
 namespace dxmt::d9fail {
 Limiter &ProcessLimiter();
 void Write(const std::string &line);
+/* The frontend's monotonic clock, in ns (never 0). */
+uint64_t NowNs();
+/* Clarification 7: write the repeat lines if they are due. */
+void Tick();
 
 template <typename Body, typename NullOut, typename Args>
 inline auto
@@ -72,9 +80,11 @@ Checked(Body &&body, unsigned method, NullOut &&null_out, Args &&args) {
   const bool null = !failed && null_out();
   if (likely(!failed && !null))
     return hr;
-  std::string line = Consider(ProcessLimiter(), method, ::dxmt::d9cs::kD9CallNames[method], int32_t(hr), null, args);
+  std::string line =
+      Consider(ProcessLimiter(), method, ::dxmt::d9cs::kD9CallNames[method], int32_t(hr), null, args, NowNs());
   if (!line.empty())
     Write(line);
+  Tick();
   return hr;
 }
 } // namespace dxmt::d9fail

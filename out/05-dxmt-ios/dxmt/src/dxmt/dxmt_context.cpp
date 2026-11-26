@@ -6,6 +6,8 @@
 // blit merge, 69-72 the pass cuts, 73 the switches).
 // Changed for MYIOSDECK (spec 33 B2, clarification 9: the ios_wow_native build's memory, no frame trace or dump).
 // Changed for MYIOSDECK (spec 06 round 2: the dummy constant buffer counted as guest memory).
+// Changed for MYIOSDECK (spec 05 item 90: Metal objects in the memory ledger).
+// Changed for MYIOSDECK (spec 06 round 3: the encoder heaps in guest memory, checked).
 #include "dxmt_context.hpp"
 #include "Metal.hpp"
 #include "dxmt_command_queue.hpp"
@@ -24,6 +26,7 @@
 #include "dxmt_presenter.hpp"
 #include "wsi_platform.hpp"
 #include <cstdint>
+#include <cstdlib>
 #include <cfloat>
 #include <cstdio>
 #include <filesystem>
@@ -83,10 +86,38 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
   dummy_cbuffer_info_.options = WMTResourceOptionCPUCacheModeWriteCombined | WMTResourceStorageModeShared |
                                 WMTResourceHazardTrackingModeUntracked;
   dummy_cbuffer_ = device.newBuffer(dummy_cbuffer_info_);
+  if (dummy_cbuffer_) // MYIOSDECK spec 05 item 90
+    dummy_cbuffer_record_ = memledger::Entry(memledger::Add(memledger::BufferRecord(
+        memledger::Kind::Internal, dummy_cbuffer_info_.length, dummy_cbuffer_info_.options, "dummy constant buffer"
+    )));
   if (dummy_cbuffer_info_.memory.get()) // MYIOSDECK spec 06 round 2: none when guest memory ran out
     std::memset(dummy_cbuffer_info_.memory.get(), 0, 65536);
   cpu_buffer_chunks_.emplace_back();
+  if (!cpu_buffer_chunks_.back().ptr) {
+    /* MYIOSDECK spec 06 round 3 (item 2): the first encoder heap, made with the device; nothing
+       to wait for yet, and nothing may be written through null */
+    Logger::err("[dxmt-wow] no memory for the encoder's first heap: stopping");
+    std::abort();
+  }
 };
+
+/* MYIOSDECK spec 06 round 3 (item 2): the encoder thread has no call to fail. The memory the GPU
+   holds (command lists, ring blocks) comes back as its chunks finish, so it waits for the next
+   one to finish (at most 100 ms a time) and tries again, for up to 2 s; then it stops the
+   program with a line rather than write through null. */
+void
+ArgumentEncodingContext::newEncoderHeap() {
+  cpu_buffer_chunks_.emplace_back();
+  for (unsigned attempt = 0; unlikely(!cpu_buffer_chunks_.back().ptr); attempt++) {
+    if (attempt == 20) {
+      Logger::err("[dxmt-wow] no memory for an encoder heap after waiting 2 s for the GPU: stopping");
+      std::abort();
+    }
+    cpu_buffer_chunks_.pop_back();
+    queue_.ParkUntilChunk(queue_.CoherentSeqId() + 1, 100ull * 1000 * 1000);
+    cpu_buffer_chunks_.emplace_back();
+  }
+}
 
 ArgumentEncodingContext::~ArgumentEncodingContext() {
 #ifdef DXMT_IOS_WOW_NATIVE

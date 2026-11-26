@@ -795,7 +795,7 @@ MTLD3D9Texture::GetSurfaceLevel(UINT Level, IDirect3DSurface9 **ppSurfaceLevel) 
   *ppSurfaceLevel = ::dxmt::ref<IDirect3DSurface9>(m_levels[Level].ptr());
   return D3D_OK;
   } D9_CHECKED_END(IDirect3DTexture9, GetSurfaceLevel, ppSurfaceLevel && !*ppSurfaceLevel,
-                   "level " + std::to_string(Level)); // MYIOSDECK spec 07 clarification 5
+                   "level " + std::to_string(Level) + ", " + d9fail::TextureArgs("texture", m_width, m_height, 0, int(m_levels.size()), m_format, m_usage, m_pool)); // MYIOSDECK spec 07 clarifications 5 and 7
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -810,7 +810,7 @@ MTLD3D9Texture::LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, const RECT *pR
     return D3DERR_INVALIDCALL;
   return m_levels[Level]->lockRectImpl(pLockedRect, pRect, Flags); // uncounted: MYIOSDECK spec 07 clarification 3
   } D9_CHECKED_END(IDirect3DTexture9, LockRect, pLockedRect && !pLockedRect->pBits,
-                   d9fail::LockArgs(int(Level), false, d9fail::RegionOfRect(pRect), Flags, d9fail::ResourceArgs(m_format, m_pool, m_usage))); // MYIOSDECK spec 07 clarification 5
+                   d9fail::LockArgs(int(Level), false, d9fail::RegionOfRect(pRect), Flags, d9fail::TextureArgs("texture", m_width, m_height, 0, int(m_levels.size()), m_format, m_usage, m_pool))); // MYIOSDECK spec 07 clarifications 5 and 7
 }
 
 HRESULT STDMETHODCALLTYPE

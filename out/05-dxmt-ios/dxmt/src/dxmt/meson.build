@@ -20,6 +20,9 @@ dxmt_src = [
   # MYIOSDECK spec 05 Part C
   'dxmt_bc_decode.cpp',
   'dxmt_bc_emulation.cpp',
+  # MYIOSDECK spec 05 item 90: the Metal memory ledger and its lines
+  'dxmt_mem_ledger.cpp',
+  'dxmt_mem_report.cpp',
 ]
 
 dxmt_shaders = [

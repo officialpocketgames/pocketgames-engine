@@ -418,7 +418,9 @@ static void test_refusals_and_types( void )
     create.input_type.format_size = sizeof(video);
     create.input_type.u.video = &video;
     CHECK_INT( CALL( unix_wg_transform_create, &create ), STATUS_NOT_SUPPORTED );
-    CHECK( test_log_count( "[wma] create refused" ) >= 4 );
+    CHECK( test_log_count( "[wma] create refused" ) >= 3 );
+    /* round 5 item 6: video goes to the video conversion, which refuses this one (no subtype) */
+    CHECK( test_log_count( "[wg-transform] video convert refused" ) >= 1 );
 
     create.input_type.major = wg_ios_mf_audio;
     create.input_type.format_size = sizeof(WAVEFORMATEX) + enc.extradata_size;

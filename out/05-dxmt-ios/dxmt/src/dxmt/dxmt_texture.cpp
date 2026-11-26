@@ -1,7 +1,15 @@
 // Changed for MYIOSDECK (spec 05 D5, H7; spec 06 B). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 // Changed for MYIOSDECK (spec 33 B2: buffer-backed textures of the ios_wow_native build from Part C).
 // Changed for MYIOSDECK (spec 06 round 2: placed memory counted as guest memory, its failure seen).
+// Changed for MYIOSDECK (spec 05 item 90: each allocation in the memory ledger; the depth rename
+// pool bounded).
 #include "dxmt_texture.hpp"
+#include "dxmt_bc_emulation.hpp"
+#include "dxmt_mem_track.hpp"
+#include "log/log.hpp"
+#include "util_ios_switch.hpp"
+#include "util_string.hpp"
+#include <algorithm>
 #include "util_guest_memory.hpp"
 #include "dxmt_residency.hpp"
 #include "util_placed_memory.hpp"
@@ -222,15 +230,39 @@ Texture::allocate(Flags<TextureAllocationFlag> flags) {
     );
 #endif
     auto buffer = device_.newBuffer(buffer_info);
+    // MYIOSDECK spec 05 item 90: a texture made on its own buffer counts as the buffer's pages
+    const bool made = bool(buffer);
     auto allocation =
         new TextureAllocation(this, std::move(buffer), buffer_info.memory.get(), info, bytes_per_row_, flags);
 #if defined(__i386__) || defined(DXMT_IOS_WOW_NATIVE)
     allocation->placedLength = buffer_info.length;
 #endif
+    if (made) {
+      allocation->allocatedBytes = memledger::BufferBytes(buffer_info.length);
+      allocation->mem_record = memledger::Add(
+          memledger::TextureRecord(info, allocation->allocatedBytes, false), static_cast<Allocation *>(allocation),
+          this
+      );
+    }
     return allocation;
   }
   auto texture = flags.test(TextureAllocationFlag::Shared) ? device_.newSharedTexture(info) : device_.newTexture(info);
-  return new TextureAllocation(this, std::move(texture), info, flags);
+  const bool made = bool(texture);
+  auto allocation = new TextureAllocation(this, std::move(texture), info, flags);
+  if (made) { // MYIOSDECK spec 05 item 90: Metal's allocatedSize, which the unix side wrote back
+    allocation->allocatedBytes = memledger::TextureBytes(info);
+    allocation->mem_record = memledger::Add(
+        memledger::TextureRecord(info, allocation->allocatedBytes, IsEmulatedBCFormat(device_, info_.pixel_format)),
+        static_cast<Allocation *>(allocation), this
+    );
+  }
+  return allocation;
+}
+
+/* MYIOSDECK spec 05 item 90 */
+void
+Texture::releasedByProgram() {
+  memledger::MarkReleased(this);
 }
 
 Rc<TextureAllocation>
@@ -250,7 +282,12 @@ Texture::import(mach_port_t mach_port) {
     if (info.options & WMTResourceHazardTrackingModeUntracked)
       flags.set(TextureAllocationFlag::NoTracking);
     flags.set(TextureAllocationFlag::Shared);
-    return new TextureAllocation(this, std::move(texture), info, flags);
+    auto allocation = new TextureAllocation(this, std::move(texture), info, flags);
+    allocation->mem_record = memledger::Add( // MYIOSDECK spec 05 item 90
+        memledger::TextureRecord(info, memledger::TextureBytes(info), false), static_cast<Allocation *>(allocation),
+        this
+    );
+    return allocation;
   }
   assert(texture && "failed to import shared texture");
   return nullptr;
@@ -392,6 +429,54 @@ RenamableTexturePool::decRef() {
     delete this;
 };
 
+namespace {
+/* MYIOSDECK spec 05 item 90: every pool's copies beyond their first, in bytes */
+std::atomic<uint64_t> g_rename_extra_bytes = {0};
+
+#ifdef DXMT_IOS
+bool
+RenameCapOn() {
+  static const bool on = env::readSwitch("DXMT_DEPTH_RENAME_CAP", true);
+  return on;
+}
+#endif
+} // namespace
+
+RenamableTexturePool::~RenamableTexturePool() {
+  if (extra_bytes_)
+    g_rename_extra_bytes.fetch_sub(extra_bytes_, std::memory_order_relaxed);
+}
+
+uint64_t
+RenamableTexturePool::extraBytesInUse() {
+  return g_rename_extra_bytes.load(std::memory_order_relaxed);
+}
+
+/* MYIOSDECK spec 05 item 90: a copy's size is the first one's (Metal's allocatedSize); without it,
+   8 bytes a texel, the most a depth-stencil format takes */
+bool
+RenamableTexturePool::reserveCopy() {
+  uint64_t bytes = allocations_[0].ptr() ? allocations_[0]->allocatedBytes : 0;
+  if (!bytes)
+    bytes = uint64_t(texture_->width()) * texture_->height() * std::max(texture_->depth(), 1u) *
+            std::max(texture_->arrayLength(), 1u) * std::max(texture_->sampleCount(), 1u) * 8;
+  uint64_t in_use = g_rename_extra_bytes.load(std::memory_order_relaxed);
+  do {
+    if (!RenamePoolMayGrow(made_, bytes, in_use)) {
+      static std::atomic<bool> logged = false;
+      if (!logged.exchange(true))
+        Logger::info(str::format(
+            "[dxmt-mem] depth rename copies capped: ", texture_->width(), "x", texture_->height(), ", ",
+            (bytes + (512u << 10)) >> 20, " MB a copy, ", made_, " kept (", kRenamePoolBytes >> 20,
+            " MB a texture, ", kRenameExtraBytes >> 20, " MB of extra copies in all; DXMT_DEPTH_RENAME_CAP=0 for 32)"
+        ));
+      return false;
+    }
+  } while (!g_rename_extra_bytes.compare_exchange_weak(in_use, in_use + bytes, std::memory_order_relaxed));
+  extra_bytes_ += bytes;
+  return true;
+}
+
 Rc<TextureAllocation>
 RenamableTexturePool::getNext(uint64_t frame) {
   if (frame > last_frame_) {
@@ -399,8 +484,16 @@ RenamableTexturePool::getNext(uint64_t frame) {
     current_index_ = 0;
   }
   auto current_index = current_index_++ % capacity_;
-  if (!allocations_[current_index].ptr())
+  if (!allocations_[current_index].ptr()) {
+#ifdef DXMT_IOS
+    /* MYIOSDECK spec 05 item 90: slots fill in order, so an empty one is the next copy; past the
+       budgets a copy the pool has is taken instead, in turn */
+    if (made_ && RenameCapOn() && !reserveCopy())
+      return allocations_[current_index % made_];
+#endif
     allocations_[current_index] = texture_->allocate(allocation_flags_);
+    made_++;
+  }
   return allocations_[current_index];
 }
 

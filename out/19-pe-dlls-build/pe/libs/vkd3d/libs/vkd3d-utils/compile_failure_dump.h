@@ -12,6 +12,9 @@
  * A19: with PG_D3DCOMPILER_DUMP_ALL=1, successful compiles for Shader Model 1-3 (vs_1_1 to
  * ps_3_0) are written the same way, with the result's constant table as text and its bytecode
  * in hex added to the header, at most 400 files per process.
+ *
+ * A22: used by vkd3d-utils' D3DCompile2VKD3D (vkd3d_utils_main.c), which every run-time compile
+ * passes, d3dcompiler's and d3dx9's (it was in d3dcompiler's compiler.c before).
  */
 
 #ifndef MYIOSDECK_COMPILE_FAILURE_DUMP_H
@@ -35,6 +38,10 @@
 #define COMPILE_DUMP_ALL_LOG_EVERY  50      /* one log line per this many files */
 /* %ld is the number of files written so far, %s the last one's name */
 #define COMPILE_DUMP_ALL_LOG_FORMAT "[d3dcompiler] successful shaders dumped: %ld, the last %s\n"
+/* A22: logged once per process at the first compile; "on"/"off" twice, then the caller's
+ * compiler version (d3dcompiler's 43 or 47, or d3dx9's SDK version, 35 for d3dx9_35) */
+#define COMPILE_DUMP_FIRST_LOG_FORMAT \
+    "[d3dcompiler] dump: failed %s, all %s (entry vkd3d_D3DCompile2VKD3D, compiler version %u)\n"
 
 struct compile_dump_info
 {

@@ -1,6 +1,10 @@
 // Changed for MYIOSDECK (spec 05 C, D3, D8; spec 06 A). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 item 90: Metal objects in the memory ledger).
+// Changed for MYIOSDECK (spec 06 round 3: the command heap in guest memory, checked).
 #include "Metal.hpp"
 #include "dxmt_resource_initializer.hpp"
+#include "log/log.hpp"
+#include "util_guest_memory.hpp"
 #include "dxmt_format.hpp"
 #include "util_math.hpp"
 #include <cstdint>
@@ -54,18 +58,33 @@ namespace dxmt {
 ResourceInitializer::ResourceInitializer(WMT::Device device) :
     device_(device),
     gpu_command_heap_allocator(StagingBufferBlockAllocator(
-        device, WMTResourceStorageModeManaged | WMTResourceHazardTrackingModeUntracked, false
+        device, WMTResourceStorageModeManaged | WMTResourceHazardTrackingModeUntracked, false,
+        "resource initializer" // MYIOSDECK spec 05 item 90
     )) {
   upload_queue_ = device.newCommandQueue(kResourceInitializerChunks);
   upload_queue_event_ = device.newSharedEvent();
 
   cpu_command_heap_size = kResourceInitializerCpuCommandHeapSize;
-  cpu_command_heap = malloc(cpu_command_heap_size);
+  /* MYIOSDECK spec 06 round 3 (item 2): guest memory in a guest window (the i386 build), counted
+     under "commands" and checked. It is made once, with the device; without it nothing could be
+     initialised, and nothing may be written through null. */
+  cpu_command_heap = guest_memory::kGuestWindowHeap
+                         ? guest_memory::Alloc(
+                               cpu_command_heap_size, 64, guest_memory::Use::Commands, "the resource initializer's commands"
+                           )
+                         : malloc(cpu_command_heap_size);
+  if (!cpu_command_heap) {
+    Logger::err("[dxmt-wow] no memory for the resource initializer's commands: stopping");
+    std::abort();
+  }
   reset();
 }
 
 ResourceInitializer::~ResourceInitializer() {
-  free(cpu_command_heap);
+  if constexpr (guest_memory::kGuestWindowHeap) // MYIOSDECK spec 06 round 3
+    guest_memory::Free(cpu_command_heap, cpu_command_heap_size, guest_memory::Use::Commands);
+  else
+    free(cpu_command_heap);
 }
 
 uint64_t
@@ -563,6 +582,12 @@ ResourceInitializer::allocateZeroBuffer(size_t size) {
     buffer_info.options = WMTResourceStorageModePrivate | WMTResourceHazardTrackingModeUntracked;
     zero_buffer_ = device_.newBuffer(buffer_info);
     zero_buffer_size_ = size;
+    zero_buffer_record_ = memledger::Entry( // MYIOSDECK spec 05 item 90 (the old one's record goes)
+        zero_buffer_ ? memledger::Add(memledger::BufferRecord(
+                           memledger::Kind::Internal, size, buffer_info.options, "zero buffer"
+                       ))
+                     : 0
+    );
 
     fill->type = WMTBlitCommandFillBuffer;
     fill->buffer = zero_buffer_;

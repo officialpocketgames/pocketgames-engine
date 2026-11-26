@@ -8,11 +8,11 @@
 #   run-host-tests.sh [<configured Wine 11.4 build dir>]
 #
 # Groups:
-#   pure      always: test_audio_pure, test_wg_pure, test_openal, check-openal-exports.sh
+#   pure      always: test_audio_pure, test_wg_pure, test_vconv, test_openal, check-openal-exports.sh
 #   ffmpeg    test_wma_params (against FFmpeg's own decoder): needs a host FFmpeg, which is
 #             built once from refs/ffmpeg-7.1.1 by build-host-ffmpeg.sh into $FFMPEG_HOST
 #             (default ~/.cache/myiosdeck/ffmpeg-7.1.1-host)
-#   wine      test_wma_e2e, test_parser, test_audio_wine: compile the Wine-side files, which need
+#   wine      test_wma_e2e, test_parser, test_vtransform, test_audio_wine: compile the Wine-side files, which need
 #             Wine's generated headers (mfobjects.h, audioclient.h, ...) from a configured Wine
 #             build dir ('make include', which needs widl, i.e. bison and flex). Given as the
 #             argument or $WINE_BUILD; skipped with a message when absent.
@@ -81,12 +81,15 @@ run_test() {
 compile media_log "$H/common/media_log.c" $INC
 compile stubs_common "$T/stubs_common.c" $INC
 compile ios_audio_pure "$H/audio-unix/ios_audio_pure.c" $INC
-for n in wma_params wg_handles wg_parser_pure wg_platform_pure; do
+for n in wma_params wg_handles wg_parser_pure wg_platform_pure wg_vconv; do
   compile "$n" "$H/winegstreamer-unix/$n.c" $INC
 done
 compile test_audio_pure "$T/test_audio_pure.c" $INC && run_test test_audio_pure "" test_audio_pure ios_audio_pure
 compile test_wg_pure "$T/test_wg_pure.c" $INC && \
   run_test test_wg_pure "" test_wg_pure wg_handles wg_parser_pure wg_platform_pure media_log stubs_common
+# spec 14 round 5 item 6: raw video conversion (the plan, with the plain C operations)
+compile wg_vconv_ops_c "$T/wg_vconv_ops_c.c" $INC
+compile test_vconv "$T/test_vconv.c" $INC && run_test test_vconv "" test_vconv wg_vconv wg_vconv_ops_c wg_parser_pure
 # spec 14 round 4: openal32's unix side against a fake OpenAL Soft, and its export list
 OAINC="-I$H/openal-unix -I$H/pe/dlls/openal32"
 compile openal_unix "$H/openal-unix/openal_unix.c" $INC $OAINC
@@ -143,11 +146,13 @@ if [ -n "$WBUILD" ] && [ -f "$WBUILD/include/mfobjects.h" ] && [ -f "$WBUILD/inc
   for n in wg_ios_main wg_transform_ios wg_parser_ios; do compile "$n" "$H/winegstreamer-unix/$n.c" $WG; done
   compile ios_audio "$H/audio-unix/ios_audio.c" $AU
   compile stubs_wine "$T/stubs_wine.c" $AU
-  WGOBJS="wg_ios_main wg_transform_ios wg_parser_ios wma_core wma_params wg_avlog wg_handles wg_parser_pure wg_platform_pure media_log stubs_common stubs_platform"
+  WGOBJS="wg_ios_main wg_transform_ios wg_parser_ios wma_core wma_params wg_avlog wg_handles wg_parser_pure wg_platform_pure wg_vconv wg_vconv_ops_c media_log stubs_common stubs_platform"
   # shellcheck disable=SC2086
   compile test_wma_e2e "$T/test_wma_e2e.c" $WG && run_test test_wma_e2e "$FFLIBS" test_wma_e2e $WGOBJS
   # shellcheck disable=SC2086
   compile test_parser "$T/test_parser.c" $WG && run_test test_parser "$FFLIBS" test_parser $WGOBJS
+  # shellcheck disable=SC2086
+  compile test_vtransform "$T/test_vtransform.c" $WG && run_test test_vtransform "$FFLIBS" test_vtransform $WGOBJS
   compile test_audio_wine "$T/test_audio_wine.c" $AU && \
     run_test test_audio_wine "" test_audio_wine ios_audio ios_audio_pure media_log stubs_common stubs_audio stubs_wine
 else

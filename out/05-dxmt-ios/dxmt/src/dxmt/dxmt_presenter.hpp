@@ -1,7 +1,9 @@
 #pragma once
 // Changed for MYIOSDECK (spec 05 E2). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 item 90: Metal objects in the memory ledger).
 #include "Metal.hpp"
 #include "dxmt_command.hpp"
+#include "dxmt_mem_ledger.hpp" // MYIOSDECK spec 05 item 90
 #include "rc/util_rc.hpp"
 #include "util_cpu_fence.hpp"
 #include "winemetal.h"
@@ -100,6 +102,7 @@ private:
   uint64_t gamma_version_ = 0;
   std::array<float, DXMT_GAMMA_CP_COUNT * 4> gamma_lut_rgba_;
   WMT::Reference<WMT::Texture> gamma_lut_texture_;
+  memledger::Entry gamma_lut_record_; // MYIOSDECK spec 05 item 90
   WMT::Reference<WMT::RenderPipelineState> present_blit_;
   WMT::Reference<WMT::RenderPipelineState> present_scale_;
   std::atomic_flag pso_valid = 0;

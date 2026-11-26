@@ -365,14 +365,21 @@ wow_MTLRenderCommandEncoder_encodeCommands(void *obj) {
   );
 }
 
-/* ---- C7: the control call answers op 7 only --------------------------------------- */
+/* ---- C7: the control call answers the ops without pointers only: 7 (and spec 05 item 90's
+   8, 9 and 10) ---- */
 
 static NTSTATUS
 wow_DXMTIOS_control(void *obj) {
   struct unixcall_dxmt_ios_control *params = obj;
-  if (params->op != DXMT_IOS_CONTROL_AVAILABLE_MEMORY)
+  switch (params->op) {
+  case DXMT_IOS_CONTROL_AVAILABLE_MEMORY:
+  case DXMT_IOS_CONTROL_FOOTPRINT:
+  case DXMT_IOS_CONTROL_GRAPHICS_FOOTPRINT:
+  case DXMT_IOS_CONTROL_MEMORY_WARNINGS:
+    return _DXMTIOS_control(obj);
+  default:
     return STATUS_NOT_IMPLEMENTED;
-  return _DXMTIOS_control(obj);
+  }
 }
 
 static NTSTATUS
