@@ -1059,6 +1059,7 @@ MTLD3D9Interface::CreateDevice(
     D3DPRESENT_PARAMETERS *pPresentationParameters, IDirect3DDevice9 **ppReturnedDeviceInterface
 ) {
   D9_CALL(IDirect3D9, CreateDevice);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   if (!ppReturnedDeviceInterface)
     return D3DERR_INVALIDCALL;
   *ppReturnedDeviceInterface = nullptr;
@@ -1099,6 +1100,8 @@ MTLD3D9Interface::CreateDevice(
   device->AddRef();
   *ppReturnedDeviceInterface = static_cast<IDirect3DDevice9 *>(device);
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3D9, CreateDevice, ppReturnedDeviceInterface && !*ppReturnedDeviceInterface,
+                   "adapter " + std::to_string(Adapter) + ", type " + std::to_string(DeviceType) + ", behavior " + d9fail::Hex(BehaviorFlags) + ", " + d9fail::PresentArgs(pPresentationParameters)); // MYIOSDECK spec 07 clarification 5
 }
 
 UINT STDMETHODCALLTYPE
@@ -1168,6 +1171,7 @@ MTLD3D9Interface::CreateDeviceEx(
     IDirect3DDevice9Ex **ppDevice
 ) {
   D9_CALL(IDirect3D9Ex, CreateDeviceEx);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   if (!ppDevice)
     return D3DERR_INVALIDCALL;
   *ppDevice = nullptr;
@@ -1211,6 +1215,8 @@ MTLD3D9Interface::CreateDeviceEx(
   device->AddRef();
   *ppDevice = static_cast<IDirect3DDevice9Ex *>(device);
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3D9Ex, CreateDeviceEx, ppDevice && !*ppDevice,
+                   "adapter " + std::to_string(Adapter) + ", type " + std::to_string(DeviceType) + ", behavior " + d9fail::Hex(BehaviorFlags) + ", " + d9fail::PresentArgs(pPresentationParameters)); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT STDMETHODCALLTYPE

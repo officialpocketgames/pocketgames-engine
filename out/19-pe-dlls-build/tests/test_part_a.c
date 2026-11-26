@@ -14,6 +14,7 @@
 #include "minidump_header.h"
 #include "autostart.h"
 #include "compile_failure_log.h"
+#include "compile_failure_dump.h"
 
 /* nsi_fallback.h's pending requests work on a fake OVERLAPPED and fake events */
 struct fake_event
@@ -350,6 +351,105 @@ static void test_compile_failure_log(void)
     CHECK_EQ_U( bytes, COMPILE_FAIL_MAX_BYTES );
 }
 
+/* ---- d3dcompiler: the failed-shader dump (A17) ---- */
+
+static void test_compile_failure_dump(void)
+{
+    static const char messages[] = "s.hlsl:4:12: E5005: Field \"pixel\" is not defined.\r\n\n"
+                                   "s.hlsl:4:5: E5002: Can't implicitly convert from <error type>.\n";
+    static const char expected[] =
+        "// d3dcompiler: a failed compile, dumped for diagnosis (PG_D3DCOMPILER_DUMP_FAILED=1)\n"
+        "// source: (memory)\n"
+        "// entry: VSMain\n"
+        "// target: vs_4_0\n"
+        "// flags: 0x1000\n"
+        "// result: 0x80004005\n"
+        "// text: after preprocessing\n"
+        "// messages:\n"
+        "//   s.hlsl:4:12: E5005: Field \"pixel\" is not defined.\n"
+        "//   s.hlsl:4:5: E5002: Can't implicitly convert from <error type>.\n"
+        "\n"
+        "float4 VSMain() : SV_Position { return 0; }\n";
+    static const char text[] = "float4 VSMain() : SV_Position { return 0; }\0";  /* a blob's NUL */
+    struct compile_dump_info info, other;
+    char out[1024], small[40], name[COMPILE_DUMP_NAME_SIZE], line[80];
+    size_t len;
+    int i;
+
+    /* on only with exactly "1" */
+    CHECK( compile_dump_enabled( "1" ) );
+    CHECK( !compile_dump_enabled( NULL ) );
+    CHECK( !compile_dump_enabled( "" ) );
+    CHECK( !compile_dump_enabled( "0" ) );
+    CHECK( !compile_dump_enabled( "11" ) );
+    CHECK( !compile_dump_enabled( "1 " ) );
+    CHECK( !strcmp( COMPILE_DUMP_ENV, "PG_D3DCOMPILER_DUMP_FAILED" ) );
+    CHECK( !strcmp( COMPILE_DUMP_DIR, "C:\\users\\Public\\pg-dumps\\shaders" ) );
+    CHECK_EQ_U( COMPILE_DUMP_MAX_FILES, 64 );
+
+    memset( &info, 0, sizeof(info) );
+    info.text = text;
+    info.text_size = compile_dump_text_size( text, sizeof(text) );
+    CHECK_EQ_U( info.text_size, strlen( text ) );
+    info.preprocessed = 1;
+    info.entry = "VSMain";
+    info.target = "vs_4_0";
+    info.flags = 0x1000;
+    info.result = 0x80004005u;
+    info.messages = messages;
+    info.messages_size = sizeof(messages);
+
+    /* the file: header, every message line, then the text with a final newline */
+    len = compile_dump_format( NULL, 0, &info );
+    CHECK_EQ_U( len, strlen( expected ) );
+    memset( out, 0, sizeof(out) );
+    CHECK_EQ_U( compile_dump_format( out, sizeof(out), &info ), len );
+    CHECK( !strcmp( out, expected ) );
+    /* a short buffer gets its first bytes, nothing past them */
+    memset( small, '#', sizeof(small) );
+    CHECK_EQ_U( compile_dump_format( small, 20, &info ), len );
+    CHECK( !memcmp( small, expected, 20 ) && small[20] == '#' );
+
+    /* the source as given when preprocessing failed; flags 0; a name with a newline stays on its line */
+    other = info;
+    other.preprocessed = 0;
+    other.flags = 0;
+    other.source_name = "a.fx\nb";
+    other.messages = NULL;
+    other.messages_size = 0;
+    compile_dump_format( out, sizeof(out), &other );
+    out[compile_dump_format( NULL, 0, &other )] = 0;
+    CHECK( strstr( out, "// source: a.fx\n// entry" ) != NULL );
+    CHECK( strstr( out, "// flags: 0x0\n" ) != NULL );
+    CHECK( strstr( out, "// text: as given (preprocessing failed)\n// messages:\n\nfloat4" ) != NULL );
+
+    /* the name: 8 hex digits and .hlsl; the same shader the same name, a different one another */
+    compile_dump_name( name, 0x0a1b2c3du );
+    CHECK( !strcmp( name, "0a1b2c3d.hlsl" ) );
+    compile_dump_name( name, compile_dump_hash( &info ) );
+    CHECK_EQ_U( strlen( name ), 13 );
+    for (i = 0; i < 8; i++) CHECK( strchr( "0123456789abcdef", name[i] ) != NULL );
+    CHECK_EQ_U( compile_dump_hash( &info ), compile_dump_hash( &info ) );
+    other = info;
+    other.messages = NULL;              /* the messages and the result don't name the file */
+    other.result = 0x80070057u;
+    CHECK_EQ_U( compile_dump_hash( &other ), compile_dump_hash( &info ) );
+    other.target = "vs_5_0";
+    CHECK( compile_dump_hash( &other ) != compile_dump_hash( &info ) );
+    other = info;
+    other.flags = 0;
+    CHECK( compile_dump_hash( &other ) != compile_dump_hash( &info ) );
+    other = info;
+    other.text_size--;
+    CHECK( compile_dump_hash( &other ) != compile_dump_hash( &info ) );
+    /* FNV-1a's published value for "a" */
+    CHECK_EQ_U( compile_dump_hash_bytes( 2166136261u, "a", 1 ), 0xe40c292cu );
+
+    /* the log line */
+    snprintf( line, sizeof(line), COMPILE_DUMP_LOG_FORMAT, "0a1b2c3d.hlsl" );
+    CHECK( !strcmp( line, "[d3dcompiler] failed shader dumped: 0a1b2c3d.hlsl\n" ) );
+}
+
 int main(void)
 {
     test_tick();
@@ -360,6 +460,7 @@ int main(void)
     test_nsi_pending();
     test_services();
     test_compile_failure_log();
+    test_compile_failure_dump();
     if (failures)
     {
         fprintf( stderr, "test_part_a: %d failure(s)\n", failures );

@@ -303,6 +303,7 @@ MTLD3D9VolumeTexture::GetLevelDesc(UINT Level, D3DVOLUME_DESC *pDesc) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::GetVolumeLevel(UINT Level, IDirect3DVolume9 **ppVolumeLevel) {
   D9_CALL(IDirect3DVolumeTexture9, GetVolumeLevel);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppVolumeLevel)
     return D3DERR_INVALIDCALL;
@@ -311,16 +312,21 @@ MTLD3D9VolumeTexture::GetVolumeLevel(UINT Level, IDirect3DVolume9 **ppVolumeLeve
     return D3DERR_INVALIDCALL;
   *ppVolumeLevel = ::dxmt::ref<IDirect3DVolume9>(m_levels[Level].ptr());
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DVolumeTexture9, GetVolumeLevel, ppVolumeLevel && !*ppVolumeLevel,
+                   "level " + std::to_string(Level)); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VolumeTexture::LockBox(UINT Level, D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox, DWORD Flags) {
   D9_CALL(IDirect3DVolumeTexture9, LockBox);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = m_device->LockDevice();
   m_device->serializeBeforeLock(m_usage, Flags); // MYIOSDECK spec 05 clarification 57
   if (Level >= m_levels.size())
     return D3DERR_INVALIDCALL;
   return m_levels[Level]->lockBoxImpl(pLockedVolume, pBox, Flags); // uncounted: MYIOSDECK spec 07 clarification 3
+  } D9_CHECKED_END(IDirect3DVolumeTexture9, LockBox, pLockedVolume && !pLockedVolume->pBits,
+                   d9fail::LockArgs(int(Level), true, d9fail::RegionOfBox(pBox), Flags, d9fail::ResourceArgs(m_format, m_pool, m_usage))); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT STDMETHODCALLTYPE

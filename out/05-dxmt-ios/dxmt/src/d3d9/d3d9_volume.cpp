@@ -123,7 +123,10 @@ MTLD3D9Volume::getDescImpl(D3DVOLUME_DESC *pDesc) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Volume::LockBox(D3DLOCKED_BOX *pLockedVolume, const D3DBOX *pBox, DWORD Flags) {
   D9_CALL(IDirect3DVolume9, LockBox);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   return lockBoxImpl(pLockedVolume, pBox, Flags);
+  } D9_CHECKED_END(IDirect3DVolume9, LockBox, pLockedVolume && !pLockedVolume->pBits,
+                   d9fail::LockArgs(-1, true, d9fail::RegionOfBox(pBox), Flags, d9fail::ResourceArgs(m_desc.Format, m_desc.Pool, m_desc.Usage))); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT

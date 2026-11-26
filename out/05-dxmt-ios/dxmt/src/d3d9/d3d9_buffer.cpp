@@ -279,6 +279,7 @@ MTLD3D9VertexBuffer::GetType() {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9VertexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWORD Flags) {
   D9_CALL(IDirect3DVertexBuffer9, Lock);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = m_device->LockDevice();
   m_device->serializeBeforeLock(m_usage, Flags); // MYIOSDECK spec 05 clarification 57
   if (!ppbData)
@@ -308,6 +309,8 @@ MTLD3D9VertexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **ppbData, DW
   m_lockCount.increment();
   *ppbData = static_cast<char *>(m_hostPtr) + OffsetToLock;
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DVertexBuffer9, Lock, ppbData && !*ppbData,
+                   "offset " + std::to_string(OffsetToLock) + ", size " + std::to_string(SizeToLock) + ", flags " + d9fail::Hex(Flags) + ", " + d9fail::ResourceArgs(100, m_pool, m_usage)); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -523,6 +526,7 @@ MTLD3D9IndexBuffer::GetType() {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9IndexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWORD Flags) {
   D9_CALL(IDirect3DIndexBuffer9, Lock);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = m_device->LockDevice();
   m_device->serializeBeforeLock(m_usage, Flags); // MYIOSDECK spec 05 clarification 57
   // Same shape as MTLD3D9VertexBuffer::Lock: see the rationale there
@@ -545,6 +549,8 @@ MTLD3D9IndexBuffer::Lock(UINT OffsetToLock, UINT SizeToLock, void **ppbData, DWO
   m_lockCount.increment();
   *ppbData = static_cast<char *>(m_hostPtr) + OffsetToLock;
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DIndexBuffer9, Lock, ppbData && !*ppbData,
+                   "offset " + std::to_string(OffsetToLock) + ", size " + std::to_string(SizeToLock) + ", flags " + d9fail::Hex(Flags) + ", " + d9fail::ResourceArgs(m_format, m_pool, m_usage)); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT STDMETHODCALLTYPE

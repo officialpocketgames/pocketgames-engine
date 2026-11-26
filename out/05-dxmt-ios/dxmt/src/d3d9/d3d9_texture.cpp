@@ -782,6 +782,7 @@ MTLD3D9Texture::GetLevelDesc(UINT Level, D3DSURFACE_DESC *pDesc) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::GetSurfaceLevel(UINT Level, IDirect3DSurface9 **ppSurfaceLevel) {
   D9_CALL(IDirect3DTexture9, GetSurfaceLevel);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppSurfaceLevel)
     return D3DERR_INVALIDCALL;
@@ -793,11 +794,14 @@ MTLD3D9Texture::GetSurfaceLevel(UINT Level, IDirect3DSurface9 **ppSurfaceLevel) 
     return D3DERR_INVALIDCALL;
   *ppSurfaceLevel = ::dxmt::ref<IDirect3DSurface9>(m_levels[Level].ptr());
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DTexture9, GetSurfaceLevel, ppSurfaceLevel && !*ppSurfaceLevel,
+                   "level " + std::to_string(Level)); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Texture::LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) {
   D9_CALL(IDirect3DTexture9, LockRect);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = m_device->LockDevice();
   m_device->serializeBeforeLock(m_usage, Flags); // MYIOSDECK spec 05 clarification 57
   if (Level >= m_levels.size())
@@ -805,6 +809,8 @@ MTLD3D9Texture::LockRect(UINT Level, D3DLOCKED_RECT *pLockedRect, const RECT *pR
   if ((m_usage & D3DUSAGE_AUTOGENMIPMAP) && Level != 0)
     return D3DERR_INVALIDCALL;
   return m_levels[Level]->lockRectImpl(pLockedRect, pRect, Flags); // uncounted: MYIOSDECK spec 07 clarification 3
+  } D9_CHECKED_END(IDirect3DTexture9, LockRect, pLockedRect && !pLockedRect->pBits,
+                   d9fail::LockArgs(int(Level), false, d9fail::RegionOfRect(pRect), Flags, d9fail::ResourceArgs(m_format, m_pool, m_usage))); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT STDMETHODCALLTYPE

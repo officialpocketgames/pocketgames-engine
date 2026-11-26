@@ -7,6 +7,12 @@
  * D3DCompileFromFile or D3DPreprocess is logged at ERR with the compiler's messages
  * (compile_failure_log.h); nothing else changes.
  *
+ * Changed for MYIOSDECK (spec 19 A17): with PG_D3DCOMPILER_DUMP_FAILED=1 in the environment
+ * (off by default), a failed D3DCompile2 (so D3DCompile and D3DCompileFromFile) also writes
+ * its source after preprocessing, entry point, target, flags and messages to
+ * C:\users\Public\pg-dumps\shaders\<hash>.hlsl, at most 64 files per process
+ * (compile_failure_dump.h).
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
@@ -29,6 +35,7 @@
 
 #include "d3dcompiler_private.h"
 #include "compile_failure_log.h"
+#include "compile_failure_dump.h"
 
 WINE_DEFAULT_DEBUG_CHANNEL(d3dcompiler);
 
@@ -352,6 +359,100 @@ HRESULT WINAPI vkd3d_D3DCompile2VKD3D(const void *data, SIZE_T data_size, const 
         const void *secondary_data, SIZE_T secondary_data_size, ID3DBlob **shader,
         ID3DBlob **error_messages, unsigned int compiler_version);
 
+/* MYIOSDECK (spec 19 A17): the log has at most 12 message lines and no source; for a test build
+ * (PG_D3DCOMPILER_DUMP_FAILED=1) write the whole failing shader to a file instead. */
+static LONG compile_dump_state = -1;    /* -1: not read yet, 0: off, 1: on */
+static LONG compile_dumps;
+
+static BOOL compile_dump_on(void)
+{
+    LONG state = ReadNoFence( &compile_dump_state );
+    char value[8];
+    DWORD len;
+
+    if (state < 0)
+    {
+        len = GetEnvironmentVariableA( COMPILE_DUMP_ENV, value, sizeof(value) );
+        state = len && len < sizeof(value) && compile_dump_enabled( value );
+        InterlockedExchange( &compile_dump_state, state );
+    }
+    return state > 0;
+}
+
+static void dump_failed_compile( HRESULT hr, const void *data, SIZE_T data_size, const char *filename,
+                                 const D3D_SHADER_MACRO *macros, ID3DInclude *include, const char *entry,
+                                 const char *target, UINT flags, ID3DBlob *messages )
+{
+    struct compile_dump_info info;
+    ID3DBlob *preprocessed = NULL, *preprocess_messages = NULL;
+    char name[COMPILE_DUMP_NAME_SIZE], path[MAX_PATH];
+    char *buf = NULL;
+    size_t len;
+    HANDLE file;
+    DWORD written;
+    BOOL ok;
+
+    if (!compile_dump_on() || !data) return;
+    if (ReadNoFence( &compile_dumps ) >= COMPILE_DUMP_MAX_FILES) return;
+
+    /* the include handler is the one the compile used (the standard one already replaced) */
+    if (FAILED(vkd3d_D3DPreprocess( data, data_size, filename, macros, include,
+                                    &preprocessed, &preprocess_messages )))
+        preprocessed = NULL;
+    if (preprocess_messages) ID3D10Blob_Release( preprocess_messages );
+
+    memset( &info, 0, sizeof(info) );
+    if (preprocessed)
+    {
+        info.text = ID3D10Blob_GetBufferPointer( preprocessed );
+        info.text_size = ID3D10Blob_GetBufferSize( preprocessed );
+        info.preprocessed = 1;
+    }
+    else
+    {
+        info.text = data;
+        info.text_size = data_size;
+    }
+    info.text_size = compile_dump_text_size( info.text, info.text_size );
+    info.source_name = filename;
+    info.entry = entry;
+    info.target = target;
+    info.flags = flags;
+    info.result = hr;
+    if (messages)
+    {
+        info.messages = ID3D10Blob_GetBufferPointer( messages );
+        info.messages_size = ID3D10Blob_GetBufferSize( messages );
+    }
+
+    compile_dump_name( name, compile_dump_hash( &info ) );
+    snprintf( path, sizeof(path), "%s\\%s", COMPILE_DUMP_DIR, name );
+    /* the same shader failing again: already there, and it takes no place among the 64 */
+    if (GetFileAttributesA( path ) != INVALID_FILE_ATTRIBUTES) goto done;
+    if (InterlockedIncrement( &compile_dumps ) > COMPILE_DUMP_MAX_FILES) goto done;
+
+    CreateDirectoryA( COMPILE_DUMP_PARENT, NULL );
+    CreateDirectoryA( COMPILE_DUMP_DIR, NULL );
+    len = compile_dump_format( NULL, 0, &info );
+    if (len > 0x7fffffff || !(buf = malloc( len ))) goto done;
+    compile_dump_format( buf, len, &info );
+
+    file = CreateFileA( path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL );
+    if (file == INVALID_HANDLE_VALUE)
+    {
+        WARN( "can't create %s, error %lu\n", debugstr_a(path), GetLastError() );
+        goto done;
+    }
+    ok = WriteFile( file, buf, (DWORD)len, &written, NULL ) && written == len;
+    CloseHandle( file );
+    if (ok) MESSAGE( COMPILE_DUMP_LOG_FORMAT, name );
+    else WARN( "can't write %s, error %lu\n", debugstr_a(path), GetLastError() );
+
+done:
+    free( buf );
+    if (preprocessed) ID3D10Blob_Release( preprocessed );
+}
+
 HRESULT WINAPI D3DCompile2(const void *data, SIZE_T data_size, const char *filename,
         const D3D_SHADER_MACRO *macros, ID3DInclude *include, const char *entry_point,
         const char *profile, UINT flags, UINT effect_flags, UINT secondary_flags,
@@ -389,8 +490,12 @@ HRESULT WINAPI D3DCompile2(const void *data, SIZE_T data_size, const char *filen
     if (SUCCEEDED(hr) && shader_blob == &dummy_blob)
         ID3D10Blob_Release(dummy_blob);
     if (FAILED(hr))
+    {
         report_compile_failure(hr, filename, entry_point, profile, flags,
                 messages_blob ? *messages_blob : own_messages);
+        dump_failed_compile(hr, data, data_size, filename, macros, include, entry_point, profile, flags,
+                messages_blob ? *messages_blob : own_messages);  /* MYIOSDECK A17 */
+    }
     if (own_messages) ID3D10Blob_Release(own_messages);
     return hr;
 }

@@ -6,14 +6,17 @@
 # vkd3d 1.19 with this part's overlay pe/libs/vkd3d/ on top), built natively, compiles the shaders
 # of tests/vkd3d-hlsl/ to what Microsoft's compiler makes of them. It also builds Wine's copy
 # without the overlay and expects the ANGLE shader to fail there, so the test keeps proving that
-# it exercises the bug. A15 (half for Shader Model 4 and later) and A16 (SV_ClipDistance and
-# SV_CullDistance) add their checks below.
+# it exercises the bug. A15 (half for Shader Model 4 and later), A16 (SV_ClipDistance and
+# SV_CullDistance) and A17 (legacy texture intrinsics, constant offsets and sizes, a field named
+# pixel) add their checks below.
 #   test-vkd3d-hlsl.sh [build-dir]
 # VKD3D_RELEASE is the unpacked vkd3d 1.19 release (dl.winehq.org/vkd3d/source/vkd3d-1.19.tar.xz,
 # SHA-256 034613605baab8ba84674f8d272cf22b5e86bc6bc03fc5728ef9bce07308baa6): its include/ holds
 # the headers widl makes from vkd3d's IDL, under the upstream names Wine's copy renames. Without
-# it the test is skipped. WINE_SRC is the Wine 11.4 tree (default refs/wine-11.4). CC (default
-# cc) builds it; it needs bison and flex.
+# it (A17) Wine's own headers are used instead: d3dcommon.h as the configured Wine build WINE_BUILD
+# (default ~/wine-build; ~/.cache/myiosdeck/wine-11.4-headers works) made it from Wine's IDL, and
+# Wine's include/. With neither the test is skipped. WINE_SRC is the Wine 11.4 tree (default
+# refs/wine-11.4). CC (default cc) builds it; it needs bison and flex.
 
 set -eu
 
@@ -22,12 +25,23 @@ top=$(cd "$here/.." && pwd)
 repo=$(cd "$top/../.." && pwd)
 wine=${WINE_SRC:-"$repo/refs/wine-11.4"}
 release=${VKD3D_RELEASE:-}
+winebuild=${WINE_BUILD:-"$HOME/wine-build"}
 cc=${CC:-cc}
 build=${1:-"$here/build/vkd3d-hlsl"}
 cases="$here/vkd3d-hlsl"
 
-if [ -z "$release" ] || [ ! -f "$release/include/vkd3d_d3dcommon.h" ] || [ ! -d "$wine/libs/vkd3d/libs/vkd3d-shader" ]; then
-    echo "SKIPPED: vkd3d HLSL test (needs VKD3D_RELEASE=<unpacked vkd3d-1.19> and WINE_SRC=$wine)"
+if [ ! -d "$wine/libs/vkd3d/libs/vkd3d-shader" ]; then
+    echo "SKIPPED: vkd3d HLSL test (needs WINE_SRC=$wine)"
+    exit 0
+fi
+if [ -n "$release" ] && [ -f "$release/include/vkd3d_d3dcommon.h" ]; then
+    headers=release
+    driver_inc="$release/include"
+elif [ -f "$winebuild/include/d3dcommon.h" ]; then
+    headers=wine
+    driver_inc="$wine/libs/vkd3d/include"
+else
+    echo "SKIPPED: vkd3d HLSL test (needs VKD3D_RELEASE=<unpacked vkd3d-1.19> or a configured WINE_BUILD=$winebuild)"
     exit 0
 fi
 for tool in "$cc" bison flex; do
@@ -50,8 +64,9 @@ build_compiler() {
     if [ "$2" = 1 ]; then
         cp -R "$top/pe/libs/vkd3d/libs" "$out/src/"
     fi
-    # Wine's copy names a few headers after Wine's own; map them back to vkd3d's
-    find "$out/src" -type f \( -name '*.[chly]' \) -exec sed -i \
+    # Wine's copy names a few headers after Wine's own; with the release's headers, map them back
+    # to vkd3d's
+    [ "$headers" = wine ] || find "$out/src" -type f \( -name '*.[chly]' \) -exec sed -i \
         -e 's|#include "wine/rbtree.h"|#include "rbtree.h"|' \
         -e 's|#include "wine/list.h"|#include "list.h"|' \
         -e 's|#include "d3dx9shader.h"|#include "vkd3d_d3dx9shader.h"|' \
@@ -76,9 +91,15 @@ EOF
         flex -o hlsl.yy.c "$s/hlsl.l" &&
         flex -o preproc.yy.c "$s/preproc.l") || { fail "$1: bison/flex"; return 1; }
     # vkd3d's own sources build with its own warnings; only the driver gets -Werror
+    if [ "$headers" = wine ]; then
+        hdrs="-DWINE_NO_NAMELESS_EXTENSION -I$wine/libs/vkd3d/include -I$wine/libs/vkd3d/include/private
+            -I$s -I$winebuild/include -I$wine/include"
+    else
+        hdrs="-I$release/include -I$release/include/private -I$wine/libs/vkd3d/include
+            -I$wine/libs/vkd3d/include/private -I$s"
+    fi
     flags="-O1 -w -D_GNU_SOURCE -DHAVE_CONFIG_H -DLIBVKD3D_SHADER_SOURCE -DVKD3D_NO_TRACE_MESSAGES
-        -I$out/gen -I$release/include -I$release/include/private -I$wine/libs/vkd3d/include
-        -I$wine/libs/vkd3d/include/private -I$s"
+        -I$out/gen $hdrs"
     objs=
     for c in "$out"/src/libs/vkd3d-common/*.c "$s"/*.c "$out"/gen/*.c; do
         o="$out/obj/$(basename "$c" .c).o"
@@ -87,7 +108,7 @@ EOF
         objs="$objs $o"
     done
     # shellcheck disable=SC2086
-    $cc -std=c11 -Wall -Wextra -Werror -I"$release/include" -o "$out/hlslc" "$cases/hlslc.c" $objs -lm -lpthread ||
+    $cc -std=c11 -Wall -Wextra -Werror -I"$driver_inc" -o "$out/hlslc" "$cases/hlslc.c" $objs -lm -lpthread ||
         { fail "$1: link hlslc"; return 1; }
 }
 
@@ -183,13 +204,46 @@ sig vs_5_0 cull-vs50.hlsl '^ *\.param SV_CullDistance\.xyz, o[0-9]+\.xyz, float,
     '^ *\.param SV_ClipDistance\.x, o[0-9]+\.x, float, CLIPDST$' '^ *dcl_output_siv o[0-9]+\.xyz, cull_distance'
 sig ps_4_0 clip-ps40.hlsl '^ *\.param SV_ClipDistance\.x, v[0-9]+(\.[xyzw]+)?, float, CLIPDST$' \
     '^ *dcl_input_ps_siv .*v[0-9]+\.x, clip_distance'
-# the bug, as the game met it
+# the bug, as the game met it (A16)
 if "$upstream" -p vs_4_0 "$cases/clip-vs40.hlsl" > /dev/null 2> "$build/clip-vs40.upstream.err"; then
     fail "clip-vs40.hlsl: Wine's unchanged vkd3d compiled it (the test no longer shows the bug)"
 else
     grep -Eq "E5013: Invalid semantic 'SV_ClipDistance'" "$build/clip-vs40.upstream.err" ||
         fail "clip-vs40.hlsl: unchanged vkd3d failed differently: $(head -3 "$build/clip-vs40.upstream.err" | tr '\n' ' ')"
 fi
+
+# A17. code <profile> <hlslc flags> <file> <pattern>...: compiles, and every pattern matches a line
+code() {
+    p=$1 fl=$2 f=$3
+    shift 3
+    log="$build/$(basename "$f" .hlsl).$p.code"
+    # shellcheck disable=SC2086
+    "$fixed" $fl -p "$p" "$cases/$f" > "$log.asm" 2> "$log.err" || { fail "$f ($p): $(head -3 "$log.err" | tr '\n' ' ')"; return; }
+    for pat in "$@"; do
+        grep -Eq -- "$pat" "$log.asm" || fail "$f ($p): no line matches /$pat/ ($log.asm)"
+    done
+}
+# legacy texture intrinsics with the backwards-compatibility flag (D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY)
+code ps_4_0 -b legacy-tex-ps40.hlsl '^dcl_resource_texturecube .* t0$' '^dcl_resource_texture2d .* t1$' \
+    '^sample_l r[0-9]+\.xyzw, v0\.xyzx, t0\.xyzw, s0, l\(3\.0+e\+00\)$' \
+    '^sample_l r[0-9]+\.xyzw, v1\.xyxx, t1\.xyzw, s1, l\(1\.0+e\+00\)$' \
+    '^sample_b r[0-9]+\.xyzw, v1\.xyxx, t1\.xyzw, s1, l\(-5\.0+e-01\)$' \
+    '^div r[0-9]+\.xy, v1\.xyxx, v1\.w$' '^sample r[0-9]+\.xyzw, r[0-9]+\.xyxx, t1\.xyzw, s1$'
+if "$upstream" -b -p ps_4_0 "$cases/legacy-tex-ps40.hlsl" > /dev/null 2> "$build/legacy-tex-ps40.upstream.err"; then
+    fail "legacy-tex-ps40.hlsl: Wine's unchanged vkd3d compiled it (the test no longer shows the bug)"
+else
+    grep -q 'E5005: Function "texCUBElod" is not defined' "$build/legacy-tex-ps40.upstream.err" ||
+        fail "legacy-tex-ps40.hlsl: unchanged vkd3d failed differently: $(head -3 "$build/legacy-tex-ps40.upstream.err" | tr '\n' ' ')"
+fi
+# offsets, array sizes and unroll counts from static consts, constructors, unary minus, arithmetic
+code ps_4_0 '' offset-static-const.hlsl '^sample\(-1,1,0\) ' '^sample\(-1,3,0\) ' '^ld\(-1,1,0\) ' '^ld\(6,-8,0\) '
+if [ "$(grep -c '^sample(-1,1,0) ' "$build/offset-static-const.ps_4_0.code.asm")" -ne 2 ]; then
+    fail "offset-static-const.hlsl: expected two samples at offset (-1,1)"
+fi
+code ps_4_0 '' array-size-static-const.hlsl '^dcl_constantBuffer cb0\[7\],' 'cb0\[6\]\.xyzw' \
+    '^mul r[0-9]+\.xyzw, r[0-9]+\.xyzw, l\(2\.0+e\+00, '
+# a struct field named pixel, written and read
+code ps_4_0 '' field-pixel.hlsl '^mul r0\.xyzw, v0\.xyzw, l\(2\.0+e\+00, ' '^mov o0\.xyzw, r0\.xyzw$'
 
 [ $status -eq 0 ] && echo "test-vkd3d-hlsl.sh: all checks passed"
 exit $status

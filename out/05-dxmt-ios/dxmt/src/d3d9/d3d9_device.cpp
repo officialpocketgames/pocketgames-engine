@@ -2119,6 +2119,7 @@ MTLD3D9Device::CreateAdditionalSwapChain(
     D3DPRESENT_PARAMETERS *pPresentationParameters, IDirect3DSwapChain9 **ppSwapChain
 ) {
   D9_CALL(IDirect3DDevice9, CreateAdditionalSwapChain);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (ppSwapChain)
     *ppSwapChain = nullptr;
@@ -2166,6 +2167,8 @@ MTLD3D9Device::CreateAdditionalSwapChain(
   // app's final Release destroys it.
   *ppSwapChain = ::dxmt::ref(static_cast<IDirect3DSwapChain9 *>(chain));
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreateAdditionalSwapChain, ppSwapChain && !*ppSwapChain,
+                   d9fail::PresentArgs(pPresentationParameters)); // MYIOSDECK spec 07 clarification 5
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetSwapChain(UINT iSwapChain, IDirect3DSwapChain9 **pSwapChain) {
@@ -2666,6 +2669,7 @@ MTLD3D9Device::nativeFocusActivation(bool activated, RECT *pos) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *pPresentationParameters) {
   D9_CALL(IDirect3DDevice9, Reset);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   // Wine's main thread has no outer NSAutoreleasePool. Reset tears
   // down and recreates the backbuffer + auto-DS, each of which routes
@@ -2859,6 +2863,8 @@ MTLD3D9Device::Reset(D3DPRESENT_PARAMETERS *pPresentationParameters) {
   m_fullscreenOccluded.store(false, std::memory_order_relaxed);
   m_lastForegroundSample.store(wsi::foregroundWindow(), std::memory_order_relaxed);
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, Reset, false,
+                   d9fail::PresentArgs(pPresentationParameters)); // MYIOSDECK spec 07 clarification 5
 }
 
 void
@@ -3064,6 +3070,7 @@ MTLD3D9Device::CreateTexture(
     HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateTexture);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppTexture)
     return D3DERR_INVALIDCALL;
@@ -3312,6 +3319,8 @@ MTLD3D9Device::CreateTexture(
   tex->AddRef();
   *ppTexture = tex;
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreateTexture, ppTexture && !*ppTexture,
+                   d9fail::CreateArgs(Width, Height, 0, Levels, Usage, Format, Pool)); // MYIOSDECK spec 07 clarification 5
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateVolumeTexture(
@@ -3319,6 +3328,7 @@ MTLD3D9Device::CreateVolumeTexture(
     IDirect3DVolumeTexture9 **ppVolumeTexture, HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateVolumeTexture);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppVolumeTexture)
     return D3DERR_INVALIDCALL;
@@ -3425,6 +3435,8 @@ MTLD3D9Device::CreateVolumeTexture(
   tex->AddRef();
   *ppVolumeTexture = tex;
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreateVolumeTexture, ppVolumeTexture && !*ppVolumeTexture,
+                   d9fail::CreateArgs(Width, Height, Depth, Levels, Usage, Format, Pool)); // MYIOSDECK spec 07 clarification 5
 }
 
 // CreateCubeTexture: same validation as CreateTexture, one dimension (EdgeLength).
@@ -3435,6 +3447,7 @@ MTLD3D9Device::CreateCubeTexture(
     HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateCubeTexture);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppCubeTexture)
     return D3DERR_INVALIDCALL;
@@ -3609,6 +3622,8 @@ MTLD3D9Device::CreateCubeTexture(
   tex->AddRef();
   *ppCubeTexture = tex;
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreateCubeTexture, ppCubeTexture && !*ppCubeTexture,
+                   d9fail::CreateArgs(EdgeLength, EdgeLength, 0, Levels, Usage, Format, Pool)); // MYIOSDECK spec 07 clarification 5
 }
 // Storage for a d3d9 vertex / index buffer; the buffer object wraps the
 // returned dxmt::Buffer in a dxmt::DynamicBuffer. A CPU-writable allocation the
@@ -3641,6 +3656,7 @@ MTLD3D9Device::CreateVertexBuffer(
     UINT Length, DWORD Usage, DWORD FVF, D3DPOOL Pool, IDirect3DVertexBuffer9 **ppVertexBuffer, HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateVertexBuffer);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppVertexBuffer)
     return D3DERR_INVALIDCALL;
@@ -3719,6 +3735,8 @@ MTLD3D9Device::CreateVertexBuffer(
   vb->AddRef();
   *ppVertexBuffer = vb;
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreateVertexBuffer, ppVertexBuffer && !*ppVertexBuffer,
+                   "length " + std::to_string(Length) + ", usage " + d9fail::Hex(Usage) + ", fvf " + d9fail::Hex(FVF) + ", pool " + d9fail::PoolName(Pool)); // MYIOSDECK spec 07 clarification 5
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateIndexBuffer(
@@ -3726,6 +3744,7 @@ MTLD3D9Device::CreateIndexBuffer(
     HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateIndexBuffer);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppIndexBuffer)
     return D3DERR_INVALIDCALL;
@@ -3793,6 +3812,8 @@ MTLD3D9Device::CreateIndexBuffer(
   ib->AddRef();
   *ppIndexBuffer = ib;
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreateIndexBuffer, ppIndexBuffer && !*ppIndexBuffer,
+                   "length " + std::to_string(Length) + ", usage " + d9fail::Hex(Usage) + ", format " + d9fail::FormatName(Format) + ", pool " + d9fail::PoolName(Pool)); // MYIOSDECK spec 07 clarification 5
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateRenderTarget(
@@ -3800,6 +3821,7 @@ MTLD3D9Device::CreateRenderTarget(
     IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateRenderTarget);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
     return D3DERR_INVALIDCALL;
@@ -3947,6 +3969,8 @@ MTLD3D9Device::CreateRenderTarget(
   surface->AddRef();
   *ppSurface = surface;
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreateRenderTarget, ppSurface && !*ppSurface,
+                   d9fail::CreateArgs(Width, Height, 0, 1, D3DUSAGE_RENDERTARGET, Format, D3DPOOL_DEFAULT) + ", multisample " + std::to_string(MultiSample) + "/" + std::to_string(MultisampleQuality) + ", lockable " + std::to_string(int(Lockable))); // MYIOSDECK spec 07 clarification 5
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateDepthStencilSurface(
@@ -3954,6 +3978,7 @@ MTLD3D9Device::CreateDepthStencilSurface(
     IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateDepthStencilSurface);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
     return D3DERR_INVALIDCALL;
@@ -4075,6 +4100,8 @@ MTLD3D9Device::CreateDepthStencilSurface(
   surface->AddRef();
   *ppSurface = surface;
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreateDepthStencilSurface, ppSurface && !*ppSurface,
+                   d9fail::CreateArgs(Width, Height, 0, 1, D3DUSAGE_DEPTHSTENCIL, Format, D3DPOOL_DEFAULT) + ", multisample " + std::to_string(MultiSample) + "/" + std::to_string(MultisampleQuality) + ", discard " + std::to_string(int(Discard))); // MYIOSDECK spec 07 clarification 5
 }
 // UpdateSurface: SYSTEMMEM -> DEFAULT blit. Symmetric inverse of
 // GetRenderTargetData. Validation per DXVK d3d9_device.cpp.
@@ -5723,6 +5750,7 @@ MTLD3D9Device::CreateOffscreenPlainSurface(
     UINT Width, UINT Height, D3DFORMAT Format, D3DPOOL Pool, IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle
 ) {
   D9_CALL(IDirect3DDevice9, CreateOffscreenPlainSurface);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
     return D3DERR_INVALIDCALL;
@@ -6022,6 +6050,8 @@ MTLD3D9Device::CreateOffscreenPlainSurface(
   surface->AddRef();
   *ppSurface = surface;
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreateOffscreenPlainSurface, ppSurface && !*ppSurface,
+                   d9fail::CreateArgs(Width, Height, 0, 1, 0, Format, Pool)); // MYIOSDECK spec 07 clarification 5
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::SetRenderTarget(DWORD RenderTargetIndex, IDirect3DSurface9 *pRenderTarget) {
@@ -6791,6 +6821,7 @@ MTLD3D9Device::GetRenderState(D3DRENDERSTATETYPE State, DWORD *pValue) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9 **ppSB) {
   D9_CALL(IDirect3DDevice9, CreateStateBlock);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppSB)
     return D3DERR_INVALIDCALL;
@@ -6833,6 +6864,8 @@ MTLD3D9Device::CreateStateBlock(D3DSTATEBLOCKTYPE Type, IDirect3DStateBlock9 **p
   sb->markLosable();
   *ppSB = sb;
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreateStateBlock, ppSB && !*ppSB,
+                   "type " + std::to_string(Type)); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -11637,6 +11670,7 @@ MTLD3D9Device::ProcessVertices(
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateVertexDeclaration(const D3DVERTEXELEMENT9 *pVertexElements, IDirect3DVertexDeclaration9 **ppDecl) {
   D9_CALL(IDirect3DDevice9, CreateVertexDeclaration);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppDecl)
     return D3DERR_INVALIDCALL;
@@ -11655,6 +11689,8 @@ MTLD3D9Device::CreateVertexDeclaration(const D3DVERTEXELEMENT9 *pVertexElements,
     return hr;
   *ppDecl = ::dxmt::ref<IDirect3DVertexDeclaration9>(new MTLD3D9VertexDeclaration(this, pVertexElements));
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreateVertexDeclaration, ppDecl && !*ppDecl,
+                   std::string(pVertexElements ? "elements given" : "no elements")); // MYIOSDECK spec 07 clarification 5
 }
 
 // SetVertexDeclaration / GetVertexDeclaration: same priv-pin shape
@@ -11778,6 +11814,7 @@ MTLD3D9Device::GetFVF(DWORD *pFVF) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateVertexShader(const DWORD *pFunction, IDirect3DVertexShader9 **ppShader) {
   D9_CALL(IDirect3DDevice9, CreateVertexShader);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppShader)
     return D3DERR_INVALIDCALL;
@@ -11814,6 +11851,8 @@ MTLD3D9Device::CreateVertexShader(const DWORD *pFunction, IDirect3DVertexShader9
   auto module = getOrCreateVertexShaderModule(pFunction, dwords, std::move(*metadata));
   *ppShader = ::dxmt::ref<IDirect3DVertexShader9>(new MTLD3D9VertexShader(this, std::move(module)));
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreateVertexShader, ppShader && !*ppShader,
+                   "version " + (pFunction ? d9fail::Hex(pFunction[0]) : std::string("none"))); // MYIOSDECK spec 07 clarification 5
 }
 
 // SetVertexShader / GetVertexShader: same priv-pin shape as the
@@ -12242,6 +12281,7 @@ MTLD3D9Device::GetIndices(IDirect3DIndexBuffer9 **ppIndexData) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreatePixelShader(const DWORD *pFunction, IDirect3DPixelShader9 **ppShader) {
   D9_CALL(IDirect3DDevice9, CreatePixelShader);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppShader)
     return D3DERR_INVALIDCALL;
@@ -12265,6 +12305,8 @@ MTLD3D9Device::CreatePixelShader(const DWORD *pFunction, IDirect3DPixelShader9 *
   auto module = getOrCreatePixelShaderModule(pFunction, dwords, std::move(*metadata));
   *ppShader = ::dxmt::ref<IDirect3DPixelShader9>(new MTLD3D9PixelShader(this, std::move(module)));
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreatePixelShader, ppShader && !*ppShader,
+                   "version " + (pFunction ? d9fail::Hex(pFunction[0]) : std::string("none"))); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -12505,6 +12547,7 @@ MTLD3D9Device::DeletePatch(UINT Handle) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery) {
   D9_CALL(IDirect3DDevice9, CreateQuery);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   // ppQuery=NULL is a support probe. The out pointer is written only on
   // success: an unsupported type returns NOTAVAILABLE and leaves the caller's
@@ -12518,6 +12561,8 @@ MTLD3D9Device::CreateQuery(D3DQUERYTYPE Type, IDirect3DQuery9 **ppQuery) {
   q->AddRef();
   *ppQuery = q;
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DDevice9, CreateQuery, ppQuery && !*ppQuery,
+                   "type " + std::to_string(Type)); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -12749,6 +12794,7 @@ MTLD3D9Device::CreateRenderTargetEx(
     IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle, DWORD Usage
 ) {
   D9_CALL(IDirect3DDevice9Ex, CreateRenderTargetEx);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
     return D3DERR_INVALIDCALL;
@@ -12766,6 +12812,8 @@ MTLD3D9Device::CreateRenderTargetEx(
   if (SUCCEEDED(hr) && Usage)
     static_cast<MTLD3D9Surface *>(*ppSurface)->addDescUsage(Usage);
   return hr;
+  } D9_CHECKED_END(IDirect3DDevice9Ex, CreateRenderTargetEx, ppSurface && !*ppSurface,
+                   d9fail::CreateArgs(Width, Height, 0, 1, Usage, Format, D3DPOOL_DEFAULT) + ", multisample " + std::to_string(MultiSample) + "/" + std::to_string(MultisampleQuality) + ", lockable " + std::to_string(int(Lockable))); // MYIOSDECK spec 07 clarification 5
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateOffscreenPlainSurfaceEx(
@@ -12773,6 +12821,7 @@ MTLD3D9Device::CreateOffscreenPlainSurfaceEx(
     DWORD Usage
 ) {
   D9_CALL(IDirect3DDevice9Ex, CreateOffscreenPlainSurfaceEx);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
     return D3DERR_INVALIDCALL;
@@ -12786,6 +12835,8 @@ MTLD3D9Device::CreateOffscreenPlainSurfaceEx(
   // the non-Ex path, which handles that pool and rejects the handle on every
   // other pool the same way.
   return CreateOffscreenPlainSurface(Width, Height, Format, Pool, ppSurface, pSharedHandle);
+  } D9_CHECKED_END(IDirect3DDevice9Ex, CreateOffscreenPlainSurfaceEx, ppSurface && !*ppSurface,
+                   d9fail::CreateArgs(Width, Height, 0, 1, Usage, Format, Pool)); // MYIOSDECK spec 07 clarification 5
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateDepthStencilSurfaceEx(
@@ -12793,6 +12844,7 @@ MTLD3D9Device::CreateDepthStencilSurfaceEx(
     IDirect3DSurface9 **ppSurface, HANDLE *pSharedHandle, DWORD Usage
 ) {
   D9_CALL(IDirect3DDevice9Ex, CreateDepthStencilSurfaceEx);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!ppSurface)
     return D3DERR_INVALIDCALL;
@@ -12812,10 +12864,13 @@ MTLD3D9Device::CreateDepthStencilSurfaceEx(
   if (SUCCEEDED(hr) && Usage)
     static_cast<MTLD3D9Surface *>(*ppSurface)->addDescUsage(Usage);
   return hr;
+  } D9_CHECKED_END(IDirect3DDevice9Ex, CreateDepthStencilSurfaceEx, ppSurface && !*ppSurface,
+                   d9fail::CreateArgs(Width, Height, 0, 1, Usage, Format, D3DPOOL_DEFAULT) + ", multisample " + std::to_string(MultiSample) + "/" + std::to_string(MultisampleQuality) + ", discard " + std::to_string(int(Discard))); // MYIOSDECK spec 07 clarification 5
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::ResetEx(D3DPRESENT_PARAMETERS *pPresentationParameters, D3DDISPLAYMODEEX *pFullscreenDisplayMode) {
   D9_CALL(IDirect3DDevice9Ex, ResetEx);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = LockDevice();
   if (!m_isEx)
     return D3DERR_INVALIDCALL;
@@ -12833,6 +12888,8 @@ MTLD3D9Device::ResetEx(D3DPRESENT_PARAMETERS *pPresentationParameters, D3DDISPLA
                                  pFullscreenDisplayMode->Height != pPresentationParameters->BackBufferHeight))
     return D3DERR_INVALIDCALL;
   return Reset(pPresentationParameters);
+  } D9_CHECKED_END(IDirect3DDevice9Ex, ResetEx, false,
+                   d9fail::PresentArgs(pPresentationParameters)); // MYIOSDECK spec 07 clarification 5
 }
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::GetDisplayModeEx(UINT iSwapChain, D3DDISPLAYMODEEX *pMode, D3DDISPLAYROTATION *pRotation) {

@@ -17,6 +17,7 @@
 #pragma once
 
 #include "d3d9_call_stats_table.hpp"
+#include "d3d9_fail_log.hpp" // spec 07 clarification 5
 #include "util_likely.hpp"
 
 namespace dxmt::d9cs {
@@ -51,6 +52,37 @@ void NoteDeviceThread();
     if (unlikely(::dxmt::d9cs::g_enabled))                                                                             \
       ::dxmt::d9cs::NotePresent(::dxmt::d9cs::D9C_##label##_##method);                                                 \
   } while (0)
+
+/* Spec 07 clarification 5: a covered method's body runs in a lambda; a failing result, or a
+   success that left the out-pointer null, is logged once per (method, result), at most 64 lines
+   (d3d9_fail_log.hpp). Written as
+     D9_CALL(label, method);
+     return D9_CHECKED_BEGIN { ...the body... } D9_CHECKED_END(label, method, null_out, args);
+   `null_out` is evaluated only after a success; `args` (a std::string) only when a line is
+   written. A success with its out-pointer set costs one branch. */
+namespace dxmt::d9fail {
+Limiter &ProcessLimiter();
+void Write(const std::string &line);
+
+template <typename Body, typename NullOut, typename Args>
+inline auto
+Checked(Body &&body, unsigned method, NullOut &&null_out, Args &&args) {
+  auto hr = body();
+  const bool failed = int32_t(hr) < 0;
+  const bool null = !failed && null_out();
+  if (likely(!failed && !null))
+    return hr;
+  std::string line = Consider(ProcessLimiter(), method, ::dxmt::d9cs::kD9CallNames[method], int32_t(hr), null, args);
+  if (!line.empty())
+    Write(line);
+  return hr;
+}
+} // namespace dxmt::d9fail
+
+#define D9_CHECKED_BEGIN ::dxmt::d9fail::Checked([&]() -> HRESULT
+#define D9_CHECKED_END(label, method, null_out, args)                                                                  \
+  , ::dxmt::d9cs::D9C_##label##_##method, [&]() -> bool { return (null_out); },                                       \
+      [&]() -> std::string { return (args); })
 
 #define D9_CALL_EXPORT(name)                                                                                           \
   do {                                                                                                                 \

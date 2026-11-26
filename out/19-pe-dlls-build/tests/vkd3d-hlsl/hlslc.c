@@ -7,6 +7,8 @@
 //   hlslc [-p profile] file.hlsl     (default profile ps_5_0; exit status 1 on a failed compile)
 // Profiles below 4.0 (A15's ps_2_0 check) compile to and disassemble Direct3D 9 bytecode.
 // -s (A16) also prints the input and output signatures (".param" lines) before the code.
+// -b (A17) compiles as D3DCompile does with D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY (0x1000):
+// vkd3d-utils passes it on as the backward-compatibility option mapping semantic names.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,8 +42,12 @@ static char *read_file(const char *path, size_t *size)
 
 int main(int argc, char **argv)
 {
-    struct vkd3d_shader_compile_option option = {VKD3D_SHADER_COMPILE_OPTION_API_VERSION,
-            VKD3D_SHADER_API_VERSION_1_19};
+    struct vkd3d_shader_compile_option options[2] =
+    {
+        {VKD3D_SHADER_COMPILE_OPTION_API_VERSION, VKD3D_SHADER_API_VERSION_1_19},
+        {VKD3D_SHADER_COMPILE_OPTION_BACKWARD_COMPATIBILITY, VKD3D_SHADER_COMPILE_OPTION_BACKCOMPAT_MAP_SEMANTIC_NAMES},
+    };
+    unsigned int option_count = 1;
     struct vkd3d_shader_compile_option formatting = {VKD3D_SHADER_COMPILE_OPTION_FORMATTING,
             VKD3D_SHADER_COMPILE_OPTION_FORMATTING_INDENT | VKD3D_SHADER_COMPILE_OPTION_FORMATTING_HEADER
             | VKD3D_SHADER_COMPILE_OPTION_FORMATTING_IO_SIGNATURES};
@@ -61,12 +67,14 @@ int main(int argc, char **argv)
             profile = argv[++i];
         else if (!strcmp(argv[i], "-s"))
             signatures = 1;
+        else if (!strcmp(argv[i], "-b"))
+            option_count = 2;
         else
             path = argv[i];
     }
     if (!path || !(src = read_file(path, &size)))
     {
-        fprintf(stderr, "usage: hlslc [-s] [-p profile] file.hlsl\n");
+        fprintf(stderr, "usage: hlslc [-s] [-b] [-p profile] file.hlsl\n");
         return 2;
     }
 
@@ -84,8 +92,8 @@ int main(int argc, char **argv)
     if (strlen(profile) > 3 && profile[3] >= '1' && profile[3] <= '3')
         target = VKD3D_SHADER_TARGET_D3D_BYTECODE;
     info.target_type = target;
-    info.options = &option;
-    info.option_count = 1;
+    info.options = options;
+    info.option_count = option_count;
     info.log_level = VKD3D_SHADER_LOG_INFO;
     info.source_name = path;
 

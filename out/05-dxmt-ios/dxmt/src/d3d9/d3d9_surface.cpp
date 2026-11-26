@@ -399,7 +399,10 @@ MTLD3D9Surface::getDescImpl(D3DSURFACE_DESC *pDesc) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Surface::LockRect(D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags) {
   D9_CALL(IDirect3DSurface9, LockRect);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   return lockRectImpl(pLockedRect, pRect, Flags);
+  } D9_CHECKED_END(IDirect3DSurface9, LockRect, pLockedRect && !pLockedRect->pBits,
+                   d9fail::LockArgs(-1, false, d9fail::RegionOfRect(pRect), Flags, d9fail::ResourceArgs(m_desc.Format, m_desc.Pool, m_desc.Usage))); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT

@@ -502,6 +502,7 @@ MTLD3D9CubeTexture::GetLevelDesc(UINT Level, D3DSURFACE_DESC *pDesc) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9CubeTexture::GetCubeMapSurface(D3DCUBEMAP_FACES FaceType, UINT Level, IDirect3DSurface9 **ppCubeMapSurface) {
   D9_CALL(IDirect3DCubeTexture9, GetCubeMapSurface);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = m_device->LockDevice();
   if (!ppCubeMapSurface)
     return D3DERR_INVALIDCALL;
@@ -516,6 +517,8 @@ MTLD3D9CubeTexture::GetCubeMapSurface(D3DCUBEMAP_FACES FaceType, UINT Level, IDi
   uint32_t idx = static_cast<uint32_t>(FaceType) * m_level_count + Level;
   *ppCubeMapSurface = ::dxmt::ref<IDirect3DSurface9>(m_levels[idx].ptr());
   return D3D_OK;
+  } D9_CHECKED_END(IDirect3DCubeTexture9, GetCubeMapSurface, ppCubeMapSurface && !*ppCubeMapSurface,
+                   "face " + std::to_string(FaceType) + ", level " + std::to_string(Level)); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT STDMETHODCALLTYPE
@@ -523,6 +526,7 @@ MTLD3D9CubeTexture::LockRect(
     D3DCUBEMAP_FACES FaceType, UINT Level, D3DLOCKED_RECT *pLockedRect, const RECT *pRect, DWORD Flags
 ) {
   D9_CALL(IDirect3DCubeTexture9, LockRect);
+  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
   D9DeviceLock lock = m_device->LockDevice();
   m_device->serializeBeforeLock(m_usage, Flags); // MYIOSDECK spec 05 clarification 57
   if (static_cast<uint32_t>(FaceType) >= 6 || Level >= m_level_count)
@@ -531,6 +535,8 @@ MTLD3D9CubeTexture::LockRect(
     return D3DERR_INVALIDCALL;
   uint32_t idx = static_cast<uint32_t>(FaceType) * m_level_count + Level;
   return m_levels[idx]->lockRectImpl(pLockedRect, pRect, Flags); // uncounted: MYIOSDECK spec 07 clarification 3
+  } D9_CHECKED_END(IDirect3DCubeTexture9, LockRect, pLockedRect && !pLockedRect->pBits,
+                   "face " + std::to_string(FaceType) + ", " + d9fail::LockArgs(int(Level), false, d9fail::RegionOfRect(pRect), Flags, d9fail::ResourceArgs(m_format, m_pool, m_usage))); // MYIOSDECK spec 07 clarification 5
 }
 
 HRESULT STDMETHODCALLTYPE

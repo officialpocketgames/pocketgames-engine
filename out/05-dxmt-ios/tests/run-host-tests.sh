@@ -31,6 +31,8 @@ $cxx $flags -I"$src/winemetal" -I"$src/winemetal/unix" -o "$build/test_wow64" "$
 $cxx $flags -pthread -I"$src/util" -o "$build/test_atomic_wait" "$here/test_atomic_wait.cpp"
 $cxx $flags -I"$src/airconv" -I"$src/winemetal/unix" -o "$build/test_dxso_args32" "$here/test_dxso_args32.cpp"
 $cxx $flags -I"$src/d3d9" -o "$build/test_d3d9_policy" "$here/test_d3d9_policy.cpp"
+# Spec 07 clarification 5: the failed-call lines.
+$cxx $flags -I"$src/d3d9" -o "$build/test_d3d9_fail_log" "$here/test_d3d9_fail_log.cpp"
 # Spec 07 clarification 3: the call-statistics table and report, and the lists checked
 # against d3d9.h's vtables (C, so d3d9.h declares each vtable as a struct).
 $cxx $flags -I"$src/d3d9" -o "$build/test_d3d9_call_stats" "$here/test_d3d9_call_stats.cpp"
@@ -145,6 +147,7 @@ status=0
 "$build/test_atomic_wait" || status=1
 "$build/test_dxso_args32" || status=1
 "$build/test_d3d9_policy" || status=1
+"$build/test_d3d9_fail_log" || status=1
 "$build/test_d3d9_call_stats" || status=1
 "$build/test_log_cap" || status=1
 "$build/test_d3d9_call_list" || status=1

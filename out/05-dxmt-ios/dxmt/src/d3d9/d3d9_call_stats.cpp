@@ -83,3 +83,19 @@ NoteDeviceThread() {
 }
 
 } // namespace dxmt::d9cs
+
+/* Spec 07 clarification 5: the failed-call lines, in every build. */
+namespace dxmt::d9fail {
+
+Limiter &
+ProcessLimiter() {
+  static Limiter limiter;
+  return limiter;
+}
+
+void
+Write(const std::string &line) {
+  Logger::warn(line);
+}
+
+} // namespace dxmt::d9fail

@@ -13,6 +13,10 @@
  * and halfNxM name the matching float types (sm4_half_as_float), as Microsoft's compiler gives
  * half full float precision there; profiles below 4.0 keep half.
  *
+ * Changed for MYIOSDECK (spec 19 A17): the legacy texture intrinsics have their lod, bias and
+ * proj forms for every dimension (tex1Dlod, tex1Dbias, tex1Dproj, tex3Dlod, tex3Dbias and
+ * texCUBElod are new; tex1Dproj below profile 4.0 is not implemented).
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
@@ -5075,6 +5079,16 @@ static bool intrinsic_tanh(struct hlsl_ctx *ctx,
     return !!add_user_call(ctx, func, params, loc);
 }
 
+/* MYIOSDECK (spec 19 A17): the legacy texture intrinsics' forms are told apart by the end of
+ * their name, so every dimension has its lod, bias and proj forms (1.19 had only tex2Dlod,
+ * tex2Dbias, texCUBEbias and the 2D, 3D and cube proj forms). */
+static bool tex_name_ends_with(const char *name, const char *suffix)
+{
+    size_t len = strlen(name), suffix_len = strlen(suffix);
+
+    return len > suffix_len && !strcmp(name + len - suffix_len, suffix);
+}
+
 static bool intrinsic_tex(struct hlsl_ctx *ctx, const struct parse_initializer *params,
         const struct vkd3d_shader_location *loc, const char *name, enum hlsl_sampler_dim dim)
 {
@@ -5103,13 +5117,11 @@ static bool intrinsic_tex(struct hlsl_ctx *ctx, const struct parse_initializer *
         hlsl_release_string_buffer(ctx, string);
     }
 
-    if (!strcmp(name, "tex2Dbias")
-            || !strcmp(name, "tex2Dlod")
-            || !strcmp(name, "texCUBEbias"))
+    if (tex_name_ends_with(name, "bias") || tex_name_ends_with(name, "lod"))  /* MYIOSDECK A17 */
     {
         struct hlsl_ir_node *lod, *c;
 
-        if (!strcmp(name, "tex2Dlod"))
+        if (tex_name_ends_with(name, "lod"))  /* MYIOSDECK A17 */
             load_params.type = HLSL_RESOURCE_SAMPLE_LOD;
         else
             load_params.type = HLSL_RESOURCE_SAMPLE_LOD_BIAS;
@@ -5122,10 +5134,15 @@ static bool intrinsic_tex(struct hlsl_ctx *ctx, const struct parse_initializer *
         load_params.lod = add_implicit_conversion(ctx, params->instrs, lod,
                 hlsl_get_scalar_type(ctx, HLSL_TYPE_FLOAT), loc);
     }
-    else if (!strcmp(name, "tex2Dproj")
-            || !strcmp(name, "tex3Dproj")
-            || !strcmp(name, "texCUBEproj"))
+    else if (tex_name_ends_with(name, "proj"))  /* MYIOSDECK A17 */
     {
+        /* MYIOSDECK (spec 19 A17): below 4.0 the 1D path below would get four coordinates */
+        if (dim == HLSL_SAMPLER_DIM_1D && hlsl_version_lt(ctx, 4, 0))
+        {
+            hlsl_fixme(ctx, loc, "tex1Dproj() for profiles below 4.0.");
+            return false;
+        }
+
         coords = add_implicit_conversion(ctx, params->instrs, params->args[1],
                 hlsl_get_vector_type(ctx, HLSL_TYPE_FLOAT, 4), loc);
 
@@ -5197,10 +5214,28 @@ static bool intrinsic_tex1D(struct hlsl_ctx *ctx,
     return intrinsic_tex(ctx, params, loc, "tex1D", HLSL_SAMPLER_DIM_1D);
 }
 
+static bool intrinsic_tex1Dbias(struct hlsl_ctx *ctx,  /* MYIOSDECK A17 */
+        const struct parse_initializer *params, const struct vkd3d_shader_location *loc)
+{
+    return intrinsic_tex(ctx, params, loc, "tex1Dbias", HLSL_SAMPLER_DIM_1D);
+}
+
 static bool intrinsic_tex1Dgrad(struct hlsl_ctx *ctx,
         const struct parse_initializer *params, const struct vkd3d_shader_location *loc)
 {
     return intrinsic_tex(ctx, params, loc, "tex1Dgrad", HLSL_SAMPLER_DIM_1D);
+}
+
+static bool intrinsic_tex1Dlod(struct hlsl_ctx *ctx,  /* MYIOSDECK A17 */
+        const struct parse_initializer *params, const struct vkd3d_shader_location *loc)
+{
+    return intrinsic_tex(ctx, params, loc, "tex1Dlod", HLSL_SAMPLER_DIM_1D);
+}
+
+static bool intrinsic_tex1Dproj(struct hlsl_ctx *ctx,  /* MYIOSDECK A17 */
+        const struct parse_initializer *params, const struct vkd3d_shader_location *loc)
+{
+    return intrinsic_tex(ctx, params, loc, "tex1Dproj", HLSL_SAMPLER_DIM_1D);
 }
 
 static bool intrinsic_tex2D(struct hlsl_ctx *ctx,
@@ -5239,10 +5274,22 @@ static bool intrinsic_tex3D(struct hlsl_ctx *ctx,
     return intrinsic_tex(ctx, params, loc, "tex3D", HLSL_SAMPLER_DIM_3D);
 }
 
+static bool intrinsic_tex3Dbias(struct hlsl_ctx *ctx,  /* MYIOSDECK A17 */
+        const struct parse_initializer *params, const struct vkd3d_shader_location *loc)
+{
+    return intrinsic_tex(ctx, params, loc, "tex3Dbias", HLSL_SAMPLER_DIM_3D);
+}
+
 static bool intrinsic_tex3Dgrad(struct hlsl_ctx *ctx,
         const struct parse_initializer *params, const struct vkd3d_shader_location *loc)
 {
     return intrinsic_tex(ctx, params, loc, "tex3Dgrad", HLSL_SAMPLER_DIM_3D);
+}
+
+static bool intrinsic_tex3Dlod(struct hlsl_ctx *ctx,  /* MYIOSDECK A17 */
+        const struct parse_initializer *params, const struct vkd3d_shader_location *loc)
+{
+    return intrinsic_tex(ctx, params, loc, "tex3Dlod", HLSL_SAMPLER_DIM_3D);
 }
 
 static bool intrinsic_tex3Dproj(struct hlsl_ctx *ctx,
@@ -5267,6 +5314,12 @@ static bool intrinsic_texCUBEgrad(struct hlsl_ctx *ctx,
         const struct parse_initializer *params, const struct vkd3d_shader_location *loc)
 {
     return intrinsic_tex(ctx, params, loc, "texCUBEgrad", HLSL_SAMPLER_DIM_CUBE);
+}
+
+static bool intrinsic_texCUBElod(struct hlsl_ctx *ctx,  /* MYIOSDECK A17 */
+        const struct parse_initializer *params, const struct vkd3d_shader_location *loc)
+{
+    return intrinsic_tex(ctx, params, loc, "texCUBElod", HLSL_SAMPLER_DIM_CUBE);
 }
 
 static bool intrinsic_texCUBEproj(struct hlsl_ctx *ctx,
@@ -5846,18 +5899,24 @@ intrinsic_functions[] =
     {"tan",                                 1, true,  intrinsic_tan},
     {"tanh",                                1, true,  intrinsic_tanh},
     {"tex1D",                              -1, false, intrinsic_tex1D},
+    {"tex1Dbias",                           2, false, intrinsic_tex1Dbias},  /* MYIOSDECK A17 */
     {"tex1Dgrad",                           4, false, intrinsic_tex1Dgrad},
+    {"tex1Dlod",                            2, false, intrinsic_tex1Dlod},   /* MYIOSDECK A17 */
+    {"tex1Dproj",                           2, false, intrinsic_tex1Dproj},  /* MYIOSDECK A17 */
     {"tex2D",                              -1, false, intrinsic_tex2D},
     {"tex2Dbias",                           2, false, intrinsic_tex2Dbias},
     {"tex2Dgrad",                           4, false, intrinsic_tex2Dgrad},
     {"tex2Dlod",                            2, false, intrinsic_tex2Dlod},
     {"tex2Dproj",                           2, false, intrinsic_tex2Dproj},
     {"tex3D",                              -1, false, intrinsic_tex3D},
+    {"tex3Dbias",                           2, false, intrinsic_tex3Dbias},  /* MYIOSDECK A17 */
     {"tex3Dgrad",                           4, false, intrinsic_tex3Dgrad},
+    {"tex3Dlod",                            2, false, intrinsic_tex3Dlod},   /* MYIOSDECK A17 */
     {"tex3Dproj",                           2, false, intrinsic_tex3Dproj},
     {"texCUBE",                            -1, false, intrinsic_texCUBE},
     {"texCUBEbias",                         2, false, intrinsic_texCUBEbias},
     {"texCUBEgrad",                         4, false, intrinsic_texCUBEgrad},
+    {"texCUBElod",                          2, false, intrinsic_texCUBElod}, /* MYIOSDECK A17 */
     {"texCUBEproj",                         2, false, intrinsic_texCUBEproj},
     {"transpose",                           1, true,  intrinsic_transpose},
     {"trunc",                               1, true,  intrinsic_trunc},
