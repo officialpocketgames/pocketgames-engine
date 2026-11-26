@@ -11,8 +11,8 @@
 #   - dwrite's unix side (dwrite-unix/: upstream dlls/dwrite/freetype.c, unchanged, compiled
 #     through a wrapper against spec 12's static FreeType),
 #   - the shared helpers (common/),
-#   - only with WITH_OPENAL=1 (off until OpenAL Soft is pinned and built, CHANGES.md round 4):
-#     openal32's unix side (openal-unix/: calls OpenAL Soft, openal/build-openal.sh).
+#   - openal32's unix side (openal-unix/: calls OpenAL Soft, openal/build-openal.sh; WITH_OPENAL=0
+#     leaves it out).
 # Upstream sources are never copied into this repository; this script copies the one upstream
 # file it compiles (dlls/dwrite/freetype.c) from the given Wine tree into <out dir>/work.
 #
@@ -23,7 +23,7 @@
 #   <ffmpeg prefix>/lib/libavformat.a libavcodec.a libswresample.a libavutil.a   (this order)
 #   -framework AudioToolbox -framework VideoToolbox -framework CoreMedia -framework CoreVideo
 #   -framework CoreFoundation
-#   -F<openal prefix> -framework OpenALSoft   (WITH_OPENAL=1 only; dynamic, embedded; openal/README.md)
+#   -F<openal prefix> -framework OpenALSoft   (dynamic, embedded and signed; openal/README.md)
 # together with specs 08-12's libraries (FreeType comes from spec 12's libwin32u_unix.a; never
 # link a second copy).
 #
@@ -31,7 +31,7 @@
 #   CC, AR              compiler / archiver (default: xcrun -sdk iphoneos clang / ar)
 #   FREETYPE_SRC        FreeType 2.13.3 tree for its headers (default: <repo>/refs/freetype-2.13.3)
 #   EXTRA_CFLAGS        appended to every compile
-#   WITH_OPENAL         1 adds openal-unix/ (default 0: openal32 is not shipped yet)
+#   WITH_OPENAL         0 leaves openal-unix/ out (default 1)
 
 set -u
 
@@ -142,9 +142,9 @@ compile "$HERE/dwrite-unix/dwrite_freetype_ios.c" "dwrite-freetype" $WINEDEFS \
 
 # ---------------------------------------------------------------- openal-unix/ (round 4)
 # Plain C, no Wine headers: openal32's unix side and the table of OpenAL Soft's functions.
-# Off by default: openal_link.o needs OpenALSoft.framework at the app link.
+# openal_link.o needs OpenALSoft.framework at the app link (WITH_OPENAL=0 leaves it out).
 OPENAL_TABLES=""
-if [ "${WITH_OPENAL:-0}" = 1 ]; then
+if [ "${WITH_OPENAL:-1}" = 1 ]; then
   for c in "$HERE"/openal-unix/*.c; do
     n=$(basename "$c" .c)
     compile "$c" "openal-$n" "-I$HERE/common" "-I$HERE/openal-unix" "-I$HERE/pe/dlls/openal32"

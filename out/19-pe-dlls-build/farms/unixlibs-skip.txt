@@ -12,3 +12,4 @@
 aarch64-windows winegstreamer.dll   the 64-bit media path is the ARM64EC farm's (spec 14); the aarch64 farm runs Wine's own programs, which don't use it
 aarch64-windows winevulkan.dll      Vulkan is for 64-bit Windows programs, which the ARM64EC farm serves (spec 34 C1); the aarch64 farm runs Wine's own programs
 i386-windows    winevulkan.dll      32-bit Vulkan is spec 34 Part G (phase 3); until then the i386 skip list keeps it (spec 34 C1, C3)
+aarch64-windows openal32.dll        Wine's own programs (the aarch64 farm) don't use OpenAL; games get it from the ARM64EC and i386 farms (spec 14 round 4)

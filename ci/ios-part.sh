@@ -165,10 +165,28 @@ case "$part" in
                     tail -n 200 "$work/ff-unpack/ffmpeg-7.1.1/ffbuild/config.log" > "$dist/ffmpeg-config.log.tail"
             fi
         fi
+        # spec 14 round 4: OpenAL Soft, unmodified, as OpenALSoft.framework (build-openal.sh checks
+        # the tarball against its pinned SHA-256). Its products go to <dist>/openal/: the framework
+        # the app embeds and link-check links, NOTICES.txt and the relinking kit.
+        openal_tgz="$work/dl/openal-soft-1.24.3.tar.bz2"
+        if [ $status -eq 0 ] && [ ! -f "$openal_tgz" ]; then
+            run "fetch OpenAL Soft 1.24.3" curl -fsSL --retry 3 -o "$openal_tgz" \
+                https://openal-soft.org/openal-releases/openal-soft-1.24.3.tar.bz2 || status=1
+        fi
+        if [ $status -eq 0 ]; then
+            rm -rf "$work/openal"
+            run "build-openal.sh" env WORKDIR="$work/openal-build" sh "$src/openal/build-openal.sh" \
+                "$openal_tgz" "$work/openal" || status=1
+            for f in configure.log build.log; do
+                [ -f "$work/openal-build/$f" ] && cp "$work/openal-build/$f" "$dist/openal-$f"
+            done
+        fi
         if [ $status -eq 0 ]; then
             run "build-ios.sh" sh "$src/build-ios.sh" "$wine" "$wbuild" "$work/ffmpeg" "$out" || status=1
-            mkdir -p "$dist/ffmpeg"
+            mkdir -p "$dist/ffmpeg" "$dist/openal"
             cp "$work/ffmpeg/lib/"*.a "$dist/ffmpeg/" 2>/dev/null || true
+            cp -R "$work/openal/OpenALSoft.framework" "$work/openal/NOTICES.txt" \
+                "$work/openal/openal-relink-kit.tar.gz" "$dist/openal/" || status=1
         fi
         ;;
     33-d3d9-native-wow64)

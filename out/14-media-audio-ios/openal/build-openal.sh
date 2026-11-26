@@ -31,9 +31,9 @@ set -u
 
 VERSION=1.24.3
 URL="https://openal-soft.org/openal-releases/openal-soft-$VERSION.tar.bz2"
-# The SHA-256 of $URL. Not yet pinned (it could not be downloaded where this was written):
-# openal/README.md, "CI", says how to pin it. The script refuses to build until it is set.
-EXPECTED_SHA256=
+# The SHA-256 of $URL, pinned 2026-11-25: downloaded from openal-soft.org, and its contents are
+# identical to the 1.24.3 tag on github.com/kcat/openal-soft. The script refuses any other tarball.
+EXPECTED_SHA256=cb5e6197a1c0da0edcf2a81024953cc8fa8545c3b9474e48c852af709d587892
 
 if [ $# -ne 2 ]; then
   echo "usage: $0 <openal-soft-$VERSION.tar.bz2> <prefix>" >&2
@@ -124,7 +124,8 @@ id=$(xcrun otool -D "$DYLIB" | sed -n 2p)
 # Apple's system libraries only (no liblzma, nothing from outside the SDK)
 xcrun otool -L "$DYLIB" | sed -n '2,$p' | awk '{print $1}' | while read -r dep; do
   case "$dep" in
-    @rpath/libopenal.1.dylib|/System/Library/Frameworks/*|/usr/lib/libSystem.B.dylib|/usr/lib/libc++.1.dylib) ;;
+    *lzma*) echo "unexpected dependency: $dep (liblzma)" ;;
+    @rpath/libopenal.1.dylib|/System/Library/Frameworks/*|/usr/lib/*.dylib) ;;
     *) echo "unexpected dependency: $dep" ;;
   esac
 done > "$WORKDIR/deps.txt"

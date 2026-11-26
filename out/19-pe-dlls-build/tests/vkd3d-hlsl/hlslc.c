@@ -5,6 +5,7 @@
 // D3DCompile does (vkd3d-utils' D3DCompile2VKD3D: HLSL source, the API version option, entry
 // "main"), prints the compiler's messages to stderr and the disassembly of the result to stdout.
 //   hlslc [-p profile] file.hlsl     (default profile ps_5_0; exit status 1 on a failed compile)
+// Profiles below 4.0 (A15's ps_2_0 check) compile to and disassemble Direct3D 9 bytecode.
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -44,6 +45,7 @@ int main(int argc, char **argv)
     struct vkd3d_shader_compile_info info;
     struct vkd3d_shader_code dxbc, text;
     const char *profile = "ps_5_0", *path = NULL;
+    enum vkd3d_shader_target_type target = VKD3D_SHADER_TARGET_DXBC_TPF;
     char *messages = NULL, *src;
     size_t size;
     int i, ret;
@@ -72,7 +74,9 @@ int main(int argc, char **argv)
     info.source.code = src;
     info.source.size = size;
     info.source_type = VKD3D_SHADER_SOURCE_HLSL;
-    info.target_type = VKD3D_SHADER_TARGET_DXBC_TPF;
+    if (strlen(profile) > 3 && profile[3] >= '1' && profile[3] <= '3')
+        target = VKD3D_SHADER_TARGET_D3D_BYTECODE;
+    info.target_type = target;
     info.options = &option;
     info.option_count = 1;
     info.log_level = VKD3D_SHADER_LOG_INFO;
@@ -89,7 +93,8 @@ int main(int argc, char **argv)
     memset(&info, 0, sizeof(info));
     info.type = VKD3D_SHADER_STRUCTURE_TYPE_COMPILE_INFO;
     info.source = dxbc;
-    info.source_type = VKD3D_SHADER_SOURCE_DXBC_TPF;
+    info.source_type = target == VKD3D_SHADER_TARGET_D3D_BYTECODE
+            ? VKD3D_SHADER_SOURCE_D3D_BYTECODE : VKD3D_SHADER_SOURCE_DXBC_TPF;
     info.target_type = VKD3D_SHADER_TARGET_D3D_ASM;
     info.log_level = VKD3D_SHADER_LOG_INFO;
     messages = NULL;

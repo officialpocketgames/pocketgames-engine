@@ -95,6 +95,7 @@ ntdll.dll
 ole32.dll
 oleacc.dll
 oleaut32.dll
+openal32.dll    # spec 14 round 4: OpenAL; its unix side calls OpenALSoft.framework
 opengl32.dll
 pdh.dll
 powrprof.dll

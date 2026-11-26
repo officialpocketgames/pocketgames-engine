@@ -57,11 +57,20 @@ overlay_table() {
 spec17-include|09-ntdll-processes/include|include|17
 spec17-unixlib|09-ntdll-processes/ntdll-unix/unixlib.h|dlls/ntdll/unixlib.h|17
 spec14-metahost|14-media-audio-ios/pe/metahost.c|dlls/mscoree/metahost.c|14
+spec14-openal32|14-media-audio-ios/pe/dlls/openal32|dlls/openal32|14
 spec15|15-controllers/pe|.|15
 spec16|16-sync-ios/pe|.|16
 spec18|18-pe-ntdll-wow64/pe|.|18
 spec35|35-opengl-ios/pe|.|35
 spec19|19-pe-dlls-build/pe|.|19
+EOF
+}
+
+# Modules an overlay adds that upstream Wine doesn't have: step_tree registers each in the tree's
+# configure (a wine_fn_config_makefile line, as configure.ac's WINE_CONFIG_MAKEFILE would make).
+new_modules() {
+    cat <<'EOF'
+dlls/openal32
 EOF
 }
 
@@ -458,6 +467,18 @@ step_tree() {
         mkdir -p "$src.new/$(dirname "$path")"
         cp "$from" "$src.new/$path" || fail "copying $from"
     done < "$tmp/map"
+    for path in $(new_modules); do
+        # its overlay missing (reported above; allowed only with --allow-missing-overlays)
+        [ -f "$src.new/$path/Makefile.in" ] || continue
+        grep -q "^wine_fn_config_makefile $path " "$src.new/configure" && continue
+        # before the first registered module that sorts after it, so the order stays upstream's
+        awk -v p="$path" -v e="enable_$(basename "$path")" '
+            !done && /^wine_fn_config_makefile / && $2 > p { print "wine_fn_config_makefile " p " " e; done = 1 }
+            { print }
+            END { if (!done) exit 1 }' "$src.new/configure" > "$src.new/configure.tmp" &&
+            cat "$src.new/configure.tmp" > "$src.new/configure" && rm -f "$src.new/configure.tmp" ||
+            fail "registering $path in configure"
+    done
     # keep the old time of every overlaid path whose content didn't change, so make rebuilds
     # only what did; a path that changed, or went back to upstream's file, is new
     old_list="$stamps/tree.map"

@@ -69,5 +69,37 @@ for target in arm64ec aarch64 i686; do
         fi
     done
 done
-[ $status = 0 ] && echo "PE syntax check: all Part A files compile for arm64ec, aarch64 and i686"
+
+# vkd3d-shader with the overlay pe/libs/vkd3d/ (A14, A15): its parser hlsl.y is made with bison,
+# then the parser and every vkd3d-shader file that includes hlsl.h compile with Wine's flags for
+# libs/vkd3d (vkd3d's own warnings stay warnings; errors fail)
+vk="$top/pe/libs/vkd3d"
+if [ -d "$vk" ] && command -v bison >/dev/null 2>&1; then
+    t="$gen/vkd3d"
+    cp -R "$wine/libs/vkd3d" "$t"
+    cp -R "$vk/." "$t/"
+    s="$t/libs/vkd3d-shader"
+    if (cd "$s" && bison -d -o hlsl.tab.c hlsl.y 2> "$gen/bison.log"); then
+        vkfiles="$s/hlsl.tab.c $(grep -l '#include "hlsl.h"' "$s"/*.c | tr '\n' ' ')"
+        for target in arm64ec aarch64 i686; do
+            for f in $vkfiles; do
+                # shellcheck disable=SC2086
+                if ! "$clang" --target=$target-windows -fsyntax-only -std=gnu11 -w \
+                    -D__WINESRC__ -D_UCRT -D__WINE_PE_BUILD -DWINE_NO_NAMELESS_EXTENSION \
+                    -DLIBVKD3D_SOURCE -DLIBVKD3D_SHADER_SOURCE -DLIBVKD3D_UTILS_SOURCE \
+                    -nostdinc -isystem "$resdir/include" -I"$t" -I"$t/include" -I"$t/include/private" \
+                    -I"$t/libs/vkd3d" -I"$s" -I"$shared" -I"$build/include" -I"$wine/include" \
+                    -I"$wine/include/msvcrt" "$f"; then
+                    echo "FAILED: $target vkd3d-shader $(basename "$f")" >&2
+                    status=1
+                fi
+            done
+        done
+    else
+        echo "FAILED: bison hlsl.y: $(head -3 "$gen/bison.log")" >&2
+        status=1
+    fi
+fi
+
+[ $status = 0 ] && echo "PE syntax check: all Part A files and vkd3d-shader (with the overlay) compile for arm64ec, aarch64 and i686"
 exit $status

@@ -9,6 +9,10 @@
  * program start only when its initial value is a compile-time constant (upstream vkd3d commit
  * d4007d0aa906, after 1.19), and a static variable counts as one only when it is also const.
  *
+ * Changed for MYIOSDECK (spec 19 A15): for profiles 4.0 and later, the type names half, halfN
+ * and halfNxM name the matching float types (sm4_half_as_float), as Microsoft's compiler gives
+ * half full float precision there; profiles below 4.0 keep half.
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
@@ -363,6 +367,21 @@ static struct hlsl_ir_node *add_cast(struct hlsl_ctx *ctx, struct hlsl_block *bl
         return node;
 
     return hlsl_block_add_cast(ctx, block, node, dst_type, loc);
+}
+
+/* MYIOSDECK (spec 19 A15): Microsoft's compiler gives half full float precision for profiles
+ * 4.0 and later (min16float is the separate low-precision type), and vkd3d 1.19 can't compile
+ * half arithmetic for SM4 ("SM4 half3 multiplication expression"). So there, a type name that
+ * resolves to a built-in half type (half, halfN, halfNxM, and through them vector<half, N>,
+ * matrix<half, R, C> and typedefs) gives the matching built-in float type instead, everywhere a
+ * declaration, cast, constructor or parameter names it. Profiles below 4.0 keep half. */
+static struct hlsl_type *sm4_half_as_float(struct hlsl_ctx *ctx, struct hlsl_type *type)
+{
+    if (!type || hlsl_version_lt(ctx, 4, 0) || !hlsl_is_numeric_type(type)
+            || type->e.numeric.type != HLSL_TYPE_HALF)
+        return type;
+    return hlsl_get_numeric_type(ctx, type->class, HLSL_TYPE_FLOAT,
+            type->e.numeric.dimx, type->e.numeric.dimy);
 }
 
 static struct hlsl_ir_node *add_implicit_conversion(struct hlsl_ctx *ctx, struct hlsl_block *block,
@@ -8744,7 +8763,7 @@ type_no_void:
         }
     | TYPE_IDENTIFIER
         {
-            $$ = hlsl_get_type(ctx->cur_scope, $1, true, true);
+            $$ = sm4_half_as_float(ctx, hlsl_get_type(ctx->cur_scope, $1, true, true));  /* MYIOSDECK A15 */
             if ($$->is_minimum_precision || hlsl_type_is_minimum_precision($$))
             {
                 if (hlsl_version_lt(ctx, 4, 0))

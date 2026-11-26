@@ -133,5 +133,26 @@ expect "$fixed" const-from-static-const.hlsl ok '^mov r[0-9]+\.x, l\(6\.0+e\+00\
 expect "$fixed" const-from-static-const-of-uniform.hlsl ok '^mul r[0-9]+\.x, cb0\[0\]\.x, l\(2\.0+e\+00\)$'
 expect "$fixed" array-size-from-static.hlsl fail 'Expected literal expression'
 
+# A15: half for profiles 4.0 and later is float. same <profile> <a.hlsl> <b.hlsl> <compiler a> <compiler b>:
+# both compile, and the disassemblies are identical
+same() {
+    la="$build/$(basename "$2" .hlsl).$1.a" lb="$build/$(basename "$3" .hlsl).$1.b"
+    "$4" -p "$1" "$cases/$2" > "$la.asm" 2> "$la.err" || { fail "$2 ($1): $(head -3 "$la.err" | tr '\n' ' ')"; return; }
+    "$5" -p "$1" "$cases/$3" > "$lb.asm" 2> "$lb.err" || { fail "$3 ($1): $(head -3 "$lb.err" | tr '\n' ' ')"; return; }
+    cmp -s "$la.asm" "$lb.asm" || fail "$2 and $3 ($1): different output ($la.asm, $lb.asm)"
+}
+upstream="$build/upstream-1.19/hlslc"
+same ps_4_0 half-ps40.hlsl float-ps40.hlsl "$fixed" "$fixed"
+same vs_5_0 half-vs50.hlsl float-vs50.hlsl "$fixed" "$fixed"
+# the bug, as the game met it: Wine's unchanged copy can't compile half arithmetic for SM4
+if "$upstream" -p ps_4_0 "$cases/half-ps40.hlsl" > /dev/null 2> "$build/half-ps40.upstream.err"; then
+    fail "half-ps40.hlsl: Wine's unchanged vkd3d compiled it (the test no longer shows the bug)"
+else
+    grep -Eq 'E5017: .*SM4 half[0-9]* (multiplication|addition) expression' "$build/half-ps40.upstream.err" ||
+        fail "half-ps40.hlsl: unchanged vkd3d failed differently: $(head -3 "$build/half-ps40.upstream.err" | tr '\n' ' ')"
+fi
+# below 4.0 nothing changes: the same output as Wine's unchanged copy
+same ps_2_0 half-ps20.hlsl half-ps20.hlsl "$fixed" "$upstream"
+
 [ $status -eq 0 ] && echo "test-vkd3d-hlsl.sh: all checks passed"
 exit $status

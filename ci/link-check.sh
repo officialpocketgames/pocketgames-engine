@@ -77,6 +77,13 @@ for n in libavformat.a libavcodec.a libswresample.a libavutil.a; do
 done
 # spec 34 Part B: MoltenVK, after the layer that calls it
 [ -f "$dist/34-vulkan-ios/libmoltenvk.a" ] && third="$third $dist/34-vulkan-ios/libmoltenvk.a"
+# spec 14 round 4: OpenAL Soft is a dynamic framework (LGPL, never static); libwinemedia_unix.a's
+# openal_link.o calls it, so the link takes it like the app does (a missing one leaves _al*/_alc*
+# undefined, which fails)
+dynfw=""
+if [ -f "$dist/14-media-audio-ios/openal/OpenALSoft.framework/OpenALSoft" ]; then
+    dynfw="-F$dist/14-media-audio-ios/openal -framework OpenALSoft"
+fi
 if [ -n "$missing" ]; then
     note "**Parts without libraries (their ios-libs build failed):**$missing — the symbols they define show up as undefined below."
     note ""
@@ -86,6 +93,7 @@ note "Force-loaded:"
 for a in $ours; do note "- ${a#"$dist"/}"; done
 note "Linked normally:"
 for a in $third; do note "- ${a#"$dist"/}"; done
+[ -z "$dynfw" ] || note "- 14-media-audio-ios/openal/OpenALSoft.framework (dynamic)"
 note ""
 
 # LINK.txt (spec 13 A5): the flag of each -Wl,-u, -l and -framework line (a line may go on with
@@ -117,7 +125,7 @@ for a in $ours; do force="$force -Wl,-force_load,$a"; done
 link() {
     o=$1; shift
     # shellcheck disable=SC2086
-    $CXX -o "$o" "$w/main.o" "$w/app_stubs.o" "$@" $force $third $extra $frameworks > "$o.log" 2>&1
+    $CXX -o "$o" "$w/main.o" "$w/app_stubs.o" "$@" $force $third $dynfw $extra $frameworks > "$o.log" 2>&1
 }
 
 # ---------------------------------------------------------------- pass 1
