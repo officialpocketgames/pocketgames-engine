@@ -1,4 +1,4 @@
-/* Changed for MYIOSDECK (spec 05 F3, clarifications 10 and 13; spec 07: DXSO API block, LGPL). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
+/* Changed for MYIOSDECK (spec 05 F3, clarifications 10 and 13; spec 07: DXSO API block, LGPL; clarification 6: DXSO_ATTR_FORMAT_DEC3N). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 #include "stddef.h"
 #include "stdint.h"
 #include "stdbool.h"
@@ -442,6 +442,11 @@ struct DXSO_SHADER_COMPILATION_ARGUMENT_DATA {
    attribute descriptor; the Direct3D 11 path hands its format straight to
    Metal and must keep using the real one. */
 #define DXSO_ATTR_FORMAT_UDEC3 0x1000u
+/* MYIOSDECK spec 07 clarification 6: D3DDECLTYPE_DEC3N reads as (x, y, z, 1). Metal's
+   Int1010102Normalized has x, y and z in the same bits but makes w the 2-bit field, so the
+   Direct3D 9 fetch takes this dxmt-private value, decodes the word as Int1010102Normalized and
+   sets w = 1. Like UDEC3's, it never reaches an attribute descriptor. */
+#define DXSO_ATTR_FORMAT_DEC3N 0x1001u
 
 struct DXSO_IA_INPUT_ELEMENT {
   uint32_t reg;

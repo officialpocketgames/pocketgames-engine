@@ -61,6 +61,14 @@ int ios_unixlib_init_symbol( const char *dll_name, char *buf, size_t size )
     return unixlib_name( dll_name, "_unix_lib_init", buf, size );
 }
 
+/* spec 09 round 6 item 6 */
+unsigned int ios_unix_call_check( int has_table, int count_known, unsigned int count, unsigned int code )
+{
+    if (!has_table) return IOS_UNIX_NO_TABLE;
+    if (count_known && code >= count) return IOS_UNIX_BAD_INDEX;
+    return 0;
+}
+
 static int unixlib_name( const char *dll_name, const char *tail, char *buf, size_t size )
 {
     const char *name = ios_file_part( dll_name ), *end, *p;

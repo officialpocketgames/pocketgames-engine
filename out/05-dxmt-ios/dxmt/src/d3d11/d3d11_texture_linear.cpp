@@ -1,6 +1,9 @@
+// Changed for MYIOSDECK (spec 06 round 2: a texture whose guest memory couldn't be had fails with E_OUTOFMEMORY).
+// Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "d3d11_private.h"
 #include "com/com_pointer.hpp"
 #include "d3d11_device.hpp"
+#include "util_guest_memory.hpp" // MYIOSDECK spec 06 round 2
 #include "dxmt_dynamic.hpp"
 #include "dxmt_format.hpp"
 #include "dxmt_staging.hpp"
@@ -59,7 +62,7 @@ TDynamicLinearTexture(
     auto _ = texture_->rename(Rc(allocation));
     D3D11_ASSERT(_.ptr() == nullptr);
 
-    if (pInitialData) {
+    if (pInitialData && allocation->mappedMemory) { // MYIOSDECK spec 06 round 2: none when guest memory ran out
       if (pInitialData->SysMemPitch != bytes_per_row_) {
         for (unsigned row = 0; row < texture_->height(); row++) {
           memcpy(
@@ -206,9 +209,15 @@ CreateDynamicLinearTexture2D(
     return E_FAIL;
   }
 
+  const uint64_t guest_failures = guest_memory::ThreadFailures(); // MYIOSDECK spec 06 round 2
   *ppTexture = reinterpret_cast<ID3D11Texture2D1 *>(
       ref(new TDynamicLinearTexture<tag_texture_2d>(&finalDesc, info, pInitialData, bufferLen, bytesPerRow, pDevice))
   );
+  if (guest_memory::ThreadFailures() != guest_failures) {
+    (*ppTexture)->Release(); // its memory couldn't be had: E_OUTOFMEMORY, not a texture without it
+    *ppTexture = nullptr;
+    return E_OUTOFMEMORY;
+  }
   return S_OK;
 }
 
@@ -243,9 +252,15 @@ CreateDynamicLinearTexture1D(
     return E_FAIL;
   }
 
+  const uint64_t guest_failures = guest_memory::ThreadFailures(); // MYIOSDECK spec 06 round 2
   *ppTexture = reinterpret_cast<ID3D11Texture1D *>(
       ref(new TDynamicLinearTexture<tag_texture_1d>(&finalDesc, info, pInitialData, bufferLen, bytesPerRow, pDevice))
   );
+  if (guest_memory::ThreadFailures() != guest_failures) {
+    (*ppTexture)->Release(); // its memory couldn't be had: E_OUTOFMEMORY, not a texture without it
+    *ppTexture = nullptr;
+    return E_OUTOFMEMORY;
+  }
   return S_OK;
 }
 

@@ -44,11 +44,14 @@ $cxx $flags -I"$src/d3d11" -o "$build/test_swap_effect" "$here/test_swap_effect.
 $cxx $flags -I"$src/d3d11" -o "$build/test_swapchain_state" "$here/test_swapchain_state.cpp"
 # Dynamic-buffer discard: DXMT's own buffer code against fake Metal (bench_dynamic_discard.cpp).
 # Optimised like the shipping build; run it by hand without --check for the 33k-cycle benchmark.
-$cxx -std=c++20 -O2 -Wall -Wextra -Werror -DDXMT_PAGE_SIZE=4096 -DDXMT_NATIVE=1 -DDXMT_IOS=1 \
+$cxx -std=c++20 -O2 -Wall -Wextra -Werror -DDXMT_PAGE_SIZE=4096 -DDXMT_NATIVE=1 -DDXMT_IOS=1 -D__cdecl= \
   -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" -I"$src/../include" \
   -I"$src/../include/native/windows" -I"$src/../include/native/directx" \
   -o "$build/bench_dynamic_discard" "$here/bench_dynamic_discard.cpp" \
-  "$src/dxmt/dxmt_dynamic.cpp" "$src/dxmt/dxmt_buffer.cpp" "$src/dxmt/dxmt_allocation.cpp" "$src/util/util_bloom.cpp"
+  "$src/dxmt/dxmt_dynamic.cpp" "$src/dxmt/dxmt_buffer.cpp" "$src/dxmt/dxmt_allocation.cpp" "$src/util/util_bloom.cpp" \
+  "$src/util/util_guest_memory.cpp"
+# Spec 06 round 2: the guest-memory ledger, its lines and the per-resource cap's rule.
+$cxx $flags -I"$src/util" -I"$src/dxmt" -o "$build/test_guest_memory" "$here/test_guest_memory.cpp"
 # Spec 05 clarification 10 (steamac's DXMT patches): 0019's slot reservation, 0017's integer
 # render-target table, 0010/0011/0012's regression tests (with 0008's out-error slot), and
 # 0002/0004/0023 against DXMT's own code with fake Metal.
@@ -64,7 +67,8 @@ $cxx $flags -pthread $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal
 $cxx $flags $native_flags -I"$src/winemetal" -o "$build/test_metal_reference" "$here/test_metal_reference.cpp"
 $cxx $flags -I"$src/d3d11" -I"$src/airconv" -o "$build/test_shader_bitcode" "$here/test_shader_bitcode.cpp"
 $cxx $flags -pthread $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
-  -o "$build/test_core_fixes" "$here/test_core_fixes.cpp" "$src/dxmt/dxmt_allocation.cpp"
+  -o "$build/test_core_fixes" "$here/test_core_fixes.cpp" "$src/dxmt/dxmt_allocation.cpp" \
+  "$src/util/util_guest_memory.cpp"
 # Spec 05 clarification 12: when the shader cache's lookups are logged, and what a cache
 # database holds (on small SQLite databases; the system's libsqlite3 with the declarations in
 # tests/sqlite3-api, so no SQLite development package is needed; skipped without the library).
@@ -107,6 +111,10 @@ $cxx $flags -I"$src/d3d11" -I"$src/util" -o "$build/test_d3d11_call_stats" "$her
 $cc -std=c11 -O1 -Wall -Wextra -Werror -I"$native/windows" -I"$native/directx" -I"$src/d3d11" \
   -o "$build/test_d3d11_call_list" "$here/test_d3d11_call_list.c"
 $cxx $flags $native_flags -I"$src/d3d11" -I"$src/dxmt" -o "$build/test_d3d11_cuts" "$here/test_d3d11_cuts.cpp"
+# Spec 07 clarification 6: every Direct3D 9 vertex element type's decode, the stream rules, the
+# declaration line.
+$cxx $flags $native_flags -I"$src/d3d9" -I"$src/airconv" -o "$build/test_d3d9_vertex_input" \
+  "$here/test_d3d9_vertex_input.cpp"
 # Spec 05 round 18: a polled Direct3D 11 query parks (items 80-83).
 $cxx $flags -pthread -I"$src/dxmt" -I"$src/util" -I"$src/d3d11" -o "$build/test_d3d11_query_park" \
   "$here/test_d3d11_query_park.cpp"
@@ -148,6 +156,7 @@ status=0
 "$build/test_dxso_args32" || status=1
 "$build/test_d3d9_policy" || status=1
 "$build/test_d3d9_fail_log" || status=1
+"$build/test_d3d9_vertex_input" || status=1
 "$build/test_d3d9_call_stats" || status=1
 "$build/test_log_cap" || status=1
 "$build/test_d3d9_call_list" || status=1
@@ -155,6 +164,7 @@ sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_swap_effect" || status=1
 "$build/test_swapchain_state" || status=1
 "$build/bench_dynamic_discard" --check || status=1
+"$build/test_guest_memory" || status=1
 "$build/test_chunk_slots" || status=1
 "$build/test_integer_rt_formats" || status=1
 "$build/test_scheduler_lifetime" || status=1

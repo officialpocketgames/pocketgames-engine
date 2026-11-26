@@ -1,10 +1,12 @@
-# Changed for MYIOSDECK (spec 35 C3, out/35-opengl-ios/CHANGES.md): gl/gl4es_ios.c added.
+# Changed for MYIOSDECK (spec 35 C3, clarification 13, out/35-opengl-ios/CHANGES.md): gl/gl4es_ios.c
+# and gl/gl4es_ios_pixels.c added.
 # gl4es is MIT (its LICENSE).
 include_directories(util)
 
 #file(GLOB_RECURSE GL_SOURCES ${CMAKE_CURRENT_SOURCE_DIR}/gl/*.c)
 SET(GL_SRC
     ${CMAKE_CURRENT_SOURCE_DIR}/gl/gl4es_ios.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/gl/gl4es_ios_pixels.c
     ${CMAKE_CURRENT_SOURCE_DIR}/gl/arbconverter.c
 	${CMAKE_CURRENT_SOURCE_DIR}/gl/arbgenerator.c
 	${CMAKE_CURRENT_SOURCE_DIR}/gl/arbhelper.c

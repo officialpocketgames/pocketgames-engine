@@ -28,6 +28,8 @@
 #include "dxmt_dynamic_policy.hpp"
 #include "dxmt_format.hpp"
 #include "wsi_platform.hpp"
+#include "util_guest_memory.hpp"
+#include "dxmt_ring_bump_allocator.hpp"
 
 #include <chrono>
 #include <cstdio>
@@ -49,6 +51,8 @@ struct FakeMetal {
   uint64_t peak_bytes = 0;
   uint64_t new_buffers = 0;
   bool alias = false; // old mode: every buffer shares one block, so 2 GB a frame fits
+  bool refuse_without_memory = false; // spec 06 round 2: as the 32-bit unix side (B4), refuse a
+                                      // CPU-visible buffer that brings no memory
   void *alias_block = nullptr;
   uint64_t alias_size = 0;
 };
@@ -63,6 +67,8 @@ obj_handle_t
 MTLDevice_newBuffer(obj_handle_t, struct WMTBufferInfo *info) {
   void *mem = info->memory.get();
   bool owned = false;
+  if (!mem && g_metal.refuse_without_memory)
+    return 0;
   if (!mem) {
     if (g_metal.alias) {
       if (g_metal.alias_size < info->length) {
@@ -135,9 +141,27 @@ Texture::allocate(Flags<TextureAllocationFlag>) {
   std::abort(); // not used by buffers
 }
 
+bool g_fail_alloc = false; // spec 06 round 2: the guest window is full
+
+/* spec 06 round 2: the staging ring's warnings (log.cpp in the DLL) */
+void
+Logger::warn(const std::string &message) {
+  std::printf("warn: %s\n", message.c_str());
+}
+
+/* spec 06 round 2: the guest-memory lines (util_guest_memory_log.cpp in the DLL) */
+namespace guest_memory {
+void
+Write(const std::string &line, bool) {
+  std::printf("%s\n", line.c_str());
+}
+} // namespace guest_memory
+
 namespace wsi {
 void *
 aligned_malloc(size_t size, size_t alignment) {
+  if (g_fail_alloc)
+    return nullptr;
   return std::aligned_alloc(alignment, (size + alignment - 1) / alignment * alignment);
 }
 void
@@ -267,7 +291,17 @@ struct Model {
     if (auto next_sub = dyn.nextSuballocation()) {
       dyn.immediateName()->useSuballocation(next_sub);
     } else {
-      dyn.updateImmediateName(current_seq, dyn.allocate(coherent_seq, nullptr, new_mode ? current_seq : 0), 0, false);
+      // spec 06 round 2 (d3d11_context_imm.cpp WaitForGuestRetire): at the cap, wait for the oldest
+      if (uint64_t seq = dyn.guestWaitSeq(coherent_seq)) {
+        if (seq >= current_seq)
+          commit();
+        waitFor(seq);
+        tracker.retire(coherent_seq);
+      }
+      auto fresh_allocation = dyn.allocate(coherent_seq, nullptr, new_mode ? current_seq : 0);
+      if (!fresh_allocation->mappedMemory(0))
+        return nullptr; // Map returns E_OUTOFMEMORY
+      dyn.updateImmediateName(current_seq, std::move(fresh_allocation), 0, false);
       auto allocation = dyn.immediateName();
       allocation->useSuballocation(0);
       auto previous = dyn.buffer->rename(std::move(allocation));
@@ -389,6 +423,134 @@ CheckDeferredRing() {
 
 } // namespace
 
+/* ---- spec 06 round 2: a 32-bit program's guest window --------------------------------------- */
+
+/* As the i386 build runs: the per-resource cap on, placed memory counted as guest memory, the
+   unix side refusing a CPU-visible buffer without memory. The GPU model never catches up on its
+   own (it finishes a chunk only when the CPU waits for it), the worst case for memory. */
+int
+CheckGuestWindow() {
+  int failures = 0;
+  auto fail = [&](const char *what) {
+    std::printf("FAIL guest window: %s\n", what);
+    failures++;
+  };
+  g_dynamic_guest_cap = true;
+  g_metal.refuse_without_memory = true;
+  guest_memory::Ledger &ledger = guest_memory::ProcessLedger();
+  constexpr uint32_t k2MB = 2u << 20;
+  const uint64_t placed_2mb = PlacedMemoryLength(k2MB);
+
+  /* 2000 Map(DISCARD)/Unmap on one 2 MB dynamic texture (its subresource buffer, CPU-placed as in
+     the i386 build, d3d11_texture_dynamic.cpp), a draw reading each */
+  {
+    Rc<Buffer> buffer = new Buffer(k2MB, WMT::Device{});
+    Flags<BufferAllocationFlag> flags;
+    flags.set(BufferAllocationFlag::CpuWriteCombined, BufferAllocationFlag::SuballocateFromOnePage,
+              BufferAllocationFlag::CpuPlaced);
+    auto initial = buffer->rename(buffer->allocate(flags));
+    (void)initial;
+    Rc<DynamicBuffer> dyn = new DynamicBuffer(buffer.ptr(), flags);
+    Model m(true);
+    m.gpu_lag = 1u << 30;
+    uint64_t peak = 0;
+    for (unsigned i = 0; i < 2000; i++) {
+      auto *p = static_cast<uint64_t *>(m.mapDiscard(*dyn));
+      if (!p) {
+        fail("a discard got no memory");
+        break;
+      }
+      *p = 0x6000000ull + i;
+      m.draw(*buffer, 0x6000000ull + i);
+      peak = std::max(peak, ledger.snapshot().bytes[unsigned(guest_memory::Use::Maps)]);
+    }
+    const uint64_t bound = (kGuestDynamicAllocations + 1) * placed_2mb;
+    std::printf("guest window: 2000 discards of a 2 MB texture: peak %.1f MiB of maps (bound %.1f), %llu waits\n",
+                peak / 1048576.0, bound / 1048576.0, (unsigned long long)m.waits);
+    if (peak > bound)
+      fail("map memory above the bound");
+    if (m.bad_reads)
+      fail("a draw read another discard's bytes");
+    m.commit(); // the chunk being recorded too, so nothing keeps an allocation
+    while (!m.committed.empty())
+      m.finishOne();
+  }
+  if (ledger.snapshot().bytes[unsigned(guest_memory::Use::Maps)] != 0)
+    fail("map memory left after the texture was released");
+
+  /* 2000 UpdateSubresource calls of 2 MB: the staging ring with the context's bound
+     (BoundStagingMemory: the discard tracker's commit and in-flight rules) */
+  {
+    RingBumpState<StagingBufferBlockAllocator> ring(
+        StagingBufferBlockAllocator(WMT::Device{}, WMTResourceStorageModeShared, true)
+    );
+    Model m(true);
+    m.gpu_lag = 1u << 30;
+    uint64_t peak = 0;
+    for (unsigned i = 0; i < 2000; i++) {
+      if (m.tracker.commitDue()) {
+        m.tracker.noteImplicitCommit();
+        m.commit();
+      }
+      if (uint64_t seq = m.tracker.waitSeq(m.coherent_seq)) {
+        m.waitFor(seq);
+        m.tracker.retire(m.coherent_seq);
+      }
+      m.tracker.noteDiscard(k2MB);
+      ring.free_blocks(m.coherent_seq); // as the queue does when chunks complete
+      auto [block, offset] = ring.allocate(m.current_seq, m.coherent_seq, k2MB, 16);
+      if (!block.buffer || !block.mapped_address) {
+        fail("an update got no staging memory");
+        break;
+      }
+      std::memset(static_cast<char *>(block.mapped_address) + offset, int(i), 64);
+      peak = std::max(peak, ledger.snapshot().bytes[unsigned(guest_memory::Use::Staging)]);
+    }
+    const uint64_t bound = kDefaultDynamicInflightBytes + kDefaultDynamicCommitBytes + 2 * kStagingBlockSize;
+    std::printf("guest window: 2000 UpdateSubresource of 2 MB: peak %.1f MiB of staging (bound %.1f)\n",
+                peak / 1048576.0, bound / 1048576.0);
+    if (peak > bound)
+      fail("staging memory above the bound");
+    m.commit(); // the chunk being recorded too, so nothing keeps an allocation
+    while (!m.committed.empty())
+      m.finishOne();
+    ring.free_blocks(-1ull);
+  }
+
+  /* a failed guest allocation: the map fails (E_OUTOFMEMORY), the texture keeps its memory, the
+     calling thread's failure count moves */
+  {
+    Rc<Buffer> buffer = new Buffer(k2MB, WMT::Device{});
+    Flags<BufferAllocationFlag> flags;
+    flags.set(BufferAllocationFlag::CpuWriteCombined, BufferAllocationFlag::SuballocateFromOnePage,
+              BufferAllocationFlag::CpuPlaced);
+    auto initial = buffer->rename(buffer->allocate(flags));
+    (void)initial;
+    Rc<DynamicBuffer> dyn = new DynamicBuffer(buffer.ptr(), flags);
+    Model m(true);
+    void *before = dyn->immediateMappedMemory();
+    const uint64_t failures_before = guest_memory::ThreadFailures();
+    g_fail_alloc = true;
+    void *mapped = m.mapDiscard(*dyn);
+    g_fail_alloc = false;
+    if (mapped)
+      fail("a discard without memory still mapped");
+    if (dyn->immediateMappedMemory() != before)
+      fail("a failed discard replaced the texture's memory");
+    if (guest_memory::ThreadFailures() != failures_before + 1)
+      fail("the failure wasn't counted");
+    if (!m.mapDiscard(*dyn))
+      fail("the next discard, with memory again, failed");
+    m.commit(); // the chunk being recorded too, so nothing keeps an allocation
+    while (!m.committed.empty())
+      m.finishOne();
+  }
+
+  g_dynamic_guest_cap = false;
+  g_metal.refuse_without_memory = false;
+  return failures;
+}
+
 int
 main(int argc, char **argv) {
   bool check = false;
@@ -497,6 +659,8 @@ main(int argc, char **argv) {
   }
   if (new_mode)
     failures += CheckDeferredRing(); // spec 05 clarification 67
+  if (new_mode)
+    failures += CheckGuestWindow(); // spec 06 round 2
   std::printf("bench_dynamic_discard --check: %d failures\n", failures);
   return failures ? 1 : 0;
 }

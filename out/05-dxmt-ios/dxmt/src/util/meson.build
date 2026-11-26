@@ -1,4 +1,4 @@
-# Changed for MYIOSDECK (spec 05 E1, spec 06 D). Upstream: DXMT a3a6e8f, MIT.
+# Changed for MYIOSDECK (spec 05 E1, spec 06 D and round 2). Upstream: DXMT a3a6e8f, MIT.
 util_src = files([
   'util_atomic_wait.cpp',
   'util_env.cpp',
@@ -11,6 +11,8 @@ util_src = files([
   # 'util_shared_res.cpp',
   # 'util_sleep.cpp',
   'util_bloom.cpp',
+  'util_guest_memory.cpp', # MYIOSDECK spec 06 round 2
+  'util_guest_memory_log.cpp',
 
   'thread.cpp',
 

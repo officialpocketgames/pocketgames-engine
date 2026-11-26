@@ -1013,6 +1013,10 @@ static BOOL leave_to_app( int signal, siginfo_t *siginfo )
  */
 static void DECLSPEC_NORETURN end_process_from_signal( NTSTATUS status )
 {
+    /* MYIOSDECK (spec 09 round 6, 7): exactly as NtTerminateProcess(self, status): the server
+     * learns the exit code and kills the other threads, so the boot thread leaves too and the
+     * app's launch thread sees the program end; the direct end only if the server can't be told */
+    NtTerminateProcess( NtCurrentProcess(), status );
     ios_end_pseudo_process( status );
 }
 
@@ -2096,9 +2100,11 @@ __ASM_GLOBAL_FUNC( __wine_unix_call_dispatcher,
                    __ASM_CFI(".cfi_offset 26, -0x78\n\t")
                    __ASM_CFI(".cfi_offset 27, -0x70\n\t")
                    __ASM_CFI(".cfi_offset 28, -0x68\n\t")
-                   "ldr x16, [x0, x1, lsl 3]\n\t"
-                   "mov x0, x2\n\t"             /* args */
-                   "blr x16\n\t"
+                   /* MYIOSDECK (spec 09 round 6, 6): ios_unix_call( handle, code, args, caller )
+                    * checks the table (none bound, or an index past its known size, fails
+                    * without touching memory) and calls the entry */
+                   "mov x3, x30\n\t"            /* the caller's return address, for the log */
+                   "bl " __ASM_NAME("ios_unix_call") "\n\t"
                    "ldr w16, [sp, #0x10c]\n\t"  /* frame->restore_flags */
                    "cbnz w16, " __ASM_LOCAL_LABEL("__wine_syscall_dispatcher_return") "\n\t"
                    __ASM_CFI_CFA_IS_AT2(sp, 0x98, 0x02) /* frame->syscall_cfa */

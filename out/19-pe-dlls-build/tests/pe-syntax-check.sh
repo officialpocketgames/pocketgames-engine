@@ -71,18 +71,20 @@ for target in arm64ec aarch64 i686; do
     done
 done
 
-# vkd3d-shader with the overlay pe/libs/vkd3d/ (A14, A15, A16): its parser hlsl.y is made with bison,
-# then the parser and every vkd3d-shader file that includes hlsl.h compile with Wine's flags for
-# libs/vkd3d (vkd3d's own warnings stay warnings; errors fail)
+# vkd3d-shader with the overlay pe/libs/vkd3d/ (A14-A20): its parsers hlsl.y and preproc.y are made
+# with bison, then the parsers and every vkd3d-shader file that includes hlsl.h compile with Wine's
+# flags for libs/vkd3d (vkd3d's own warnings stay warnings; errors fail). The lexers need flex and
+# are built by test-vkd3d-hlsl.sh.
 vk="$top/pe/libs/vkd3d"
 if [ -d "$vk" ] && command -v bison >/dev/null 2>&1; then
     t="$gen/vkd3d"
     cp -R "$wine/libs/vkd3d" "$t"
     cp -R "$vk/." "$t/"
     s="$t/libs/vkd3d-shader"
-    if (cd "$s" && bison -d -o hlsl.tab.c hlsl.y 2> "$gen/bison.log"); then
+    if (cd "$s" && bison -d -o hlsl.tab.c hlsl.y 2> "$gen/bison.log" &&
+            bison -d -o preproc.tab.c preproc.y 2>> "$gen/bison.log"); then
         # plus every file the overlay replaces (tpf.c doesn't include hlsl.h)
-        vkfiles="$s/hlsl.tab.c $( (grep -l '#include "hlsl.h"' "$s"/*.c; cd "$vk/libs/vkd3d-shader" && ls *.c 2>/dev/null | sed "s|^|$s/|") | sort -u | tr '\n' ' ')"
+        vkfiles="$s/hlsl.tab.c $s/preproc.tab.c $( (grep -l '#include "hlsl.h"' "$s"/*.c; cd "$vk/libs/vkd3d-shader" && ls *.c 2>/dev/null | sed "s|^|$s/|") | sort -u | tr '\n' ' ')"
         for target in arm64ec aarch64 i686; do
             for f in $vkfiles; do
                 # shellcheck disable=SC2086
@@ -98,7 +100,7 @@ if [ -d "$vk" ] && command -v bison >/dev/null 2>&1; then
             done
         done
     else
-        echo "FAILED: bison hlsl.y: $(head -3 "$gen/bison.log")" >&2
+        echo "FAILED: bison hlsl.y or preproc.y: $(head -3 "$gen/bison.log")" >&2
         status=1
     fi
 fi

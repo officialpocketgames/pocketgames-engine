@@ -74,6 +74,22 @@ DynamicPoolHandsOut(uint32_t allocation_slices, uint32_t current_slices) {
   return allocation_slices >= current_slices;
 }
 
+/* MYIOSDECK spec 06 round 2: in a 32-bit program's guest window a dynamic resource holds at most
+   this many allocations of its own (the current one and the retired ones still queued). A
+   discard that needs a new one while it holds that many waits for the oldest to retire; its
+   memory is then reused, and it is freed with the resource. */
+constexpr uint32_t kGuestDynamicAllocations = 3;
+
+/* The chunk a discard must wait for before it allocates (0: none): `capped` (the guest window),
+   `held` allocations (current + queued), the oldest queued one retiring once the GPU has done
+   chunk `oldest_free_at` (0: none queued). */
+inline uint64_t
+GuestDiscardWaitSeq(bool capped, uint64_t held, uint64_t oldest_free_at, uint64_t coherent_seq) {
+  if (!capped || held < kGuestDynamicAllocations || oldest_free_at == 0 || oldest_free_at <= coherent_seq)
+    return 0;
+  return oldest_free_at;
+}
+
 /* Discarded bytes per command chunk, for the implicit commit and the in-flight
    cap. Used by one context, under its lock. */
 class DynamicDiscardTracker {

@@ -1,5 +1,6 @@
 // Changed for MYIOSDECK (spec 05 clarification 24: RecordingPresent; 57: SerializeBeforeCpuWrite). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 // Also changed for MYIOSDECK (spec 05 clarifications 63, 66, 67: call statistics, discards).
+// Also changed for MYIOSDECK (spec 06 round 2: a discard with no guest memory fails with E_OUTOFMEMORY).
 #include "d3d11_device.hpp"
 #include "d3d11_private.h"
 #include "d3d11_context_impl.cpp"
@@ -152,6 +153,9 @@ public:
                   ret != ctx_state.current_dynamic_buffer_allocations.end()
               )
             : dynamic->allocate(ctx_state.cmd_queue.CoherentSeqId(), &fresh);
+    // MYIOSDECK spec 06 round 2: no guest memory for it: the map fails with E_OUTOFMEMORY
+    if (!new_allocation->mappedMemory(0))
+      return nullptr;
     D11_WORK(if (fresh) {
       work_.discards[1][unsigned(d11cs::DiscardOutcome::NewBuffer)]++;
       work_.discard_new_bytes[1] += new_allocation->length();
@@ -198,6 +202,10 @@ public:
         DirtyDiscardedBuffer(pResource, bind_flag); // spec 05 clarification 66
 
         pMappedResource->pData = MapDynamicBuffer(dynamic);
+
+        if (!pMappedResource->pData)
+
+          return E_OUTOFMEMORY; // MYIOSDECK spec 06 round 2
         pMappedResource->RowPitch = buffer_length;
         pMappedResource->DepthPitch = buffer_length;
         break;
@@ -228,6 +236,8 @@ public:
       case D3D11_MAP_WRITE_DISCARD: {
         DirtyDiscardedTexture(pResource); // spec 05 clarification 66
         Rc<TextureAllocation> new_allocation = dynamic->allocate(ctx_state.cmd_queue.CoherentSeqId());
+        if (!new_allocation->mappedMemory)
+          return E_OUTOFMEMORY; // MYIOSDECK spec 06 round 2: no guest memory for it
         uint32_t id = ctx_state.current_cmdlist->used_dynamic_lineartextures.size();
         // track the current allocation in case of a following NO_OVERWRITE map
         auto ret = ctx_state.current_dynamic_texture_allocations.find(dynamic.ptr());
@@ -276,6 +286,8 @@ public:
       case D3D11_MAP_WRITE_DISCARD: {
         DirtyDiscardedTexture(pResource); // spec 05 clarification 66
         pMappedResource->pData = MapDynamicBuffer(dynamic);
+        if (!pMappedResource->pData)
+          return E_OUTOFMEMORY; // MYIOSDECK spec 06 round 2
         pMappedResource->RowPitch = row_pitch;
         pMappedResource->DepthPitch = depth_pitch;
         break;

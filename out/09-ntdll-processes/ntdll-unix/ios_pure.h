@@ -24,6 +24,14 @@ int ios_unixlib_symbol( const char *dll_name, int wow64, char *buf, size_t size 
 /* The same for the library's optional init entry: "x_unix_lib_init". */
 int ios_unixlib_init_symbol( const char *dll_name, char *buf, size_t size );
 
+/* Spec 09 round 6 item 6: whether a unix call may go to its table. has_table: the module's
+ * handle names a bound table (0 when the DLL's query for it failed); count_known/count: the
+ * table's entries, when the library gives them ("<table symbol>_count"). Returns 0 (call it),
+ * IOS_UNIX_NO_TABLE (STATUS_DLL_NOT_FOUND) or IOS_UNIX_BAD_INDEX (STATUS_INVALID_PARAMETER). */
+#define IOS_UNIX_NO_TABLE  0xc0000135u
+#define IOS_UNIX_BAD_INDEX 0xc000000du
+unsigned int ios_unix_call_check( int has_table, int count_known, unsigned int count, unsigned int code );
+
 /* ---------- Part C5 / C6: names of child programs ---------- */
 
 /* The file name part of a Windows or unix path (after the last '\\' or '/'). */

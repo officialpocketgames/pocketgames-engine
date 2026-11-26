@@ -1,6 +1,8 @@
 // Changed for MYIOSDECK (spec 06 B1; multi-slice allocations for dynamic-buffer discards). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 // Changed for MYIOSDECK (spec 33 B2: no placed buffers in the ios_wow_native build).
+// Changed for MYIOSDECK (spec 06 round 2: placed memory counted as guest memory, its failure seen).
 #include "dxmt_buffer.hpp"
+#include "util_guest_memory.hpp"
 #include "dxmt_format.hpp"
 #include "thread.hpp"
 #include "util_bitness.hpp"
@@ -40,7 +42,9 @@ BufferAllocation::BufferAllocation(
   if (flags_.test(BufferAllocationFlag::CpuPlaced)) {
     // Page-aligned for newBufferWithBytesNoCopy: (16 KB pages on iOS)
     info_.length = PlacedMemoryLength(info_.length);
-    placed_buffer = wsi::aligned_malloc(info_.length, kPlacedMemoryAlignment);
+    // MYIOSDECK spec 06 round 2: counted; a failure leaves the allocation without memory (the
+    // unix side then refuses the buffer, spec 06 B4) and the caller sees ThreadFailures move
+    placed_buffer = guest_memory::Alloc(info_.length, kPlacedMemoryAlignment, guest_memory::Use::Maps, "a buffer");
     info_.memory.set(placed_buffer);
   }
   obj_ = device.newBuffer(info_);
@@ -51,7 +55,7 @@ BufferAllocation::BufferAllocation(
 
 BufferAllocation::~BufferAllocation() {
   if (placed_buffer) {
-    wsi::aligned_free(placed_buffer);
+    guest_memory::Free(placed_buffer, info_.length, guest_memory::Use::Maps); // MYIOSDECK spec 06 round 2
     placed_buffer = nullptr;
   }
 }

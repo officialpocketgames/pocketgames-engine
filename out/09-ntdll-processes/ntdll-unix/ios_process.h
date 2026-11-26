@@ -142,6 +142,7 @@ struct ios_proc
     unsigned int               reused_count;
     struct ios_alloc_log       alloc_log;     /* spec 10 cl. 13-14: allocation lines, the pending run */
     unsigned int               mem_lines;     /* spec 10 cl. 15: `mem:` lines written */
+    unsigned int               big_reserve_lines; /* spec 09 round 6: `[vm] reserve` lines written */
     USHORT                     machine;       /* main image machine known before boot (children) */
     BOOL                       il_only_64;    /* IL-only .NET image without 32BITREQUIRED */
     pthread_t                  boot_thread;   /* children: the thread that boots it (detached) */
@@ -226,6 +227,10 @@ extern int ios_quiet;   /* PG_QUIET=1: no routine lines */
 
 /* ---- Part A ---- */
 extern NTSTATUS ios_unixlib_table( const char *dll_name, BOOL wow64, const void **funcs );
+extern NTSTATUS ios_unix_call( const void *funcs, unsigned int code, void *args, const void *caller );  /* round 6 */
+/* spec 09 round 6 (8, virtual.c): the physical-memory figures every report gives; the boot line */
+extern void ios_vm_memory_figures( struct ios_mem_figures *f );
+extern void ios_vm_log_memory( BOOL wow64 );
 extern BOOL ios_module_export_name( const void *module, char *buf, size_t size );
 extern BOOL ios_unicode_dll_name( const UNICODE_STRING *name, char *buf, size_t size );
 

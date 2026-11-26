@@ -4,6 +4,7 @@
 // 24-25: indirect read-backs, the barrier before an indirect dispatch; 27-28: the blit pass
 // after a traced dispatch; 30: state lines; 44-58: draw lines, bindings, read-backs, the serialize switch;
 // 63-73: call statistics and the round-17 cuts).
+// Also changed for MYIOSDECK (spec 06 round 2: the staging bound hook, dropped staging updates).
 // Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 /**
@@ -1334,6 +1335,8 @@ public:
            with the rest of the GPU timeline by blitting it into the staging buffer, like
            a copy into staging. */
         auto [upload, upload_offset] = AllocateStagingBuffer(copy_len, 16);
+        if (StagingDropped(upload)) // MYIOSDECK spec 06 round 2: no guest memory: the update is dropped
+          return;
         upload.updateContents(upload_offset, pSrcData, copy_len);
         SwitchToBlitEncoder(CommandBufferState::UpdateBlitEncoderActive);
         UseCopyDestination(staging);
@@ -1358,6 +1361,8 @@ public:
         //   return;
         // }
         auto [staging_buffer, offset] = AllocateStagingBuffer(copy_len, 16);
+        if (StagingDropped(staging_buffer)) // MYIOSDECK spec 06 round 2: no guest memory: the update is dropped
+          return;
         staging_buffer.updateContents(offset, pSrcData, copy_len);
         SwitchToBlitEncoder(CommandBufferState::UpdateBlitEncoderActive);
         EmitOP([staging_buffer, offset, dst = bindable->buffer(), copy_offset, copy_len](ArgumentEncodingContext &enc) {
@@ -3475,6 +3480,22 @@ public:
   template <typename T> moveonly_list<T> AllocateCommandData(size_t n = 1);
 
   std::tuple<WMT::Buffer, uint64_t> AllocateStagingBuffer(size_t size, size_t alignment);
+  /* MYIOSDECK spec 06 round 2: before a staging allocation of `size` bytes. The immediate
+     context of the i386 build counts it toward the discard bound (commit every 32 MiB, wait when
+     96 MiB are in flight), so staging ring blocks in the guest window stay bounded; elsewhere
+     nothing. */
+  virtual void BoundStagingMemory(size_t) {}
+  /* MYIOSDECK spec 06 round 2: a staging allocation that got no memory (the guest window is
+     full): its update is dropped, with one line per process */
+  static bool
+  StagingDropped(const WMT::Buffer &staging) {
+    if (likely(bool(staging)))
+      return false;
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true))
+      WARN("[dxmt-wow] an update was dropped: no staging memory");
+    return true;
+  }
   /* spec 05 clarification 24: the number of the present that ends the frame being recorded
      (immediate context), or 0 (a deferred context records for later) */
   uint64_t RecordingPresent();
@@ -4244,6 +4265,8 @@ public:
   ) {
     size_t total_bytes = row_bytes * height * depth;
     auto [staging_buffer, offset] = AllocateStagingBuffer(total_bytes, 16);
+    if (StagingDropped(staging_buffer)) // MYIOSDECK spec 06 round 2: no guest memory: the update is dropped
+      return;
     staging_buffer.updateContents(offset, texels, total_bytes);
     SwitchToBlitEncoder(CommandBufferState::UpdateBlitEncoderActive);
     EmitOP([staging_buffer, offset, dst = std::move(dst), level, slice, origin, width, height, depth,
@@ -4726,6 +4749,8 @@ public:
     if (auto dst = GetTexture(cmd.pDst)) {
       auto bytes_per_depth_slice = cmd.EffectiveRows * cmd.EffectiveBytesPerRow;
       auto [staging_buffer, offset] = AllocateStagingBuffer(bytes_per_depth_slice * cmd.DstSize.depth, 16);
+      if (StagingDropped(staging_buffer)) // MYIOSDECK spec 06 round 2: no guest memory: the update is dropped
+        return;
       if (cmd.EffectiveBytesPerRow == SrcRowPitch) {
         for (unsigned depthSlice = 0; depthSlice < cmd.DstSize.depth; depthSlice++) {
           auto dst_offset = offset + depthSlice * bytes_per_depth_slice;
@@ -4767,6 +4792,8 @@ public:
       const uint32_t dst_x = (bc ? cmd.DstOrigin.x >> 2 : cmd.DstOrigin.x) * cmd.DstFormat.BytesPerTexel;
       const uint32_t dst_y = bc ? cmd.DstOrigin.y >> 2 : cmd.DstOrigin.y;
       auto [upload, upload_offset] = AllocateStagingBuffer(row_bytes * rows * depth, 16);
+      if (StagingDropped(upload)) // MYIOSDECK spec 06 round 2: no guest memory: the update is dropped
+        return;
       for (uint32_t z = 0; z < depth; z++)
         for (uint32_t row = 0; row < rows; row++)
           upload.updateContents(

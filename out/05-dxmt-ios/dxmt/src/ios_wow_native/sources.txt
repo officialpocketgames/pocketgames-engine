@@ -60,6 +60,8 @@ util/util_atomic_wait.cpp
 util/util_env.cpp
 util/util_string.cpp
 util/util_bloom.cpp
+util/util_guest_memory.cpp
+util/util_guest_memory_log.cpp
 util/thread.cpp
 util/com/com_guid.cpp
 util/com/com_private_data.cpp

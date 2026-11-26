@@ -7,6 +7,8 @@
 
 #include "d3d9_device.hpp"
 #include "d3d9_fvf.hpp"
+#include "d3d9_vertex_input.hpp" // MYIOSDECK spec 07 clarification 6
+#include "log/log.hpp"
 
 #include <cstring>
 
@@ -56,6 +58,11 @@ MTLD3D9VertexDeclaration::MTLD3D9VertexDeclaration(
       break;
     }
   }
+  // MYIOSDECK spec 07 clarification 6: each distinct declaration logged once per process, at most
+  // 64 (the program's and those the device makes for an FVF alike)
+  static DeclarationLog declaration_log;
+  if (unsigned number = declaration_log.take(m_elements.data(), m_elements.size()))
+    Logger::info(DeclarationLine(number, m_elements.data(), m_elements.size()));
   // Self-pin matches the surface/texture/buffer pattern. Release's
   // m_self_pinned guard drops it exactly once on the first public->0
   // transition. Internal-cache callers pass selfPin=false because the

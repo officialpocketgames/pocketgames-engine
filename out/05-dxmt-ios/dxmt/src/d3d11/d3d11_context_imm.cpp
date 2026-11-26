@@ -4,6 +4,8 @@
 // Also changed for MYIOSDECK (spec 05 clarifications 63, 66, 67: call statistics, discards).
 // Also changed for MYIOSDECK (spec 05 round 18, items 80-83: a polled query parks; Flush's body
 // uncounted for the front end's own callers; the event value read at most once; query counts).
+// Also changed for MYIOSDECK (spec 06 round 2: guest memory per dynamic resource capped, map and
+// staging failures seen; the staging bound).
 #include "config/config.hpp"
 #include "d3d11_fence.hpp"
 #include "d3d11_private.h"
@@ -12,6 +14,7 @@
 #include "d3d11_context_impl.cpp"
 #include "dxmt_context.hpp"
 #include "dxmt_staging.hpp"
+#include "util_guest_memory.hpp" // MYIOSDECK spec 06 round 2
 
 namespace dxmt {
 struct ContextInternalState {
@@ -56,6 +59,7 @@ ImmediateContextBase::AllocateCommandData(size_t n) {
 template <>
 std::tuple<WMT::Buffer, uint64_t>
 ImmediateContextBase::AllocateStagingBuffer(size_t size, size_t alignment) {
+  BoundStagingMemory(size); // MYIOSDECK spec 06 round 2
   return ctx_state.cmd_queue.AllocateStagingBuffer(size, alignment);
 }
 
@@ -178,6 +182,34 @@ public:
     discard_tracker_.noteDiscard(slice_bytes);
   }
 
+  /* MYIOSDECK spec 06 round 2: a discard on a resource holding kGuestDynamicAllocations waits for
+     the oldest to retire after chunk `seq`; that chunk is committed first if it is still being
+     recorded. The chunk numbers are read again afterwards. */
+  void
+  WaitForGuestRetire(uint64_t seq, uint64_t &current_seq_id, uint64_t &coherent_seq_id) {
+    if (seq >= cmd_queue.CurrentSeqId()) {
+      if (!InvalidateCurrentPass())
+        Commit();
+    }
+    cmd_queue.WaitCPUFence(seq);
+    current_seq_id = cmd_queue.CurrentSeqId();
+    coherent_seq_id = cmd_queue.CoherentSeqId();
+    discard_tracker_.retire(coherent_seq_id);
+  }
+
+  /* MYIOSDECK spec 06 round 2: UpdateSubresource's and the copies' staging, in the i386 build,
+     counts toward the discard bound */
+  void
+  BoundStagingMemory(size_t size) override {
+    if constexpr (guest_memory::kGuestWindowHeap) {
+      uint64_t current_seq_id = cmd_queue.CurrentSeqId(), coherent_seq_id = cmd_queue.CoherentSeqId();
+      BoundDiscardMemory(size, current_seq_id, coherent_seq_id);
+    } else {
+      (void)size;
+    }
+  }
+
+  /* null: no memory for a new allocation (spec 06 round 2); Map returns E_OUTOFMEMORY */
   void *
   MapDynamicBuffer(Rc<DynamicBuffer> &dynamic, uint64_t current_seq_id, uint64_t coherent_seq_id) {
     BoundDiscardMemory(DynamicSliceBytes(dynamic->buffer->length()), current_seq_id, coherent_seq_id);
@@ -187,12 +219,19 @@ public:
         allocation->useSuballocation(next_sub);
       });
     } else {
+      // MYIOSDECK spec 06 round 2: in a guest window, at most kGuestDynamicAllocations per resource
+      if (uint64_t seq = dynamic->guestWaitSeq(coherent_seq_id))
+        WaitForGuestRetire(seq, current_seq_id, coherent_seq_id);
       // spec 05 clarification 67: with DXMT_D11_DEFERRED_RING the pool hands out no allocation
       // smaller than the buffer's current slice count (the immediate context's growth stays)
       bool fresh = false;
       auto allocation = CutSettingsOnce()[CutSwitch::DeferredRing]
                             ? dynamic->allocateRing(coherent_seq_id, &fresh, current_seq_id, false)
                             : dynamic->allocate(coherent_seq_id, &fresh, current_seq_id);
+      // MYIOSDECK spec 06 round 2: no memory for it (the guest window is full): the map fails
+      // with E_OUTOFMEMORY and the resource keeps its current allocation
+      if (!allocation->mappedMemory(0))
+        return nullptr;
       D11_WORK(if (fresh) {
         work_.discards[0][unsigned(d11cs::DiscardOutcome::NewBuffer)]++;
         work_.discard_new_bytes[0] += allocation->length();
@@ -236,6 +275,8 @@ public:
         DirtyDiscardedBuffer(pResource, bind_flag); // spec 05 clarification 66
 
         pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
+        if (!pMappedResource->pData)
+          return E_OUTOFMEMORY; // MYIOSDECK spec 06 round 2: no guest memory for the discard
         pMappedResource->RowPitch = buffer_length;
         pMappedResource->DepthPitch = buffer_length;
         break;
@@ -260,6 +301,8 @@ public:
         DirtyDiscardedTexture(pResource); // spec 05 clarification 66
 
         pMappedResource->pData = MapDynamicBuffer(dynamic, current_seq_id, coherent_seq_id);
+        if (!pMappedResource->pData)
+          return E_OUTOFMEMORY; // MYIOSDECK spec 06 round 2: no guest memory for the discard
         pMappedResource->RowPitch = row_pitch;
         pMappedResource->DepthPitch = depth_pitch;
         break;
@@ -276,7 +319,14 @@ public:
       case D3D11_MAP_WRITE_DISCARD: {
         DirtyDiscardedTexture(pResource); // spec 05 clarification 66
 
-        dynamic->updateImmediateName(current_seq_id, dynamic->allocate(coherent_seq_id), false);
+        // MYIOSDECK spec 06 round 2: in a guest window, at most kGuestDynamicAllocations per
+        // texture; an allocation with no memory fails the map with E_OUTOFMEMORY
+        if (uint64_t seq = dynamic->guestWaitSeq(coherent_seq_id))
+          WaitForGuestRetire(seq, current_seq_id, coherent_seq_id);
+        auto allocation = dynamic->allocate(coherent_seq_id);
+        if (!allocation->mappedMemory)
+          return E_OUTOFMEMORY;
+        dynamic->updateImmediateName(current_seq_id, std::move(allocation), false);
         EmitST([allocation = dynamic->immediateName(),
               texture = Rc(dynamic->texture)](ArgumentEncodingContext &enc) mutable {
           auto _ = texture->rename(forward_rc(allocation));

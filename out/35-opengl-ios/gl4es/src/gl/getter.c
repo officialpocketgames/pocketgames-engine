@@ -1,6 +1,7 @@
-// Changed for MYIOSDECK (spec 35 C3.4, out/35-opengl-ios/CHANGES.md): with GL4ES_IOS the
-// vendor, renderer, GLSL version and extension strings name no library, and the pass-through
-// to GLES's strings is closed. gl4es is MIT (its LICENSE).
+// Changed for MYIOSDECK (spec 35 C3.4, clarification 13, out/35-opengl-ios/CHANGES.md): with
+// GL4ES_IOS the vendor, renderer, GLSL version and extension strings name no library, the
+// pass-through to GLES's strings is closed, and the pixel-buffer extensions are listed. gl4es is
+// MIT (its LICENSE).
 #include <gl4eshint.h>
 #include "../glx/hardext.h"
 #include "debug.h"
@@ -143,6 +144,10 @@ void BuildExtensionsList() {
                 "GL_ARB_draw_elements_base_vertex "
                 "GL_EXT_draw_elements_base_vertex "
                 "GL_ARB_map_buffer_range "
+                #ifdef GL4ES_IOS // spec 35 clarification 13: pixel buffers work (through their CPU copy)
+                "GL_ARB_pixel_buffer_object "
+                "GL_EXT_pixel_buffer_object "
+                #endif
                 "GL_NV_blend_square "
 //                "GL_EXT_blend_logic_op "
 				);

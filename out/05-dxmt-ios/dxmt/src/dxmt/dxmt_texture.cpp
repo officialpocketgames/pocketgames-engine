@@ -1,6 +1,8 @@
 // Changed for MYIOSDECK (spec 05 D5, H7; spec 06 B). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 // Changed for MYIOSDECK (spec 33 B2: buffer-backed textures of the ios_wow_native build from Part C).
+// Changed for MYIOSDECK (spec 06 round 2: placed memory counted as guest memory, its failure seen).
 #include "dxmt_texture.hpp"
+#include "util_guest_memory.hpp"
 #include "dxmt_residency.hpp"
 #include "util_placed_memory.hpp"
 #include "wsi_platform.hpp"
@@ -80,7 +82,7 @@ TextureAllocation::TextureAllocation(
 
 TextureAllocation::~TextureAllocation(){
 #if defined(__i386__) || defined(DXMT_IOS_WOW_NATIVE) /* MYIOSDECK spec 33 B2 */
-  wsi::aligned_free(mappedMemory);
+  guest_memory::Free(mappedMemory, placedLength, guest_memory::Use::Maps); // spec 06 round 2
 #endif
 };
 
@@ -213,10 +215,19 @@ Texture::allocate(Flags<TextureAllocationFlag> flags) {
     // MYIOSDECK spec 33 B2: in the ios_wow_native build too, from Part C (a d3d9
     // buffer-backed texture's LockRect hands this memory to the program).
     buffer_info.length = PlacedMemoryLength(bytes_per_image_);
-    buffer_info.memory.set(wsi::aligned_malloc(buffer_info.length, kPlacedMemoryAlignment));
+    // MYIOSDECK spec 06 round 2: counted; a failure leaves no memory (mappedMemory null, the unix
+    // side refuses the buffer) and the caller sees ThreadFailures move
+    buffer_info.memory.set(
+        guest_memory::Alloc(buffer_info.length, kPlacedMemoryAlignment, guest_memory::Use::Maps, "a linear texture")
+    );
 #endif
     auto buffer = device_.newBuffer(buffer_info);
-    return new TextureAllocation(this, std::move(buffer), buffer_info.memory.get(), info, bytes_per_row_, flags);
+    auto allocation =
+        new TextureAllocation(this, std::move(buffer), buffer_info.memory.get(), info, bytes_per_row_, flags);
+#if defined(__i386__) || defined(DXMT_IOS_WOW_NATIVE)
+    allocation->placedLength = buffer_info.length;
+#endif
+    return allocation;
   }
   auto texture = flags.test(TextureAllocationFlag::Shared) ? device_.newSharedTexture(info) : device_.newTexture(info);
   return new TextureAllocation(this, std::move(texture), info, flags);

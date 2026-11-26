@@ -3,6 +3,7 @@
 // from dxmt-d3d9 v0.4-d3d9 (e8dd4c6), marked inline, see LICENSE-NOTES.md; spec 05 clarification 10:
 // an LGPL-2.1-or-later block from steamac's DXMT patch 0002, marked inline). Upstream: DXMT a3a6e8f, MIT.
 // Changed for MYIOSDECK (spec 33 B2: ring memory of the ios_wow_native build from the native heap).
+// Changed for MYIOSDECK (spec 06 round 2: placed blocks counted as guest memory; a failed one dropped).
 
 #include "Metal.hpp"
 #include "log/log.hpp"
@@ -16,6 +17,7 @@
 #include "util_ios_switch.hpp"
 #include "util_placed_memory.hpp"
 #include "wsi_platform.hpp"
+#include "util_guest_memory.hpp" // MYIOSDECK spec 06 round 2
 #endif
 
 namespace dxmt {
@@ -201,13 +203,21 @@ public:
     /* MYIOSDECK spec 33 B2: memory only Metal and the frontend touch: the native heap */
     return ios_wow_native::allocHost(PlacedMemoryLength(size), kPlacedMemoryAlignment);
 #else
-    return wsi::aligned_malloc(PlacedMemoryLength(size), kPlacedMemoryAlignment);
+    /* MYIOSDECK spec 06 round 2: counted as guest memory; null when there is none left */
+    return guest_memory::Alloc(
+        PlacedMemoryLength(size), kPlacedMemoryAlignment, guest_memory::Use::Staging, "a staging ring block"
+    );
 #endif
   }
 
   static void
-  freePlaced(void *ptr) {
+  freePlaced(void *ptr, size_t size) {
+#ifdef DXMT_IOS_WOW_NATIVE
+    (void)size;
     wsi::aligned_free(ptr);
+#else
+    guest_memory::Free(ptr, PlacedMemoryLength(size), guest_memory::Use::Staging);
+#endif
   }
 #else
   static void *
@@ -216,7 +226,7 @@ public:
   }
 
   static void
-  freePlaced(void *ptr) {
+  freePlaced(void *ptr, size_t) {
     free(ptr);
   }
 #endif
@@ -230,6 +240,14 @@ public:
        under the buffer, freed with the block. mapped_address is where newBuffer says
        the contents are, which a unix side may back with other memory. */
     void *placed_address;
+    size_t placed_size = 0; // MYIOSDECK spec 06 round 2: for the guest-memory ledger
+    bool placed_failed = false;
+
+    /* MYIOSDECK spec 06 round 2: its placed memory couldn't be had */
+    bool
+    failed() const {
+      return placed_failed;
+    }
 
     ~Block() {
 #ifdef DXMT_IOS
@@ -238,7 +256,7 @@ public:
       buffer = WMT::Reference<WMT::Buffer>();
 #endif
       if (placed_address) {
-        freePlaced(placed_address);
+        freePlaced(placed_address, placed_size);
         placed_address = nullptr;
       }
       mapped_address = nullptr;
@@ -252,6 +270,8 @@ public:
       gpu_address = move.gpu_address;
       mapped_address = move.mapped_address;
       placed_address = move.placed_address;
+      placed_size = move.placed_size;
+      placed_failed = move.placed_failed;
       move.mapped_address = nullptr;
       move.placed_address = nullptr;
     };
@@ -261,6 +281,8 @@ public:
   allocate(size_t block_size) {
     Block block{};
     block.placed_address = placed_buffer_ ? allocatePlaced(block_size) : nullptr;
+    block.placed_size = block_size;
+    block.placed_failed = placed_buffer_ && !block.placed_address; // MYIOSDECK spec 06 round 2
     WMTBufferInfo info;
     info.options = buffer_info_;
     info.memory.set(block.placed_address);
@@ -405,6 +427,19 @@ RingBumpState<Allocator, BlockSize, mutex>::allocate_or_reuse_block(
       .block = allocator_.allocate(block_size),
       .reusable_oversize = reusable_oversize,
   });
+  /* MYIOSDECK spec 06 round 2: a block whose placed memory couldn't be had serves this one
+     request (its caller sees the null buffer) and is dropped at the next free_blocks, never
+     suballocated again */
+  if constexpr (requires(typename Allocator::Block &b) { b.failed(); }) {
+    if (fifo.back().block.failed()) {
+#ifdef DXMT_IOS
+      if (fifo.back().reusable_oversize)
+        kept_oversize_--;
+#endif
+      fifo.back().reusable_oversize = false;
+      fifo.back().total_size = 0;
+    }
+  }
   return fifo.back();
 };
 

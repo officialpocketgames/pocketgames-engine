@@ -24,6 +24,55 @@ uint64_t ios_vm_user_limit( uint64_t task_max_address, uint64_t windows_limit )
     return limit;
 }
 
+/* ---------- spec 09 round 6 ---------- */
+
+uint64_t ios_vm_reported_highest( uint64_t user_limit )
+{
+    return user_limit - 1;
+}
+
+int ios_big_reserve_due( uint32_t type, uint64_t size )
+{
+    return (type & 0x2000 /* MEM_RESERVE */) && size >= IOS_BIG_RESERVE_SIZE;
+}
+
+char *ios_big_reserve_line( char *buf, size_t len, uint64_t size, uint64_t asked, uint32_t type,
+                            uint32_t status, uint64_t result )
+{
+    char at[24];
+
+    if (!len) return buf;
+    if (asked) snprintf( at, sizeof(at), "%#llx", (unsigned long long)asked );
+    else snprintf( at, sizeof(at), "any" );
+    snprintf( buf, len, "[vm] reserve %#llx at %s (type %#x): %#x -> %#llx", (unsigned long long)size, at,
+              (unsigned int)type, (unsigned int)status, status ? 0ull : (unsigned long long)result );
+    return buf;
+}
+
+int ios_line_budget_take( unsigned int *count, unsigned int max )
+{
+    if (*count >= max) return 0;
+    (*count)++;
+    return 1;
+}
+
+void ios_mem_figures( uint64_t memsize, uint64_t app_avail, uint64_t page_size, struct ios_mem_figures *f )
+{
+    uint64_t total = memsize ? memsize : app_avail, avail, total_pages, avail_pages;
+
+    if (!page_size) page_size = 0x1000;
+    if (!total) total = page_size;
+    avail = (app_avail && app_avail < total) ? app_avail : total;
+    total_pages = total / page_size;
+    avail_pages = avail / page_size;
+    if (total_pages > 0xfffffffe) total_pages = 0xfffffffe;   /* the fields are 32-bit page counts */
+    if (avail_pages > total_pages) avail_pages = total_pages;
+    f->total_pages  = (uint32_t)total_pages;
+    f->avail_pages  = (uint32_t)avail_pages;
+    f->commit_limit = (uint32_t)total_pages + 1;
+    f->committed    = (uint32_t)(total_pages - avail_pages);
+}
+
 /* ---------- Part E4/E5 ---------- */
 
 uint64_t ios_wow_ceiling( int large_address_aware, const char *env_laa )

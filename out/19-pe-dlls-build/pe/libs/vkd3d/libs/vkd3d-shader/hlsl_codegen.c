@@ -7,6 +7,9 @@
  * SV_ClipDistance / SV_CullDistance variable a register of its own (with tpf.c's change,
  * Shader Model 4 and later accept these semantics).
  *
+ * Changed for MYIOSDECK (spec 19 A19): ctab_write_uniforms() writes the target string (the
+ * profile name) into the Direct3D 9 constant table.
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
@@ -10998,6 +11001,7 @@ static void sm1_sort_externs(struct hlsl_ctx *ctx)
 static void ctab_write_uniforms(struct ctab_ctx *ctab)
 {
     size_t ctab_start, vars_offset, vars_start, creator_offset, offset;
+    size_t target_offset;  /* MYIOSDECK (spec 19 A19) */
     struct vkd3d_bytecode_buffer *buffer = &ctab->buffer;
     unsigned int uniform_count = 0, r;
     struct hlsl_ctx *ctx = ctab->hlsl;
@@ -11037,7 +11041,7 @@ static void ctab_write_uniforms(struct ctab_ctx *ctab)
     put_u32(buffer, uniform_count);
     vars_offset = put_u32(buffer, 0);
     put_u32(buffer, 0); /* FIXME: flags */
-    put_u32(buffer, 0); /* FIXME: target string */
+    target_offset = put_u32(buffer, 0); /* MYIOSDECK (spec 19 A19): the target string, set below */
 
     vars_start = bytecode_align(buffer);
     set_u32(buffer, vars_offset, vars_start - ctab_start);
@@ -11163,6 +11167,11 @@ static void ctab_write_uniforms(struct ctab_ctx *ctab)
 
     offset = put_string(buffer, vkd3d_shader_get_version(NULL, NULL));
     set_u32(buffer, creator_offset, offset - ctab_start);
+
+    /* MYIOSDECK (spec 19 A19): the profile name, as Microsoft's compiler writes it (1.19 left
+     * the offset 0, which points at the table's size field) */
+    offset = put_string(buffer, ctx->profile->name);
+    set_u32(buffer, target_offset, offset - ctab_start);
 }
 
 static void ctab_ctx_cleanup(struct ctab_ctx *ctab)

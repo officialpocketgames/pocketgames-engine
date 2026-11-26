@@ -23,6 +23,38 @@
  * the Windows limit. A max_address of 0 (unknown) gives the Windows limit. */
 uint64_t ios_vm_user_limit( uint64_t task_max_address, uint64_t windows_limit );
 
+/* ---------- spec 09 round 6: the highest user address, large reservations ----------
+ * ios_vm_reported_highest: what SystemBasicInformation (and so GetSystemInfo's
+ * lpMaximumApplicationAddress) tells a 64-bit program: the last byte below user_limit, the
+ * limit the allocator searches below and checks explicit bases against (ios_vm_user_limit). */
+uint64_t ios_vm_reported_highest( uint64_t user_limit );
+
+/* ios_big_reserve_due: a reservation (MEM_RESERVE, placeholder or not) of 1 GB or more.
+ * ios_big_reserve_line: "[vm] reserve <size> at <asked base|any> (type <hex>): <status> ->
+ * <address>" (address 0 after a failure); returns buf. ios_line_budget_take: 1 while *count is
+ * below max (and counts it), else 0. */
+#define IOS_BIG_RESERVE_SIZE  0x40000000ull
+#define IOS_BIG_RESERVE_LINES 32
+int ios_big_reserve_due( uint32_t type, uint64_t size );
+char *ios_big_reserve_line( char *buf, size_t len, uint64_t size, uint64_t asked, uint32_t type,
+                            uint32_t status, uint64_t result );
+int ios_line_budget_take( unsigned int *count, unsigned int max );
+
+/* Spec 09 round 6 item 8: the physical-memory figures every report gives, in pages of page_size
+ * (4 KB). memsize: hw.memsize (0: not known; then the app's share stands in for it); app_avail:
+ * what iOS lets this app still use (os_proc_available_memory; 0: not known, then all of it).
+ * Available is never more than total. The commit limit (the page file) is the physical memory
+ * plus one page, so a page file is never smaller than physical memory (upstream's rule for
+ * programs that check it); committed is what isn't available. */
+struct ios_mem_figures
+{
+    uint32_t total_pages;
+    uint32_t avail_pages;
+    uint32_t commit_limit;
+    uint32_t committed;
+};
+void ios_mem_figures( uint64_t memsize, uint64_t app_avail, uint64_t page_size, struct ios_mem_figures *f );
+
 /* ---------- Part E4/E5: guest limits ---------- */
 
 /* The ceiling reported to 32-bit code (exclusive): 4 GB, or 2 GB for an image without

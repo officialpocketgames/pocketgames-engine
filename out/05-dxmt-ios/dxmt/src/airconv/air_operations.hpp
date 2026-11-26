@@ -1,4 +1,4 @@
-// Changed for MYIOSDECK (spec 07 A2): contains an LGPL-2.1-or-later block from dxmt-d3d9
+// Changed for MYIOSDECK (spec 07 A2 and clarification 6): contains an LGPL-2.1-or-later block from dxmt-d3d9
 // v0.4-d3d9 (e8dd4c6), marked inline (see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT.
 #pragma once
 
@@ -94,6 +94,8 @@ enum class MTLAttributeFormat {
   // normalized. Defined once in airconv_public.h beside the element struct
   // that carries it, since the host side sets it and this side consumes it.
   UInt1010102 = DXSO_ATTR_FORMAT_UDEC3,
+  /* MYIOSDECK spec 07 clarification 6: D3DDECLTYPE_DEC3N, signed normalized 10:10:10 with w = 1 */
+  Int1010102NormalizedW1 = DXSO_ATTR_FORMAT_DEC3N,
 };
 
 AIRBuilderResult pull_vec4_from_addr(

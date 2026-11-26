@@ -5,12 +5,14 @@
 // Also changed for MYIOSDECK (spec 05 round 17: 63 pass counts, 64 the trace's pass lines, 68 the compute and
 // blit merge, 69-72 the pass cuts, 73 the switches).
 // Changed for MYIOSDECK (spec 33 B2, clarification 9: the ios_wow_native build's memory, no frame trace or dump).
+// Changed for MYIOSDECK (spec 06 round 2: the dummy constant buffer counted as guest memory).
 #include "dxmt_context.hpp"
 #include "Metal.hpp"
 #include "dxmt_command_queue.hpp"
 #include "dxmt_cuts.hpp"       // spec 05 clarification 73
 #include "dxmt_pass_stats.hpp" // spec 05 clarification 63
 #include "util_placed_memory.hpp"
+#include "util_guest_memory.hpp" // MYIOSDECK spec 06 round 2
 #ifdef DXMT_IOS
 #include "util_bitness.hpp"
 #include "util_ios_switch.hpp"
@@ -73,19 +75,25 @@ ArgumentEncodingContext::ArgumentEncodingContext(CommandQueue &queue, WMT::Devic
   // MYIOSDECK spec 33 B2: only Metal reads it: the native heap
   dummy_cbuffer_host_ = ios_wow_native::allocHost(65536, kPlacedMemoryAlignment);
 #else
-  dummy_cbuffer_host_ = wsi::aligned_malloc(65536, kPlacedMemoryAlignment); // 16 KB pages on iOS
+  // 16 KB pages on iOS; MYIOSDECK spec 06 round 2: counted as guest memory
+  dummy_cbuffer_host_ = guest_memory::Alloc(65536, kPlacedMemoryAlignment, guest_memory::Use::Other, "the dummy constant buffer");
 #endif
   dummy_cbuffer_info_.length = 65536;
   dummy_cbuffer_info_.memory.set(dummy_cbuffer_host_);
   dummy_cbuffer_info_.options = WMTResourceOptionCPUCacheModeWriteCombined | WMTResourceStorageModeShared |
                                 WMTResourceHazardTrackingModeUntracked;
   dummy_cbuffer_ = device.newBuffer(dummy_cbuffer_info_);
-  std::memset(dummy_cbuffer_info_.memory.get(), 0, 65536);
+  if (dummy_cbuffer_info_.memory.get()) // MYIOSDECK spec 06 round 2: none when guest memory ran out
+    std::memset(dummy_cbuffer_info_.memory.get(), 0, 65536);
   cpu_buffer_chunks_.emplace_back();
 };
 
 ArgumentEncodingContext::~ArgumentEncodingContext() {
+#ifdef DXMT_IOS_WOW_NATIVE
   wsi::aligned_free(dummy_cbuffer_host_);
+#else
+  guest_memory::Free(dummy_cbuffer_host_, 65536, guest_memory::Use::Other); // MYIOSDECK spec 06 round 2
+#endif
 };
 
 template void ArgumentEncodingContext::encodeVertexBuffers<PipelineKind::Ordinary>(uint32_t slot_mask, uint64_t argument_buffer_offset);

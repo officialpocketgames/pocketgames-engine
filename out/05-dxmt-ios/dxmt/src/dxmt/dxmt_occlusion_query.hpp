@@ -1,9 +1,10 @@
 #pragma once
-// Changed for MYIOSDECK (spec 05 H1; spec 06 B). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 05 H1; spec 06 B and round 2). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 #include "Metal.hpp"
 #include "rc/util_rc_ptr.hpp"
 #include "util_placed_memory.hpp"
+#include "util_guest_memory.hpp" // MYIOSDECK spec 06 round 2
 #include "wsi_platform.hpp"
 #include <atomic>
 #include <cassert>
@@ -178,9 +179,11 @@ public:
 #ifdef __i386__
         // spec 06 B: page-aligned for newBufferWithBytesNoCopy: (16 KB pages on iOS)
         visibility_result_heap_info.length = PlacedMemoryLength(num_results * sizeof(uint64_t));
-        visibility_result_heap_info.memory.set(
-            wsi::aligned_malloc(visibility_result_heap_info.length, kPlacedMemoryAlignment)
-        );
+        // MYIOSDECK spec 06 round 2: counted as guest memory; without it the queries end with no
+        // results (see the destructor)
+        visibility_result_heap_info.memory.set(guest_memory::Alloc(
+            visibility_result_heap_info.length, kPlacedMemoryAlignment, guest_memory::Use::Other, "occlusion results"
+        ));
 #endif
         visibility_result_heap = device.newBuffer(visibility_result_heap_info);
       }
@@ -201,11 +204,18 @@ public:
         query->markIssued(seq_id);
       return;
     }
+    if (!visibility_result_heap_info.memory.get()) {
+      /* MYIOSDECK spec 06 round 2: the guest memory for the results couldn't be had */
+      for (auto query : queries)
+        query->markIssued(seq_id);
+      return;
+    }
     for (auto query : queries) {
       query->issue(seq_id, (uint64_t *)visibility_result_heap_info.memory.get(), num_results);
     }
 #ifdef __i386__
-    wsi::aligned_free(visibility_result_heap_info.memory.get());
+    guest_memory::Free(visibility_result_heap_info.memory.get(), visibility_result_heap_info.length,
+                       guest_memory::Use::Other); // MYIOSDECK spec 06 round 2
 #endif
   }
 

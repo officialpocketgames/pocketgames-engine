@@ -1,9 +1,32 @@
 // Changed for MYIOSDECK (spec 05 D4; multi-slice discards; clarification 67: allocateRing; spec 07 A2: LGPL-2.1-or-later lines from dxmt-d3d9 v0.4-d3d9,
 // marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+// Changed for MYIOSDECK (spec 06 round 2: at most kGuestDynamicAllocations per resource in a guest window).
 #include "dxmt_dynamic.hpp"
 #include "dxmt_texture.hpp"
+#include "util_guest_memory.hpp"
 
 namespace dxmt {
+
+/* MYIOSDECK spec 06 round 2: on where placed memory comes from the guest window; the host
+   tests set it */
+bool g_dynamic_guest_cap = guest_memory::kGuestWindowHeap;
+
+uint64_t
+DynamicBuffer::guestWaitSeq(uint64_t coherent_seq_id) {
+  std::lock_guard<dxmt::mutex> lock(mutex_);
+  return GuestDiscardWaitSeq(
+      g_dynamic_guest_cap, fifo.size() + 1, fifo.empty() ? 0 : fifo.front().will_free_at, coherent_seq_id
+  );
+}
+
+uint64_t
+DynamicLinearTexture::guestWaitSeq(uint64_t coherent_seq_id) {
+  std::lock_guard<dxmt::mutex> lock(mutex_);
+  return GuestDiscardWaitSeq(
+      g_dynamic_guest_cap, fifo.size() + 1, fifo.empty() ? 0 : fifo.front().will_free_at, coherent_seq_id
+  );
+}
+
 DynamicBuffer::DynamicBuffer(Buffer *buffer, Flags<BufferAllocationFlag> flags) :
     buffer(buffer),
     flags_(flags),
@@ -36,6 +59,11 @@ DynamicBuffer::allocate(uint64_t coherent_seq_id, bool *out_minted_fresh, uint64
     fifo.pop_front();
     break;
   }
+  // MYIOSDECK spec 06 round 2: in a guest window, finished ones beyond the cap are released
+  // (the queue, the current one and the one handed out within kGuestDynamicAllocations)
+  while (g_dynamic_guest_cap && ret.ptr() && !fifo.empty() && fifo.size() + 2 > kGuestDynamicAllocations &&
+         fifo.front().will_free_at <= coherent_seq_id)
+    fifo.pop_front();
 #ifdef DXMT_IOS
   // Spec 05 D4: the queue of retired allocations never shrank. Entries are
   // queued in order of their retire point, so the ones whose GPU work has
@@ -88,6 +116,11 @@ DynamicBuffer::allocateRing(uint64_t coherent_seq_id, bool *out_minted_fresh, ui
       break;
     }
   }
+  // MYIOSDECK spec 06 round 2: as allocate(); a deferred context doesn't wait for the GPU, so
+  // only finished ones are released here
+  while (g_dynamic_guest_cap && ret.ptr() && !fifo.empty() && fifo.size() + 2 > kGuestDynamicAllocations &&
+         fifo.front().will_free_at <= coherent_seq_id)
+    fifo.pop_front();
 #ifdef DXMT_IOS
   // spec 05 D4's limit stays: at most 64 finished entries
   constexpr size_t kMaxFinishedEntries = 64;
@@ -177,6 +210,10 @@ DynamicLinearTexture::allocate(uint64_t coherent_seq_id) {
     fifo.pop();
     break;
   }
+  // MYIOSDECK spec 06 round 2: as DynamicBuffer::allocate
+  while (g_dynamic_guest_cap && ret.ptr() && !fifo.empty() && fifo.size() + 2 > kGuestDynamicAllocations &&
+         fifo.front().will_free_at <= coherent_seq_id)
+    fifo.pop();
   if (!ret.ptr())
     ret = texture->allocate(flags_);
   return ret;

@@ -1,9 +1,11 @@
 // Changed for MYIOSDECK (spec 05; FLIP_SEQUENTIAL accepted, see d3d11_swap_effect.hpp; clarification 63: Present counted). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 // Also changed for MYIOSDECK (spec 05 round 19, item 88: rotation, background colour, source size
 // and restrict-to output answer instead of aborting; see d3d11_swapchain_state.hpp).
+// Also changed for MYIOSDECK (spec 06 round 2: the guest-memory line is checked at each Present).
 #include "d3d11_swapchain.hpp"
 #include "d3d11_swap_effect.hpp"
 #include "d3d11_swapchain_state.hpp"
+#include "util_guest_memory.hpp" // MYIOSDECK spec 06 round 2
 #include "com/com_guid.hpp"
 #include "config/config.hpp"
 #include "d3d11_private.h"
@@ -759,6 +761,7 @@ public:
   HRESULT
   PresentUncounted(UINT SyncInterval, UINT PresentFlags,
                    const DXGI_PRESENT_PARAMETERS *pPresentParameters) {
+    guest_memory::Tick(); // MYIOSDECK spec 06 round 2: the 10 s guest-memory line (i386 build)
     if (SyncInterval > 4)
       return DXGI_ERROR_INVALID_CALL;
 

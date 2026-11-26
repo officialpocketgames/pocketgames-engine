@@ -7,8 +7,9 @@
 # of tests/vkd3d-hlsl/ to what Microsoft's compiler makes of them. It also builds Wine's copy
 # without the overlay and expects the ANGLE shader to fail there, so the test keeps proving that
 # it exercises the bug. A15 (half for Shader Model 4 and later), A16 (SV_ClipDistance and
-# SV_CullDistance) and A17 (legacy texture intrinsics, constant offsets and sizes, a field named
-# pixel) add their checks below.
+# SV_CullDistance), A17 (legacy texture intrinsics, constant offsets and sizes, a field named
+# pixel), A19 (Shader Model 1-3 constant tables) and A20 (shifts in #if, ?: on structs) add
+# their checks below.
 #   test-vkd3d-hlsl.sh [build-dir]
 # VKD3D_RELEASE is the unpacked vkd3d 1.19 release (dl.winehq.org/vkd3d/source/vkd3d-1.19.tar.xz,
 # SHA-256 034613605baab8ba84674f8d272cf22b5e86bc6bc03fc5728ef9bce07308baa6): its include/ holds
@@ -108,7 +109,7 @@ EOF
         objs="$objs $o"
     done
     # shellcheck disable=SC2086
-    $cc -std=c11 -Wall -Wextra -Werror -I"$driver_inc" -o "$out/hlslc" "$cases/hlslc.c" $objs -lm -lpthread ||
+    $cc -std=c11 -Wall -Wextra -Werror -I"$driver_inc" -I"$top/pe/dlls/d3dcompiler_43" -o "$out/hlslc" "$cases/hlslc.c" $objs -lm -lpthread ||
         { fail "$1: link hlslc"; return 1; }
 }
 
@@ -244,6 +245,55 @@ code ps_4_0 '' array-size-static-const.hlsl '^dcl_constantBuffer cb0\[7\],' 'cb0
     '^mul r[0-9]+\.xyzw, r[0-9]+\.xyzw, l\(2\.0+e\+00, '
 # a struct field named pixel, written and read
 code ps_4_0 '' field-pixel.hlsl '^mul r0\.xyzw, v0\.xyzw, l\(2\.0+e\+00, ' '^mov o0\.xyzw, r0\.xyzw$'
+
+# A19: Shader Model 1-3 constant tables (hlslc -c prints them as d3dcompiler's dump does)
+code vs_2_0 -c sm1-constants-vs20.hlsl \
+    '^// constant table: 4 constants, version 0xfffe0200, creator "vkd3d-shader [^"]*", flags 0, target "vs_2_0"$' \
+    '^//   WorldViewProj: FLOAT4 c0 count 4, MATRIX_COLUMNS FLOAT 4x4$' \
+    '^//   LightDir: FLOAT4 c20 count 1, VECTOR FLOAT 1x4$' \
+    '^//   Bones: FLOAT4 c21 count 24, MATRIX_COLUMNS FLOAT 4x3 \[8\]$' \
+    '^//   Tint: FLOAT4 c4 count 1, VECTOR FLOAT 1x4, default \{1, 0\.5, 0\.25, 1\}$' \
+    '^mova a0?\.x, ' 'c\[a0?\.x \+ 21\]'
+if grep -q 'Unused' "$build/sm1-constants-vs20.vs_2_0.code.asm"; then
+    fail "sm1-constants-vs20.hlsl: an unused uniform is in the constant table"
+fi
+code ps_2_0 -c sm1-samplers-ps20.hlsl '^// constant table: 5 constants, .* target "ps_2_0"$' \
+    '^//   DiffuseMap: SAMPLER s0 count 1, OBJECT SAMPLER2D 1x1$' \
+    '^//   NormalMap: SAMPLER s1 count 1, OBJECT SAMPLER2D 1x1$' \
+    '^//   SpecMap: SAMPLER s5 count 1, OBJECT SAMPLER2D 1x1$' \
+    '^//   ColorMatrix: FLOAT4 c0 count 3, MATRIX_ROWS FLOAT 3x4$' \
+    '^//   Threshold: FLOAT4 c3 count 1, SCALAR FLOAT 1x1$' '^cmp ' '^texld r[0-9]+\.xyzw, t0\.xyxx, s5\.xyzw$'
+if grep -Eq '^(if|ifc|else|endif)' "$build/sm1-samplers-ps20.ps_2_0.code.asm"; then
+    fail "sm1-samplers-ps20.hlsl: flow control in ps_2_0 (it has none)"
+fi
+# Wine's unchanged copy leaves the target out (offset 0)
+"$upstream" -c -p vs_2_0 "$cases/sm1-constants-vs20.hlsl" > "$build/sm1-constants-vs20.upstream.asm" 2>&1 || true
+grep -q '^// constant table: 4 constants, .* target "-"$' "$build/sm1-constants-vs20.upstream.asm" ||
+    fail "sm1-constants-vs20.hlsl: Wine's unchanged vkd3d wrote a target string (the test no longer shows the change)"
+# A20: << and >> in #if/#elif (any #error fails the compile); the code's own shifts unchanged
+code ps_4_0 '' pp-shift-ps40.hlsl '^ishl r0\.x, v0\.x, l\(2\)$' '^ushr r0\.y, v0\.y, l\(1\)$' \
+    '^ishl r0\.x, r0\.x, l\(1\)$' '^ushr r0\.y, r0\.y, l\(1\)$' 'l\(1\.0+e\+00\)' 'l\(6\.0+e\+00\)'
+if "$upstream" -p ps_4_0 "$cases/pp-shift-ps40.hlsl" > /dev/null 2> "$build/pp-shift-ps40.upstream.err" ||
+        ! grep -q 'E4000: syntax error' "$build/pp-shift-ps40.upstream.err"; then
+    fail "pp-shift-ps40.hlsl: Wine's unchanged vkd3d didn't fail with E4000 (the test no longer shows the bug)"
+fi
+# A20: ?: on structs selects the whole struct: day (cb0[0-1], c0-c2) when true, night otherwise
+code ps_4_0 '' ternary-struct.hlsl '^movc r[0-9]+\.[xyzw], r[0-9]+\.x, cb0\[0\]\.x, cb0\[2\]\.x$' \
+    '^movc r[0-9]+\.[xyzw], r[0-9]+\.x, cb0\[1\]\.w, cb0\[3\]\.w$'
+if [ "$(grep -c '^movc ' "$build/ternary-struct.ps_4_0.code.asm")" -ne 8 ]; then
+    fail "ternary-struct.hlsl: expected 8 movc (one per component) for ps_4_0"
+fi
+code ps_2_0 -c ternary-struct.hlsl '^//   day: FLOAT4 c0 count 3, STRUCT VOID 1x8, 3 members$' \
+    '^//   night: FLOAT4 c3 count 3, ' '^cmp r[0-9]+\.[xyzw], -r[0-9]+\.x, c3\.x, c0\.x$' \
+    '^cmp r[0-9]+\.[xyzw], -r[0-9]+\.x, c5\.x, c2\.x$'
+if "$upstream" -p ps_4_0 "$cases/ternary-struct.hlsl" > /dev/null 2> "$build/ternary-struct.upstream.err" ||
+        ! grep -q 'E5017: .*Copying from unsupported node type' "$build/ternary-struct.upstream.err"; then
+    fail "ternary-struct.hlsl: Wine's unchanged vkd3d didn't fail with E5017 (the test no longer shows the bug)"
+fi
+# vkd3d can't compile this for ps_1_1, which is why d3dcompiler compiles ps_1_x as ps_2_0 with flag 0x1000
+if "$fixed" -p ps_1_1 "$cases/sm1-samplers-ps20.hlsl" > /dev/null 2>&1; then
+    fail "sm1-samplers-ps20.hlsl: vkd3d compiled it for ps_1_1 (check A19's ps_1_x promotion is still needed)"
+fi
 
 [ $status -eq 0 ] && echo "test-vkd3d-hlsl.sh: all checks passed"
 exit $status

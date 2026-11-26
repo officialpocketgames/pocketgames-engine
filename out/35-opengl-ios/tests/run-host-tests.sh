@@ -5,6 +5,7 @@
 # Spec 35 Part J1: the host tests (no GL, no GPU: nothing here creates a GL context or touches a
 # graphics driver), then the App Store check of spec 00 Part F on this part.
 #   1. pgl's pure functions (D2, D3.2, C3.4, D5.4, H2)                 test_pgl_pure.c
+#      glGetTexImage's conversions in gl4es (clarification 13)       test_gl4es_ios_pixels.c
 #   2. the WoW64 address conversions (G1)                              test_wow.c
 #   3. opengl32's wrappers against Wine 11.4's unixlib.h (B1, E, A4)   test_opengl_ios.c
 #   4. the generator's type classification (G1), with Perl            test-wow-classify.pl
@@ -43,6 +44,11 @@ run test_pgl_pure "$OUT/test_pgl_pure"
 # pgl without a backend (the CI's fallback) implements pgl.h
 $CC -std=gnu11 $WFLAGS -O1 -I"$PART/pgl" -c "$PART/pgl/pgl_none.c" -o "$OUT/pgl_none.o"
 echo "PASS pgl_none.c compiles against pgl.h"
+
+# 1b: glGetTexImage's pure parts in this tree's gl4es (clarification 13)
+$CC -std=c11 $WFLAGS -O1 -g -pthread -I"$PART/gl4es/src/gl" "$HERE/test_gl4es_ios_pixels.c" \
+    "$PART/gl4es/src/gl/gl4es_ios_pixels.c" -o "$OUT/test_gl4es_ios_pixels"
+run test_gl4es_ios_pixels "$OUT/test_gl4es_ios_pixels"
 
 # 2
 $CC -std=c11 $WFLAGS -O1 -g -I"$PART/opengl32-unix" "$HERE/test_wow.c" -o "$OUT/test_wow"

@@ -1,7 +1,10 @@
+// Changed for MYIOSDECK (spec 06 B1: CPU-placed buffers in the i386 build; round 2: a buffer whose
+// guest memory couldn't be had fails with E_OUTOFMEMORY). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "com/com_pointer.hpp"
 #include "d3d11_device.hpp"
 #include "dxmt_buffer.hpp"
 #include "dxmt_dynamic.hpp"
+#include "util_guest_memory.hpp"
 #include "dxmt_format.hpp"
 #include "d3d11_resource.hpp"
 
@@ -318,7 +321,13 @@ CreateBuffer(
     MTLD3D11Device *pDevice, const D3D11_BUFFER_DESC *pDesc, const D3D11_SUBRESOURCE_DATA *pInitialData,
     ID3D11Buffer **ppBuffer
 ) {
+  const uint64_t guest_failures = guest_memory::ThreadFailures(); // MYIOSDECK spec 06 round 2
   *ppBuffer = reinterpret_cast<ID3D11Buffer *>(ref(new D3D11Buffer(pDesc, pInitialData, pDevice)));
+  if (guest_memory::ThreadFailures() != guest_failures) {
+    (*ppBuffer)->Release(); // its memory couldn't be had: E_OUTOFMEMORY, not a buffer without it
+    *ppBuffer = nullptr;
+    return E_OUTOFMEMORY;
+  }
   return S_OK;
 }
 

@@ -1,5 +1,6 @@
-// Changed for MYIOSDECK (spec 35 C3.1, C3.5, out/35-opengl-ios/CHANGES.md): buffer data through
-// the state's allocator; atomic name counters. gl4es is MIT (its LICENSE).
+// Changed for MYIOSDECK (spec 35 C3.1, C3.5, clarification 13, out/35-opengl-ios/CHANGES.md):
+// buffer data through the state's allocator; atomic name counters; no GLES unbind for pixel
+// buffers. gl4es is MIT (its LICENSE).
 #include "buffers.h"
 
 #include "khash.h"
@@ -149,6 +150,11 @@ void APIENTRY_GL4ES gl4es_glBindBuffer(GLenum target, GLuint buffer) {
     // if buffer = 0 => unbind buffer!
     if (buffer == 0) {
         // unbind buffer
+#ifdef GL4ES_IOS
+        // spec 35 clarification 13: pixel buffers live in their CPU copy and have no GLES buffer
+        // to unbind (bindBuffer logged "unhandled Buffer type" for each of wined3d's unbinds)
+        if (target != GL_PIXEL_PACK_BUFFER && target != GL_PIXEL_UNPACK_BUFFER)
+#endif
         bindBuffer(target, 0);
         unbind_buffer(target);
     } else {

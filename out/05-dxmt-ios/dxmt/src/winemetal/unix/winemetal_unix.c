@@ -3014,7 +3014,13 @@ _MTLDevice_newEvent(void *obj) {
 static NTSTATUS
 _MTLBuffer_updateContents(void *obj) {
   struct unixcall_mtlbuffer_updatecontents *params = obj;
-  memcpy((void *)((char *)[(id<MTLBuffer>)params->buffer contents] + params->offset), params->data.ptr, params->length);
+  /* MYIOSDECK spec 06 round 2: a buffer the unix side refused (no guest memory left) has no
+     contents; drop the write rather than copy through null (success: the Windows half's debug
+     thunks assert on a failed call) */
+  void *contents = params->buffer ? [(id<MTLBuffer>)params->buffer contents] : NULL;
+  if (!contents || !params->data.ptr)
+    return STATUS_SUCCESS;
+  memcpy((void *)((char *)contents + params->offset), params->data.ptr, params->length);
 #if !defined(DXMT_IOS) /* B1: no Managed storage on iOS */
   if ([(id<MTLBuffer>)params->buffer storageMode] == MTLStorageModeManaged)
     [(id<MTLBuffer>)params->buffer didModifyRange:NSMakeRange(params->offset, params->length)];

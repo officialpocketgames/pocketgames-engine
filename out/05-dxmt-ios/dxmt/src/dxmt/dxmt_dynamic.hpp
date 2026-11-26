@@ -9,10 +9,17 @@
 
 namespace dxmt {
 
+/* MYIOSDECK spec 06 round 2: the per-resource cap of the guest window (dxmt_dynamic_policy.hpp's
+   kGuestDynamicAllocations) is on; true in the i386 build */
+extern bool g_dynamic_guest_cap;
+
 class DynamicBuffer {
 public:
   void incRef();
   void decRef();
+
+  /* MYIOSDECK spec 06 round 2: the chunk a discard must wait for before allocate() (0: none) */
+  uint64_t guestWaitSeq(uint64_t coherent_seq_id);
 
   /* spec 07 (LGPL, from v0.4-d3d9): out_minted_fresh, when given, reports whether a new
      allocation had to be minted (a fresh one is zeroed; a recycled one holds old bytes)
@@ -71,6 +78,9 @@ class DynamicLinearTexture {
 public:
   void incRef();
   void decRef();
+
+  /* MYIOSDECK spec 06 round 2: as DynamicBuffer::guestWaitSeq */
+  uint64_t guestWaitSeq(uint64_t coherent_seq_id);
 
   Rc<TextureAllocation> allocate(uint64_t coherent_seq_id);
   void updateImmediateName(uint64_t current_seq_id, Rc<TextureAllocation> &&allocation, bool owned_by_command_list);

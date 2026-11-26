@@ -2678,6 +2678,19 @@ static void get_performance_info( SYSTEM_PERFORMANCE_INFORMATION *info )
     info->AvailablePages      = freeram / page_size;
     info->TotalCommittedPages = (totalram + totalswap - freeram - freeswap) / page_size;
     info->TotalCommitLimit    = (totalram + totalswap) / page_size;
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 09 round 6, 8): the same figures as SystemBasicInformation: available is
+     * what iOS lets this app use (not the whole system's free pages), the page file the
+     * physical memory plus one page */
+    {
+        struct ios_mem_figures f;
+
+        ios_vm_memory_figures( &f );
+        info->AvailablePages      = f.avail_pages;
+        info->TotalCommittedPages = f.committed;
+        info->TotalCommitLimit    = f.commit_limit;
+    }
+#endif
 }
 
 #ifdef linux

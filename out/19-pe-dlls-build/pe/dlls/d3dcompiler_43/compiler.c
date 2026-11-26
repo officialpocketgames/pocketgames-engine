@@ -13,6 +13,11 @@
  * C:\users\Public\pg-dumps\shaders\<hash>.hlsl, at most 64 files per process
  * (compile_failure_dump.h).
  *
+ * Changed for MYIOSDECK (spec 19 A19): with PG_D3DCOMPILER_DUMP_ALL=1, successful Shader Model
+ * 1-3 compiles are written there too, with the constant table as text and the bytecode in hex
+ * (at most 400 files, a log line per 50); and with D3DCOMPILE_ENABLE_BACKWARDS_COMPATIBILITY a
+ * ps_1_x shader is compiled as ps_2_0, as Microsoft's compiler does.
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
@@ -360,29 +365,33 @@ HRESULT WINAPI vkd3d_D3DCompile2VKD3D(const void *data, SIZE_T data_size, const 
         ID3DBlob **error_messages, unsigned int compiler_version);
 
 /* MYIOSDECK (spec 19 A17): the log has at most 12 message lines and no source; for a test build
- * (PG_D3DCOMPILER_DUMP_FAILED=1) write the whole failing shader to a file instead. */
-static LONG compile_dump_state = -1;    /* -1: not read yet, 0: off, 1: on */
-static LONG compile_dumps;
+ * (PG_D3DCOMPILER_DUMP_FAILED=1) write the whole failing shader to a file instead.
+ * A19: PG_D3DCOMPILER_DUMP_ALL=1 also writes successful Shader Model 1-3 compiles, with the
+ * constant table as text and the bytecode in hex. */
+static LONG compile_dump_failed_state = -1, compile_dump_all_state = -1;  /* -1: not read, 0: off, 1: on */
+static LONG compile_dumps, compile_dumps_ok;
 
-static BOOL compile_dump_on(void)
+static BOOL compile_dump_on( LONG *state_cache, const char *variable )
 {
-    LONG state = ReadNoFence( &compile_dump_state );
+    LONG state = ReadNoFence( state_cache );
     char value[8];
     DWORD len;
 
     if (state < 0)
     {
-        len = GetEnvironmentVariableA( COMPILE_DUMP_ENV, value, sizeof(value) );
+        len = GetEnvironmentVariableA( variable, value, sizeof(value) );
         state = len && len < sizeof(value) && compile_dump_enabled( value );
-        InterlockedExchange( &compile_dump_state, state );
+        InterlockedExchange( state_cache, state );
     }
     return state > 0;
 }
 
-static void dump_failed_compile( HRESULT hr, const void *data, SIZE_T data_size, const char *filename,
-                                 const D3D_SHADER_MACRO *macros, ID3DInclude *include, const char *entry,
-                                 const char *target, UINT flags, ID3DBlob *messages )
+static void dump_compile( HRESULT hr, const void *data, SIZE_T data_size, const char *filename,
+                          const D3D_SHADER_MACRO *macros, ID3DInclude *include, const char *entry,
+                          const char *target, UINT flags, ID3DBlob *messages, ID3DBlob *code )
 {
+    LONG *count = code ? &compile_dumps_ok : &compile_dumps, n = 0;
+    LONG max = code ? COMPILE_DUMP_ALL_MAX_FILES : COMPILE_DUMP_MAX_FILES;
     struct compile_dump_info info;
     ID3DBlob *preprocessed = NULL, *preprocess_messages = NULL;
     char name[COMPILE_DUMP_NAME_SIZE], path[MAX_PATH];
@@ -392,8 +401,10 @@ static void dump_failed_compile( HRESULT hr, const void *data, SIZE_T data_size,
     DWORD written;
     BOOL ok;
 
-    if (!compile_dump_on() || !data) return;
-    if (ReadNoFence( &compile_dumps ) >= COMPILE_DUMP_MAX_FILES) return;
+    if (!data) return;
+    if (code ? !compile_dump_on( &compile_dump_all_state, COMPILE_DUMP_ALL_ENV )
+             : !compile_dump_on( &compile_dump_failed_state, COMPILE_DUMP_ENV )) return;
+    if (ReadNoFence( count ) >= max) return;
 
     /* the include handler is the one the compile used (the standard one already replaced) */
     if (FAILED(vkd3d_D3DPreprocess( data, data_size, filename, macros, include,
@@ -424,12 +435,18 @@ static void dump_failed_compile( HRESULT hr, const void *data, SIZE_T data_size,
         info.messages = ID3D10Blob_GetBufferPointer( messages );
         info.messages_size = ID3D10Blob_GetBufferSize( messages );
     }
+    if (code)
+    {
+        info.succeeded = 1;
+        info.code = ID3D10Blob_GetBufferPointer( code );
+        info.code_size = ID3D10Blob_GetBufferSize( code );
+    }
 
     compile_dump_name( name, compile_dump_hash( &info ) );
     snprintf( path, sizeof(path), "%s\\%s", COMPILE_DUMP_DIR, name );
-    /* the same shader failing again: already there, and it takes no place among the 64 */
+    /* the same shader compiled again: already there, and it takes no place among the 64 (400) */
     if (GetFileAttributesA( path ) != INVALID_FILE_ATTRIBUTES) goto done;
-    if (InterlockedIncrement( &compile_dumps ) > COMPILE_DUMP_MAX_FILES) goto done;
+    if ((n = InterlockedIncrement( count )) > max) goto done;
 
     CreateDirectoryA( COMPILE_DUMP_PARENT, NULL );
     CreateDirectoryA( COMPILE_DUMP_DIR, NULL );
@@ -445,8 +462,9 @@ static void dump_failed_compile( HRESULT hr, const void *data, SIZE_T data_size,
     }
     ok = WriteFile( file, buf, (DWORD)len, &written, NULL ) && written == len;
     CloseHandle( file );
-    if (ok) MESSAGE( COMPILE_DUMP_LOG_FORMAT, name );
-    else WARN( "can't write %s, error %lu\n", debugstr_a(path), GetLastError() );
+    if (ok && !code) MESSAGE( COMPILE_DUMP_LOG_FORMAT, name );
+    else if (ok && compile_dump_all_log( n )) MESSAGE( COMPILE_DUMP_ALL_LOG_FORMAT, (long)n, name );
+    else if (!ok) WARN( "can't write %s, error %lu\n", debugstr_a(path), GetLastError() );
 
 done:
     free( buf );
@@ -483,18 +501,24 @@ HRESULT WINAPI D3DCompile2(const void *data, SIZE_T data_size, const char *filen
         shader_blob = &dummy_blob;
 
     /* MYIOSDECK (spec 19 follow-up): without a caller's messages blob, ask for one of our own
-     * (the caller never sees it), so a failure's messages can still be logged */
-    hr = vkd3d_D3DCompile2VKD3D(data, data_size, filename, macros, include, entry_point, profile, flags, effect_flags,
+     * (the caller never sees it), so a failure's messages can still be logged.
+     * MYIOSDECK (spec 19 A19): ps_1_x with the backwards-compatibility flag is compiled as
+     * ps_2_0, as Microsoft's compiler does. */
+    hr = vkd3d_D3DCompile2VKD3D(data, data_size, filename, macros, include, entry_point,
+            compile_effective_profile(profile, flags), flags, effect_flags,
             secondary_flags, secondary_data, secondary_data_size, shader_blob,
             messages_blob ? messages_blob : &own_messages, D3D_COMPILER_VERSION);
+    if (SUCCEEDED(hr) && *shader_blob && compile_dump_sm1_target(profile))  /* MYIOSDECK A19 */
+        dump_compile(hr, data, data_size, filename, macros, include, entry_point, profile, flags,
+                messages_blob ? *messages_blob : own_messages, *shader_blob);
     if (SUCCEEDED(hr) && shader_blob == &dummy_blob)
         ID3D10Blob_Release(dummy_blob);
     if (FAILED(hr))
     {
         report_compile_failure(hr, filename, entry_point, profile, flags,
                 messages_blob ? *messages_blob : own_messages);
-        dump_failed_compile(hr, data, data_size, filename, macros, include, entry_point, profile, flags,
-                messages_blob ? *messages_blob : own_messages);  /* MYIOSDECK A17 */
+        dump_compile(hr, data, data_size, filename, macros, include, entry_point, profile, flags,
+                messages_blob ? *messages_blob : own_messages, NULL);  /* MYIOSDECK A17 */
     }
     if (own_messages) ID3D10Blob_Release(own_messages);
     return hr;

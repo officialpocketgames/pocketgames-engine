@@ -112,6 +112,11 @@ aligned_free(void *ptr) {
   std::free(ptr);
 }
 } // namespace wsi
+/* spec 06 round 2: the guest-memory lines (util_guest_memory_log.cpp in the DLL) */
+namespace guest_memory {
+void
+Write(const std::string &, bool) {}
+} // namespace guest_memory
 } // namespace dxmt
 
 using namespace dxmt;

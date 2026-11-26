@@ -450,6 +450,131 @@ static void test_compile_failure_dump(void)
     CHECK( !strcmp( line, "[d3dcompiler] failed shader dumped: 0a1b2c3d.hlsl\n" ) );
 }
 
+/* ---- d3dcompiler: successful Shader Model 1-3 compiles in the dump (A19) ---- */
+
+static void put16( unsigned char *p, unsigned int v ) { p[0] = v & 0xff; p[1] = (v >> 8) & 0xff; }
+static void put32( unsigned char *p, unsigned int v ) { put16( p, v & 0xffff ); put16( p + 2, v >> 16 ); }
+
+/* vs_2_0 bytecode with a CTAB comment of two constants (as d3dx9shader.h lays it out), then END */
+static size_t make_sm1_code( unsigned char *code, unsigned int constants )
+{
+    static const float def[4] = { 1.0f, 0.5f, 0.25f, 1.0f };
+    unsigned char *t = code + 12;   /* the CTAB data: after the version, comment and "CTAB" tokens */
+    unsigned int i;
+
+    memset( code, 0, 160 );
+    put32( code, 0xfffe0200 );
+    put32( code + 4, 0xfffe | (35u << 16) );   /* "CTAB" + 136 bytes */
+    put32( code + 8, 0x42415443 );
+    put32( t, 28 ); put32( t + 4, 133 ); put32( t + 8, 0xfffe0200 ); put32( t + 12, constants );
+    put32( t + 16, 28 ); put32( t + 20, 0 ); put32( t + 24, 126 );
+    /* Tint: FLOAT4 c4, 1 register, a float4 with a default; Diff: SAMPLER s5 */
+    put32( t + 28, 116 ); put16( t + 32, 2 ); put16( t + 34, 4 ); put16( t + 36, 1 ); put32( t + 40, 68 ); put32( t + 44, 100 );
+    put32( t + 48, 121 ); put16( t + 52, 3 ); put16( t + 54, 5 ); put16( t + 56, 1 ); put32( t + 60, 84 ); put32( t + 64, 0 );
+    put16( t + 68, 1 ); put16( t + 70, 3 ); put16( t + 72, 1 ); put16( t + 74, 4 ); put16( t + 76, 1 );
+    put16( t + 84, 4 ); put16( t + 86, 12 ); put16( t + 88, 1 ); put16( t + 90, 1 ); put16( t + 92, 1 );
+    for (i = 0; i < 4; i++) memcpy( t + 100 + 4 * i, &def[i], 4 );
+    memcpy( t + 116, "Tint", 5 );
+    memcpy( t + 121, "Diff", 5 );
+    memcpy( t + 126, "vs_2_0", 7 );
+    memcpy( t + 133, "me", 3 );
+    put32( t + 136, 0x0000ffff );   /* END */
+    return 12 + 136 + 4;
+}
+
+static size_t ctab_text( const unsigned char *code, size_t size, char *out, size_t out_size )
+{
+    struct compile_dump_out o = { out, out_size - 1, 0 };
+
+    compile_dump_ctab( &o, code, size );
+    out[o.len < out_size - 1 ? o.len : out_size - 1] = 0;
+    return o.len;
+}
+
+static void test_compile_dump_sm1(void)
+{
+    static const char expected_ctab[] =
+        "// constant table: 2 constants, version 0xfffe0200, creator \"me\", flags 0, target \"vs_2_0\"\n"
+        "//   Tint: FLOAT4 c4 count 1, VECTOR FLOAT 1x4, default {1, 0.5, 0.25, 1}\n"
+        "//   Diff: SAMPLER s5 count 1, OBJECT SAMPLER2D 1x1\n";
+    unsigned char code[160];
+    struct compile_dump_info info;
+    char out[4096];
+    size_t size, len;
+
+    /* the targets: Shader Model 1-3 vertex and pixel shaders only */
+    CHECK( compile_dump_sm1_target( "vs_1_1" ) );
+    CHECK( compile_dump_sm1_target( "ps_2_a" ) );
+    CHECK( compile_dump_sm1_target( "ps_3_0" ) );
+    CHECK( compile_dump_sm1_target( "vs_3_sw" ) );
+    CHECK( !compile_dump_sm1_target( "vs_4_0" ) );
+    CHECK( !compile_dump_sm1_target( "ps_5_0" ) );
+    CHECK( !compile_dump_sm1_target( "fx_2_0" ) );
+    CHECK( !compile_dump_sm1_target( "tx_1_0" ) );
+    CHECK( !compile_dump_sm1_target( "ps_3" ) );
+    CHECK( !compile_dump_sm1_target( NULL ) );
+    CHECK( !strcmp( COMPILE_DUMP_ALL_ENV, "PG_D3DCOMPILER_DUMP_ALL" ) );
+    CHECK_EQ_U( COMPILE_DUMP_ALL_MAX_FILES, 400 );
+
+    /* a log line per 50 files */
+    CHECK( compile_dump_all_log( 50 ) && compile_dump_all_log( 100 ) && compile_dump_all_log( 400 ) );
+    CHECK( !compile_dump_all_log( 0 ) && !compile_dump_all_log( 1 ) && !compile_dump_all_log( 49 ) && !compile_dump_all_log( 51 ) );
+    snprintf( out, sizeof(out), COMPILE_DUMP_ALL_LOG_FORMAT, 50L, "0a1b2c3d.hlsl" );
+    CHECK( !strcmp( out, "[d3dcompiler] successful shaders dumped: 50, the last 0a1b2c3d.hlsl\n" ) );
+
+    /* ps_1_x with the backwards-compatibility flag is compiled as ps_2_0, nothing else changes */
+    CHECK( !strcmp( compile_effective_profile( "ps_1_1", 0x1000 ), "ps_2_0" ) );
+    CHECK( !strcmp( compile_effective_profile( "ps_1_4", 0x1200 ), "ps_2_0" ) );
+    CHECK( !strcmp( compile_effective_profile( "ps_1_1", 0x200 ), "ps_1_1" ) );
+    CHECK( !strcmp( compile_effective_profile( "vs_1_1", 0x1000 ), "vs_1_1" ) );
+    CHECK( !strcmp( compile_effective_profile( "ps_2_0", 0x1000 ), "ps_2_0" ) );
+    CHECK( !strcmp( compile_effective_profile( "ps_4_0", 0x1000 ), "ps_4_0" ) );
+    CHECK( compile_effective_profile( NULL, 0x1000 ) == NULL );
+
+    /* the constant table as text */
+    size = make_sm1_code( code, 2 );
+    ctab_text( code, size, out, sizeof(out) );
+    CHECK( !strcmp( out, expected_ctab ) );
+    /* a count running past the table, no CTAB, nothing at all */
+    make_sm1_code( code, 1000 );
+    ctab_text( code, size, out, sizeof(out) );
+    CHECK( strstr( out, "1000 constants" ) && strstr( out, "(the constants run past the table)\n" ) );
+    put32( code + 8, 0x12345678 );  /* a comment that isn't the CTAB */
+    ctab_text( code, size, out, sizeof(out) );
+    CHECK( !strcmp( out, "// constant table: none\n" ) );
+    ctab_text( NULL, 0, out, sizeof(out) );
+    CHECK( !strcmp( out, "// constant table: none\n" ) );
+    make_sm1_code( code, 2 );
+    put32( code + 4, 0xfffe | (200u << 16) );   /* a comment longer than the code */
+    ctab_text( code, size, out, sizeof(out) );
+    CHECK( !strcmp( out, "// constant table: none\n" ) );
+
+    /* the whole file of a successful compile: its title, the table, the bytecode, the source */
+    size = make_sm1_code( code, 2 );
+    memset( &info, 0, sizeof(info) );
+    info.succeeded = 1;
+    info.code = code;
+    info.code_size = size;
+    info.text = "float4 main() : POSITION { return 0; }";
+    info.text_size = strlen( info.text );
+    info.preprocessed = 1;
+    info.entry = "main";
+    info.target = "vs_2_0";
+    info.flags = 0x1200;
+    len = compile_dump_format( out, sizeof(out) - 1, &info );
+    CHECK( len < sizeof(out) );
+    out[len < sizeof(out) ? len : sizeof(out) - 1] = 0;
+    {
+        static const char title[] = "// d3dcompiler: a successful compile, dumped for diagnosis (PG_D3DCOMPILER_DUMP_ALL=1)\n";
+        CHECK( !strncmp( out, title, strlen( title ) ) );
+    }
+    CHECK( strstr( out, "// flags: 0x1200\n// result: 0x0\n" ) != NULL );
+    CHECK( strstr( out, expected_ctab ) != NULL );
+    CHECK( strstr( out, "// bytecode: 152 bytes\n//   0000: fffe0200 0023fffe 42415443 0000001c 00000085 fffe0200 00000002 0000001c\n" ) != NULL );
+    CHECK( strstr( out, " 0000ffff\n\nfloat4 main() : POSITION { return 0; }\n" ) != NULL );
+    CHECK( compile_dump_hash( &info ) != 0 );
+}
+
 int main(void)
 {
     test_tick();
@@ -461,6 +586,7 @@ int main(void)
     test_services();
     test_compile_failure_log();
     test_compile_failure_dump();
+    test_compile_dump_sm1();
     if (failures)
     {
         fprintf( stderr, "test_part_a: %d failure(s)\n", failures );

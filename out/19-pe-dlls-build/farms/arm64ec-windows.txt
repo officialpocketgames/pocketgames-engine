@@ -58,6 +58,8 @@ kernel32.dll
 kernelbase.dll
 ktmw32.dll
 mf.dll
+mferror.dll     # Media Foundation error strings (data only), loaded beside mfmp4srcsnk (A18)
+mfmp4srcsnk.dll # Media Foundation's MPEG-4 byte-stream handler: 64-bit games' video (A18)
 mfplat.dll
 mfreadwrite.dll
 mlang.dll
@@ -140,6 +142,7 @@ wininet.dll
 winmm.dll
 winspool.drv
 wintrust.dll
+wintypes.dll    # WinRT types; api-ms-win-core-winrt-robuffer-l1-1-0 resolves to it (A18)
 winusb.dll
 wlanapi.dll
 wldap32.dll

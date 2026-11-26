@@ -15,6 +15,7 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -24,6 +25,7 @@
 #include "winternl.h"
 #include "unix_private.h"
 #include "ios_pure.h"
+#include "ios_dylib.h"   /* round 6 item 6: the calling module's name */
 
 #ifdef WINE_IOS
 
@@ -56,6 +58,97 @@ static void log_missing_once( const char *dll_name, const char *symbol )
  * binds it, the library's optional "<name>_unix_lib_init" runs then, on the loading thread
  * (win32u registers its system calls there, spec 12).
  */
+/* ---------- spec 09 round 6 item 6: tables with their sizes ----------
+ * A table's size is known when its library defines "<table symbol>_count" (an unsigned int);
+ * Wine's libraries don't, so their calls are only checked for a missing table. Append-only,
+ * read without a lock (the count of entries is published with release order). */
+#define IOS_TABLES 64
+
+struct bound_table
+{
+    const void  *funcs;
+    unsigned int count;   /* 0: not known */
+};
+
+static struct bound_table bound_tables[IOS_TABLES];
+static unsigned int bound_count;
+
+static void bind_table( const void *funcs, const char *symbol )
+{
+    char count_symbol[300];
+    const unsigned int *count;
+    unsigned int i, n;
+
+    snprintf( count_symbol, sizeof(count_symbol), "%s_count", symbol );
+    count = dlsym( RTLD_DEFAULT, count_symbol );
+    pthread_mutex_lock( &logged_mutex );
+    n = __atomic_load_n( &bound_count, __ATOMIC_RELAXED );
+    for (i = 0; i < n; i++) if (bound_tables[i].funcs == funcs) break;
+    if (i == n && n < IOS_TABLES)
+    {
+        bound_tables[n].funcs = funcs;
+        bound_tables[n].count = count ? *count : 0;
+        __atomic_store_n( &bound_count, n + 1, __ATOMIC_RELEASE );
+    }
+    pthread_mutex_unlock( &logged_mutex );
+}
+
+static unsigned int table_count( const void *funcs )
+{
+    unsigned int i, n = __atomic_load_n( &bound_count, __ATOMIC_ACQUIRE );
+
+    for (i = 0; i < n; i++) if (bound_tables[i].funcs == funcs) return bound_tables[i].count;
+    return 0;
+}
+
+/* once per calling module (its name from its signed image, else its address) */
+static void log_bad_call_once( const void *caller, unsigned int status, unsigned int code, unsigned int count )
+{
+    const struct ios_dylib_image *img = ios_dylib_find( caller );
+    char name[80];
+
+    if (img) snprintf( name, sizeof(name), "%s", img->name );
+    else snprintf( name, sizeof(name), "module at %p", caller );
+    {
+        unsigned int i;
+        BOOL seen = FALSE;
+        char key[96];
+
+        snprintf( key, sizeof(key), "call:%s", name );
+        pthread_mutex_lock( &logged_mutex );
+        for (i = 0; i < logged_count; i++) if (!strcmp( logged_names[i], key )) seen = TRUE;
+        if (!seen && logged_count < ARRAY_SIZE(logged_names)) logged_names[logged_count++] = strdup( key );
+        pthread_mutex_unlock( &logged_mutex );
+        if (seen) return;
+    }
+    if (status == IOS_UNIX_NO_TABLE)
+        ios_log( "[unix] %s: no unix table; calls fail with STATUS_DLL_NOT_FOUND\n", name );
+    else
+        ios_log( "[unix] %s: call %u past its table's %u entries; calls like it fail with "
+                 "STATUS_INVALID_PARAMETER\n", name, code, count );
+}
+
+/***********************************************************************
+ *           ios_unix_call
+ *
+ * Spec 09 round 6 item 6: the unix-call dispatcher's call (__wine_unix_call, also for WoW64,
+ * whose wow64.dll calls it), on the kernel stack: a module whose query for its table failed
+ * (handle 0), or an index past a table of known size, fails without touching memory.
+ * caller: the return address in the calling DLL, for the log.
+ */
+NTSTATUS ios_unix_call( const void *funcs, unsigned int code, void *args, const void *caller )
+{
+    unsigned int count = funcs ? table_count( funcs ) : 0;
+    unsigned int status = ios_unix_call_check( funcs != NULL, count != 0, count, code );
+
+    if (status)
+    {
+        log_bad_call_once( caller, status, code, count );
+        return status;
+    }
+    return ((const unixlib_entry_t *)funcs)[code]( args );
+}
+
 NTSTATUS ios_unixlib_table( const char *dll_name, BOOL wow64, const void **funcs )
 {
     char symbol[256];
@@ -72,6 +165,7 @@ NTSTATUS ios_unixlib_table( const char *dll_name, BOOL wow64, const void **funcs
         log_missing_once( dll_name, symbol );
         return STATUS_DLL_NOT_FOUND;
     }
+    bind_table( *funcs, symbol );   /* round 6 item 6 */
     if (!ios_unixlib_init_symbol( dll_name, symbol, sizeof(symbol) ) &&
         (init = dlsym( RTLD_DEFAULT, symbol )))
         return init();

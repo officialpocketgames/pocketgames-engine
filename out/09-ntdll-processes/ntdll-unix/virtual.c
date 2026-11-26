@@ -50,6 +50,12 @@
 #ifdef HAVE_SYS_SYSCTL_H
 # include <sys/sysctl.h>
 #endif
+#if defined(WINE_IOS) && defined(__APPLE__)
+# include <TargetConditionals.h>
+# if TARGET_OS_IPHONE
+#  include <os/proc.h>   /* MYIOSDECK (spec 09 round 6, 8): os_proc_available_memory */
+# endif
+#endif
 #ifdef HAVE_SYS_PARAM_H
 # include <sys/param.h>
 #endif
@@ -4087,12 +4093,56 @@ ULONG_PTR get_system_affinity_mask(void)
     return ((ULONG_PTR)1 << num_cpus) - 1;
 }
 
+#ifdef WINE_IOS
+/***********************************************************************
+ *           ios_vm_memory_figures
+ *
+ * MYIOSDECK (spec 09 round 6, 8): the physical memory every report gives (SystemBasicInformation
+ * here, SystemPerformanceInformation in system.c, and through them kernelbase's
+ * GlobalMemoryStatusEx and GetPhysicallyInstalledSystemMemory): the device's hw.memsize, and
+ * available what iOS lets this app still use (os_proc_available_memory), never more than that.
+ */
+void ios_vm_memory_figures( struct ios_mem_figures *f )
+{
+    INT64 memsize = 0;
+    size_t len = sizeof(memsize);
+    UINT64 app_avail = 0;
+
+#ifdef __APPLE__
+    if (sysctlbyname( "hw.memsize", &memsize, &len, NULL, 0 )) memsize = 0;
+#endif
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+    app_avail = os_proc_available_memory();
+#endif
+    ios_mem_figures( memsize > 0 ? (UINT64)memsize : 0, app_avail, page_size, f );
+}
+
+/* round 6 (8): once per process, when it starts running (server.c) */
+void ios_vm_log_memory( BOOL wow64 )
+{
+    SYSTEM_BASIC_INFORMATION sbi;
+    struct ios_mem_figures f;
+
+    ios_vm_memory_figures( &f );
+    virtual_get_system_info( &sbi, wow64 );
+    ios_log( "[vm] physical memory reported: %llu MB total, %llu MB available; highest user address %p\n",
+             (unsigned long long)f.total_pages * page_size >> 20, (unsigned long long)f.avail_pages * page_size >> 20,
+             sbi.HighestUserAddress );
+}
+#endif
+
 /***********************************************************************
  *           virtual_get_system_info
  */
 void virtual_get_system_info( SYSTEM_BASIC_INFORMATION *info, BOOL wow64 )
 {
-#if defined(HAVE_SYSINFO) \
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 09 round 6, 8): the device's physical memory, in 4 KB pages */
+    struct ios_mem_figures f;
+
+    ios_vm_memory_figures( &f );
+    info->MmHighestPhysicalPage = f.total_pages;
+#elif defined(HAVE_SYSINFO) \
     && defined(HAVE_STRUCT_SYSINFO_TOTALRAM) && defined(HAVE_STRUCT_SYSINFO_MEM_UNIT)
     struct sysinfo sinfo;
 
@@ -4122,13 +4172,24 @@ void virtual_get_system_info( SYSTEM_BASIC_INFORMATION *info, BOOL wow64 )
     info->KeMaximumIncrement      = 0;  /* FIXME */
     info->PageSize                = page_size;
     info->MmLowestPhysicalPage    = 1;
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 09 round 6, 8): pages 1..total, so ullTotalPhys is hw.memsize exactly */
+    info->MmNumberOfPhysicalPages = f.total_pages;
+#else
     info->MmNumberOfPhysicalPages = info->MmHighestPhysicalPage - info->MmLowestPhysicalPage;
+#endif
     info->AllocationGranularity   = granularity_mask + 1;
     info->LowestUserAddress       = (void *)0x10000;
     info->ActiveProcessorsAffinityMask = get_system_affinity_mask();
     info->NumberOfProcessors      = ios_cur_peb()->NumberOfProcessors;
     if (wow64) info->HighestUserAddress = (char *)get_wow_user_space_limit() - 1;
+#ifdef WINE_IOS
+    /* MYIOSDECK (spec 09 round 6): the highest address the allocator can return (spec 10 A2's
+     * limit, 512 GB on today's devices), never Windows' 128 TB; 32-bit programs as before */
+    else info->HighestUserAddress = (void *)(ULONG_PTR)ios_vm_reported_highest( (ULONG_PTR)user_space_limit );
+#else
     else info->HighestUserAddress = (char *)user_space_limit - 1;
+#endif
 }
 
 
@@ -5665,6 +5726,22 @@ static void ios_log_alloc( void *base, SIZE_T size, ULONG type, ULONG protect, U
     int kind = ios_alloc_log_kind( type, base != NULL, status );
 
     if (!proc) return;
+    /* spec 09 round 6: every reservation of 1 GB or more, success or failure, at most 32 lines
+     * per process (a pending run first, so the log keeps the calls' order); a failure also gets
+     * its usual line below */
+    if (ios_big_reserve_due( type, size ))
+    {
+        char line[160];
+
+        pthread_mutex_lock( &alloc_log_mutex );
+        if (ios_line_budget_take( &proc->big_reserve_lines, IOS_BIG_RESERVE_LINES ))
+        {
+            ios_alloc_log_flush( &proc->alloc_log, alloc_log_line, NULL );
+            ios_log( "%s\n", ios_big_reserve_line( line, sizeof(line), size, (ULONG_PTR)base, type, status,
+                                                   (ULONG_PTR)got ));
+        }
+        pthread_mutex_unlock( &alloc_log_mutex );
+    }
     /* clarification 15: a reservation anywhere (its line writes a pending run first) */
     if (!status && !base && (type & MEM_RESERVE))
         ios_log_mem( IOS_MEM_ALLOC, got, got_size, type, protect, NULL, 0 );

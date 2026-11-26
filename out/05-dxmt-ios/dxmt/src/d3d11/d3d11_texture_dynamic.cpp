@@ -1,6 +1,10 @@
+// Changed for MYIOSDECK (spec 06 B1: CPU-placed subresource buffers in the i386 build; round 2: a
+// texture whose guest memory couldn't be had fails with E_OUTOFMEMORY). Upstream: DXMT a3a6e8f, MIT
+// (see LICENSE).
 #include "com/com_pointer.hpp"
 #include "d3d11_device.hpp"
 #include "d3d11_texture.hpp"
+#include "util_guest_memory.hpp"
 #include "dxmt_buffer.hpp"
 #include "dxmt_dynamic.hpp"
 #include "dxmt_staging.hpp"
@@ -108,6 +112,7 @@ HRESULT CreateDynamicTextureInternal(MTLD3D11Device *pDevice,
                                     const typename tag::DESC1 *pDesc,
                                     const D3D11_SUBRESOURCE_DATA *pInitialData,
                                     typename tag::COM_IMPL **ppTexture) {
+  const uint64_t guest_failures = guest_memory::ThreadFailures(); // MYIOSDECK spec 06 round 2
   WMTTextureInfo info;
   typename tag::DESC1 finalDesc;
   if (FAILED(CreateMTLTextureDescriptor(pDevice, pDesc, &finalDesc, &info))) {
@@ -153,6 +158,12 @@ HRESULT CreateDynamicTextureInternal(MTLD3D11Device *pDevice,
     texture->rename(texture->allocate(flags));
     *ppTexture = reinterpret_cast<typename tag::COM_IMPL *>(
       ref(new DynamicTexture<tag>(&finalDesc, std::move(texture), pDevice, std::move(subresources))));
+  }
+  if (guest_memory::ThreadFailures() != guest_failures) {
+    // MYIOSDECK spec 06 round 2: a subresource's memory couldn't be had: E_OUTOFMEMORY
+    (*ppTexture)->Release();
+    *ppTexture = nullptr;
+    return E_OUTOFMEMORY;
   }
   return S_OK;
 }

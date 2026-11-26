@@ -1,4 +1,4 @@
-// Changed for MYIOSDECK (spec 07 A2): contains LGPL-2.1-or-later blocks from dxmt-d3d9 v0.4-d3d9
+// Changed for MYIOSDECK (spec 07 A2 and clarification 6: DEC3N reads w = 1): contains LGPL-2.1-or-later blocks from dxmt-d3d9 v0.4-d3d9
 // (e8dd4c6), marked inline (see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 #include "air_operations.hpp"
 
@@ -445,6 +445,13 @@ AIRBuilderResult pull_vec4_from_addr_checked(
     break;
   }
   /* end of LGPL block */
+  case MTLAttributeFormat::Int1010102NormalizedW1:
+    // MYIOSDECK spec 07 clarification 6: D3DDECLTYPE_DEC3N reads as (x, y, z, 1). The word
+    // unpacks as Int1010102Normalized (the same x, y, z bits, each c / 511 clamped to -1), and
+    // its fourth lane, the 2-bit field D3D9 doesn't have, becomes 1.
+    value = co_yield unpack_fvec4_from_addr(MTLAttributeFormat::Int1010102Normalized, base_addr, byte_offset);
+    value = builder.CreateInsertElement(value, co_yield get_float(1), (int)3);
+    break;
   case MTLAttributeFormat::UInt4:
   case MTLAttributeFormat::Int4:
     value = co_yield load_from_device_buffer(

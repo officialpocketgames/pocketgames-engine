@@ -17,6 +17,10 @@
  * proj forms for every dimension (tex1Dlod, tex1Dbias, tex1Dproj, tex3Dlod, tex3Dbias and
  * texCUBElod are new; tex1Dproj below profile 4.0 is not implemented).
  *
+ * Changed for MYIOSDECK (spec 19 A20): "c ? a : b" with structs or arrays of numeric components
+ * and a scalar condition selects the whole value, component by component
+ * (add_ternary_by_component).
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
@@ -6087,6 +6091,51 @@ static struct hlsl_block *add_constructor(struct hlsl_ctx *ctx, struct hlsl_type
     return params->instrs;
 }
 
+/* MYIOSDECK (spec 19 A20): "c ? a : b" with structs (or arrays) of the same type and a scalar
+ * condition selects the whole value, as Microsoft's compiler does. 1.19 made one ternary
+ * expression of the struct type, which the later passes can't split ("Copying from unsupported
+ * node type"). Here each component is selected on its own into a synthetic variable. */
+static bool type_components_are_numeric(struct hlsl_ctx *ctx, struct hlsl_type *type)
+{
+    unsigned int k, count = hlsl_type_component_count(type);
+
+    for (k = 0; k < count; ++k)
+    {
+        if (hlsl_type_get_component_type(ctx, type, k)->class > HLSL_CLASS_LAST_NUMERIC)
+            return false;
+    }
+    return count > 0;
+}
+
+static bool add_ternary_by_component(struct hlsl_ctx *ctx, struct hlsl_block *block,
+        struct hlsl_ir_node *cond, struct hlsl_ir_node *first, struct hlsl_ir_node *second)
+{
+    struct hlsl_type *type = first->data_type;
+    unsigned int k, count = hlsl_type_component_count(type);
+    struct hlsl_deref deref;
+    struct hlsl_ir_var *var;
+
+    cond = add_implicit_conversion(ctx, block, cond, hlsl_get_scalar_type(ctx, HLSL_TYPE_BOOL), &cond->loc);
+    if (!(var = hlsl_new_synthetic_var(ctx, "ternary", type, &first->loc)))
+        return false;
+    hlsl_init_simple_deref_from_var(&deref, var);
+
+    for (k = 0; k < count; ++k)
+    {
+        struct hlsl_ir_node *args[HLSL_MAX_OPERANDS] = {0};
+        struct hlsl_type *comp_type = hlsl_type_get_component_type(ctx, type, k);
+
+        args[0] = cond;
+        args[1] = hlsl_add_load_component(ctx, block, first, k, &first->loc);
+        args[2] = hlsl_add_load_component(ctx, block, second, k, &second->loc);
+        hlsl_block_add_store_component(ctx, block, &deref, k,
+                hlsl_block_add_expr(ctx, block, HLSL_OP3_TERNARY, args, comp_type, &first->loc));
+    }
+
+    hlsl_block_add_simple_load(ctx, block, var, &first->loc);
+    return true;
+}
+
 static bool add_ternary(struct hlsl_ctx *ctx, struct hlsl_block *block,
         struct hlsl_ir_node *cond, struct hlsl_ir_node *first, struct hlsl_ir_node *second)
 {
@@ -6172,6 +6221,11 @@ static bool add_ternary(struct hlsl_ctx *ctx, struct hlsl_block *block,
                         first_string->buffer, second_string->buffer);
             hlsl_release_string_buffer(ctx, first_string);
             hlsl_release_string_buffer(ctx, second_string);
+        }
+        else if (cond_type->e.numeric.dimx == 1 && cond_type->e.numeric.dimy == 1
+                && type_components_are_numeric(ctx, first->data_type))  /* MYIOSDECK A20 */
+        {
+            return add_ternary_by_component(ctx, block, cond, first, second);
         }
 
         cond_type = hlsl_get_numeric_type(ctx, cond_type->class, HLSL_TYPE_BOOL,

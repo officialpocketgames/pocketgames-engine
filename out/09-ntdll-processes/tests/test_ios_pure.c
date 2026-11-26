@@ -62,6 +62,24 @@ static void test_refused(void)
     CHECK( !ios_is_conhost( "conhost.exe.bak" ) );
 }
 
+/* ---------- spec 09 round 6 item 6: unix calls with no table ---------- */
+
+static void test_unix_call_check(void)
+{
+    /* an unbound module (its query failed, handle 0): STATUS_DLL_NOT_FOUND, whatever the index */
+    CHECK( ios_unix_call_check( 0, 0, 0, 0 ) == IOS_UNIX_NO_TABLE );
+    CHECK( ios_unix_call_check( 0, 1, 12, 3 ) == IOS_UNIX_NO_TABLE );
+    CHECK( IOS_UNIX_NO_TABLE == 0xc0000135u );
+    /* an index past a table of known size: STATUS_INVALID_PARAMETER */
+    CHECK( ios_unix_call_check( 1, 1, 12, 12 ) == IOS_UNIX_BAD_INDEX );
+    CHECK( ios_unix_call_check( 1, 1, 12, 0xffffffffu ) == IOS_UNIX_BAD_INDEX );
+    CHECK( IOS_UNIX_BAD_INDEX == 0xc000000du );
+    /* in range, or a size that isn't known: called */
+    CHECK( ios_unix_call_check( 1, 1, 12, 11 ) == 0 );
+    CHECK( ios_unix_call_check( 1, 1, 12, 0 ) == 0 );
+    CHECK( ios_unix_call_check( 1, 0, 0, 40 ) == 0 );
+}
+
 /* ---------- Part A: unix library names ---------- */
 
 static void test_unixlib_symbol(void)
@@ -292,6 +310,7 @@ int main(void)
     test_helper_names();
     test_refused();
     test_unixlib_symbol();
+    test_unix_call_check();
     test_registry();
     test_registry_threads();
     test_children();

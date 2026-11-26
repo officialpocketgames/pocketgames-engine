@@ -1958,6 +1958,7 @@ void server_init_process_done(void)
     ios_boot_phase( "entry point" );
     ios_boot_mark( "process %u: running, entry %p%s", ios_proc_current()->serial,
                    main_image_info.TransferAddress, suspend ? " (suspended)" : "" );
+    ios_vm_log_memory( is_wow64() );   /* MYIOSDECK (spec 09 round 6, 8): once per process */
 #else
     assert( !status );
 #endif

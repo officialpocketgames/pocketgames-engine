@@ -43,6 +43,73 @@ static void test_user_limit(void)
     CHECK( ios_vm_user_limit( 0, WIN_LIMIT ) == WIN_LIMIT );
 }
 
+/* ---------- spec 09 round 6: the reported limit, large reservations ---------- */
+
+static void test_big_reserve(void)
+{
+    char line[160];
+    unsigned int count = 0, i, taken = 0;
+
+    /* the reported highest address is the allocator's limit less one: 512 GB on the device,
+     * never Windows' 128 TB */
+    CHECK( ios_vm_reported_highest( ios_vm_user_limit( 0x8000000000ull, WIN_LIMIT ) ) == 0x7fffffffffull );
+    CHECK( ios_vm_reported_highest( ios_vm_user_limit( 0x800000000000ull, WIN_LIMIT ) ) == WIN_LIMIT - 1 );
+    CHECK( ios_vm_reported_highest( ios_vm_user_limit( 0x8000000000ull, WIN_LIMIT ) ) < 0x40000000000ull );
+
+    /* which calls are logged: reservations of 1 GB or more, placeholder or not */
+    CHECK( ios_big_reserve_due( 0x42000, 0x40000000 ) );
+    CHECK( ios_big_reserve_due( 0x2000, 0xec000000 ) );
+    CHECK( ios_big_reserve_due( 0x3000, 0x40000000 ) );
+    CHECK( !ios_big_reserve_due( 0x2000, 0x3fff0000 ) );
+    CHECK( !ios_big_reserve_due( 0x1000, 0x80000000 ) );   /* a commit alone */
+
+    /* the line, failure and success */
+    ios_big_reserve_line( line, sizeof(line), 0xec000000, 0x40000000000ull, 0x42000, 0xc000000d, 0 );
+    CHECK( !strcmp( line, "[vm] reserve 0xec000000 at 0x40000000000 (type 0x42000): 0xc000000d -> 0" ) );
+    ios_big_reserve_line( line, sizeof(line), 0x40000000, 0, 0x2000, 0, 0x2a0000000ull );
+    CHECK( !strcmp( line, "[vm] reserve 0x40000000 at any (type 0x2000): 0 -> 0x2a0000000" ) );
+    ios_big_reserve_line( line, sizeof(line), 0x40000000, 0x200000000ull, 0x2000, 0xc0000018, 0x200000000ull );
+    CHECK( !strcmp( line, "[vm] reserve 0x40000000 at 0x200000000 (type 0x2000): 0xc0000018 -> 0" ) );
+
+    /* at most 32 lines per process */
+    for (i = 0; i < 40; i++) taken += ios_line_budget_take( &count, IOS_BIG_RESERVE_LINES );
+    CHECK( taken == 32 && count == 32 );
+    CHECK( !ios_line_budget_take( &count, IOS_BIG_RESERVE_LINES ) );
+}
+
+/* ---------- spec 09 round 6 item 8: physical memory ---------- */
+
+static void test_mem_figures(void)
+{
+    struct ios_mem_figures f;
+    const uint64_t mb = 1024 * 1024;
+
+    /* the device of the log: hw.memsize 7655 MB, 3 GB left for the app */
+    ios_mem_figures( 7655 * mb, 3072 * mb, 0x1000, &f );
+    CHECK( f.total_pages == 7655 * 256 );                     /* bytes to 4 KB pages */
+    CHECK( (uint64_t)f.total_pages * 0x1000 == 7655 * mb );   /* GlobalMemoryStatusEx's ullTotalPhys */
+    CHECK( f.avail_pages == 3072 * 256 );
+    CHECK( f.commit_limit == f.total_pages + 1 );             /* page file = physical (+ one page) */
+    CHECK( f.committed == f.total_pages - f.avail_pages );
+    CHECK( (uint64_t)f.total_pages * 0x1000 / 4 < 2048 * mb ); /* a JVM's quarter: under 2 GB, not 30 */
+
+    /* available clamped to total; never more */
+    ios_mem_figures( 4096 * mb, 6000 * mb, 0x1000, &f );
+    CHECK( f.avail_pages == f.total_pages && f.committed == 0 );
+    /* not known: all of it available; no hw.memsize: the app's share is the total */
+    ios_mem_figures( 4096 * mb, 0, 0x1000, &f );
+    CHECK( f.avail_pages == 4096 * 256 );
+    ios_mem_figures( 0, 2048 * mb, 0x1000, &f );
+    CHECK( f.total_pages == 2048 * 256 && f.avail_pages == 2048 * 256 );
+    ios_mem_figures( 0, 0, 0x1000, &f );
+    CHECK( f.total_pages == 1 && f.avail_pages == 1 && f.commit_limit == 2 );
+    /* parts of a page are dropped; another page size */
+    ios_mem_figures( 0x1fff, 0x1000, 0x1000, &f );
+    CHECK( f.total_pages == 1 && f.avail_pages == 1 );
+    ios_mem_figures( 8192 * mb, 1024 * mb, 0x4000, &f );
+    CHECK( f.total_pages == 8192 * 64 && f.avail_pages == 1024 * 64 );
+}
+
 /* ---------- Part E5 ---------- */
 
 static void test_laa(void)
@@ -1391,6 +1458,8 @@ int main(void)
     test_module_match();
     test_shared_section();
     test_user_limit();
+    test_big_reserve();
+    test_mem_figures();
     test_laa();
     test_translate();
     test_slots();

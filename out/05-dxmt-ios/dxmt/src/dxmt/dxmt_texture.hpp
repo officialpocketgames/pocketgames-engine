@@ -130,6 +130,7 @@ public:
 
   Texture *descriptor;
   void *mappedMemory;
+  size_t placedLength = 0; // MYIOSDECK spec 06 round 2: the placed memory's length, for its ledger
   uint64_t gpuResourceID;
   mach_port_t machPort;
   EncoderDepKey depkey;

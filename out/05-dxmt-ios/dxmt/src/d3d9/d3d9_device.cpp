@@ -20,6 +20,7 @@
 #include "d3d9_format.hpp"
 #include "d3d9_fvf.hpp"
 #include "d3d9_ia_element.hpp"
+#include "d3d9_vertex_input.hpp" // MYIOSDECK spec 07 clarification 6
 #include "d3d9_interface.hpp"
 #include "d3d9_matrix.hpp"
 #include "d3d9_point_size.hpp"
@@ -138,59 +139,8 @@ isBlockAlignedCreate(D3DFORMAT format, UINT width, UINT height) {
   return (width & 3u) == 0u && (height & 3u) == 0u;
 }
 
-// D3DDECLTYPE -> MTLAttributeFormat. airconv_cli.cpp mirrors this table and
-// cites it by name, so the two have to move together. D3DCOLOR's legacy
-// 0xAARRGGBB layout matches Metal's UChar4Normalized_BGRA.
-inline uint32_t
-to_mtl_attr_format(BYTE type) {
-  switch (type) {
-  case D3DDECLTYPE_FLOAT1:
-    return 28; // Float
-  case D3DDECLTYPE_FLOAT2:
-    return 29; // Float2
-  case D3DDECLTYPE_FLOAT3:
-    return 30; // Float3
-  case D3DDECLTYPE_FLOAT4:
-    return 31; // Float4
-  case D3DDECLTYPE_D3DCOLOR:
-    return 42; // UChar4Normalized_BGRA
-  case D3DDECLTYPE_UBYTE4:
-    return 3; // UChar4
-  case D3DDECLTYPE_SHORT2:
-    return 16; // Short2
-  case D3DDECLTYPE_SHORT4:
-    return 18; // Short4
-  case D3DDECLTYPE_UBYTE4N:
-    return 9; // UChar4Normalized
-  case D3DDECLTYPE_SHORT2N:
-    return 22; // Short2Normalized
-  case D3DDECLTYPE_SHORT4N:
-    return 24; // Short4Normalized
-  case D3DDECLTYPE_USHORT2N:
-    return 19; // UShort2Normalized
-  case D3DDECLTYPE_USHORT4N:
-    return 21; // UShort4Normalized
-  case D3DDECLTYPE_FLOAT16_2:
-    return 25; // Half2
-  case D3DDECLTYPE_FLOAT16_4:
-    return 27; // Half4
-  case D3DDECLTYPE_DEC3N:
-    // 10-10-10-2 signed normalized. Metal's Int1010102Normalized carries the
-    // x, y and z lanes exactly, both normalizing by 511. Its fourth lane is a
-    // 2-bit signed field where D3D9 has no w at all, so the unpack forces the
-    // (x, y, z, 1) expansion. Game engines pack tangent-space vectors here.
-    return 40; // Int1010102Normalized
-  case D3DDECLTYPE_UDEC3:
-    // 10-10-10-2 unsigned and UNnormalized per the D3D9 spec, expanding to
-    // (x, y, z, 1). Metal has no unnormalized 10-bit attribute format, so this
-    // is dxmt's own format value and the shader shifts the channels out of the
-    // raw word. Reusing Metal's normalized format would hand the shader
-    // x in [0, 1] where the app wrote x in [0, 1023].
-    return DXSO_ATTR_FORMAT_UDEC3;
-  default:
-    return 0; // Invalid
-  }
-}
+// D3DDECLTYPE -> fetch format: to_mtl_attr_format in d3d9_vertex_input.hpp (MYIOSDECK spec 07
+// clarification 6: moved there, with the host test of every type's decode).
 
 // D3DPRIMITIVETYPE -> Metal primitive class. The Metal type enum is at
 // winemetal.h; the D3D9 enum is contiguous from 1
@@ -10629,7 +10579,9 @@ MTLD3D9Device::ResolveBatchedDrawForChunk(
       // the latest slot.
       entry.base_addr = cap.vb_slots[slot].gpu_address + cap.vb_slots[slot].offset;
       entry.stride = cap.vb_slots[slot].stride;
-      entry.length = vb->size();
+      // MYIOSDECK spec 07 clarification 6: the bytes from base_addr on, which the fetch clamps
+      // to; the whole buffer's size let a stream with an offset read past its end
+      entry.length = StreamBytesAfterOffset(vb->size(), cap.vb_slots[slot].offset);
     }
     // Per-slot keys for the comparison key (also packs nicely into
     // contiguous arrays for the cache miss path's update).
