@@ -8,7 +8,8 @@
 # without the overlay and expects the ANGLE shader to fail there, so the test keeps proving that
 # it exercises the bug. A15 (half for Shader Model 4 and later), A16 (SV_ClipDistance and
 # SV_CullDistance), A17 (legacy texture intrinsics, constant offsets and sizes, a field named
-# pixel), A19 (Shader Model 1-3 constant tables) and A20 (shifts in #if, ?: on structs) add
+# pixel), A19 (Shader Model 1-3 constant tables), A20 (shifts in #if, ?: on structs), A22 (b and
+# i registers), A24 (written globals, uniforms with a semantic) and A25 (SampleCmp offsets) add
 # their checks below.
 #   test-vkd3d-hlsl.sh [build-dir]
 # VKD3D_RELEASE is the unpacked vkd3d 1.19 release (dl.winehq.org/vkd3d/source/vkd3d-1.19.tar.xz,
@@ -323,6 +324,56 @@ grep -q '^//   bLight: FLOAT4 c' "$build/sm2-bool-colors.upstream.asm" ||
     fail "sm2-bool-colors.hlsl: Wine's unchanged vkd3d didn't put bLight in a c register (the test no longer shows the change)"
 # vs_2_0: static if (no break, so no loops)
 code vs_2_0 -c vs20-bool.hlsl '^//   bSkin: BOOL b2 count 1, SCALAR BOOL 1x1$' '^if[_a-z]* b2(\.xyzw)?$'
+# A24: a non-static global written before anything reads it (an output struct kept in a global,
+# an input copied into one, a global written in a called function) is no constant in Shader Model
+# 1-3: the start-of-program copy into its temp goes, and called functions see the entry
+# function's writes; one whose first value is read (written in part, or in a branch) stays.
+# Uniforms with a semantic are in the constant table at their registers.
+for p in ps_3_0 ps_2_0; do
+    code $p -c global-written-then-called.hlsl '^// constant table: 0 constants, ' \
+        '^mul r[0-9]+\.xyz, [vt]0\.x, [vt]0\.xyzx$' '^mov oC1\.xyzw, [vt]0\.xyzw$' '^mov oC2\.xyzw, [vt]0\.xyzw$'
+    if grep -Eq ', -?c[0-9]+\.' "$build/global-written-then-called.$p.code.asm"; then
+        fail "global-written-then-called.hlsl ($p): a constant register is read"
+    fi
+    code $p -c global-read-in-callee.hlsl '^// constant table: 0 constants, ' \
+        '^mul r[0-9]+\.xyzw, [vt]0\.xyzw, c[0-9]+\.xyzw$'
+    code $p -c global-written-in-callee.hlsl '^// constant table: 0 constants, ' \
+        '^mul r[0-9]+\.xyzw, [vt]0\.xyzw, c[0-9]+\.xyzw$' '^add r[0-9]+\.xyzw, r[0-9]+\.xyzw, [vt]0\.xyzw$'
+    code $p -c global-partly-written.hlsl '^//   o: FLOAT4 c0 count 2, ' '^mov r[0-9]+\.xyzw, c0\.xyzw$' \
+        '^cmp r[0-9]+\.xyzw, -r[0-9]+\.x, c1\.xyzw, [vt]0\.xyzw$'
+    code $p -c uniform-semantics.hlsl '^// constant table: 5 constants, ' '^//   fogColor: FLOAT4 c0 count 1, ' \
+        '^//   fogParams: FLOAT4 c1 count 1, ' '^//   tint: FLOAT4 c5 count 1, ' '^//   scale: FLOAT4 c2 count 1, ' \
+        '^add r[0-9]+\.xyz, r[0-9]+\.xyzx, -c0\.xyzx$' '^mul r[0-9]+\.xyzw, r[0-9]+\.xyzw, c5\.xyzw$' \
+        '^mul r[0-9]+\.xyzw, r[0-9]+\.xyzw, c2\.xyzw$'
+done
+# 4.0 is unchanged (and right)
+code ps_4_0 '' global-written-then-called.hlsl '^mul r[0-9]+\.xyz, v0\.x, v0\.xyzx$' '^mov o1\.xyzw, v0\.xyzw$'
+# the changes, against Wine's unchanged copy: it lists the written global and leaves out the
+# uniforms with a semantic
+"$upstream" -c -p ps_3_0 "$cases/global-written-then-called.hlsl" > "$build/global-written-then-called.upstream.asm" 2>&1 || true
+grep -q '^//   o: FLOAT4 c0 count 3, ' "$build/global-written-then-called.upstream.asm" ||
+    fail "global-written-then-called.hlsl: Wine's unchanged vkd3d didn't list o (the test no longer shows the change)"
+"$upstream" -c -p ps_3_0 "$cases/uniform-semantics.hlsl" > "$build/uniform-semantics.upstream.asm" 2>&1 || true
+if grep -q '^//   fogColor:' "$build/uniform-semantics.upstream.asm"; then
+    fail "uniform-semantics.hlsl: Wine's unchanged vkd3d listed fogColor (the test no longer shows the change)"
+fi
+
+# A25: SampleCmpLevelZero and SampleCmp take their offset from the fourth argument: offsets from an
+# unrolled loop's counters, from a helper's literal arguments (inlined three times) and literals,
+# each compared against the interpolated depth v1.z
+code ps_4_0 '' samplecmp-offset-ps40.hlsl \
+    '^sample_c_lz\(-1,-1,0\) r[0-9]+\.xyzw, v1\.xyxx, t0\.xyzw, s0, v1\.z$' '^sample_c_lz\(1,-1,0\) ' \
+    '^sample_c_lz\(-1,1,0\) ' '^sample_c_lz\(1,1,0\) ' '^sample_c_lz\(-2,0,0\) ' '^sample_c_lz\(2,0,0\) ' \
+    '^sample_c_lz\(0,3,0\) ' '^sample_c\(7,-8,0\) r[0-9]+\.xyzw, v1\.xyxx, t0\.xyzw, s0, v1\.z$'
+if [ "$(grep -Ec '^sample_c(_lz)?\([-0-9,]+\) .*, s0, v1\.z$' "$build/samplecmp-offset-ps40.ps_4_0.code.asm")" -ne 8 ]; then
+    fail "samplecmp-offset-ps40.hlsl: expected 8 comparison samples against v1.z"
+fi
+# the bug, as the game met it: 1.19 took the compare value as the offset
+if "$upstream" -p ps_4_0 "$cases/samplecmp-offset-ps40.hlsl" > /dev/null 2> "$build/samplecmp-offset-ps40.upstream.err" ||
+        ! grep -q 'E5018: Offset must resolve to integer literal in the range -8 to 7\.' "$build/samplecmp-offset-ps40.upstream.err"; then
+    fail "samplecmp-offset-ps40.hlsl: Wine's unchanged vkd3d didn't fail with E5018 (the test no longer shows the bug)"
+fi
+
 # vkd3d can't compile this for ps_1_1, which is why d3dcompiler compiles ps_1_x as ps_2_0 with flag 0x1000
 if "$fixed" -p ps_1_1 "$cases/sm1-samplers-ps20.hlsl" > /dev/null 2>&1; then
     fail "sm1-samplers-ps20.hlsl: vkd3d compiled it for ps_1_1 (check A19's ps_1_x promotion is still needed)"

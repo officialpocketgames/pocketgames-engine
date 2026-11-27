@@ -21,6 +21,10 @@
  * and a scalar condition selects the whole value, component by component
  * (add_ternary_by_component).
  *
+ * Changed for MYIOSDECK (spec 19 A25): SampleCmp and SampleCmpLevelZero take their texel offset
+ * from the fourth argument; 1.19 took the compare value (the third) as the offset too, so any
+ * call with an offset failed with E5018 unless the compare value was a literal.
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
@@ -6468,8 +6472,9 @@ static bool add_sample_cmp_method_call(struct hlsl_ctx *ctx, struct hlsl_block *
     load_params.cmp = add_implicit_conversion(ctx, block, params->args[2],
             hlsl_get_scalar_type(ctx, HLSL_TYPE_FLOAT), loc);
 
+    /* MYIOSDECK (spec 19 A25): the offset is the fourth argument, not the compare value */
     if (offset_dim && params->args_count > 3)
-        load_params.texel_offset = add_implicit_conversion(ctx, block, params->args[2],
+        load_params.texel_offset = add_implicit_conversion(ctx, block, params->args[3],
                 hlsl_get_vector_type(ctx, HLSL_TYPE_INT, offset_dim), loc);
 
     if (params->args_count > 3 + !!offset_dim)

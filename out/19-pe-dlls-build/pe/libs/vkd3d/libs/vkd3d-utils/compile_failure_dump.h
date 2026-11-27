@@ -15,6 +15,12 @@
  *
  * A22: used by vkd3d-utils' D3DCompile2VKD3D (vkd3d_utils_main.c), which every run-time compile
  * passes, d3dcompiler's and d3dx9's (it was in d3dcompiler's compiler.c before).
+ *
+ * A25: each dump also has the compiler version, the entry point and DLL the call came through
+ * (from the call stack), the macros the program passed (a NULL value apart from an empty one),
+ * the include files the include handler was asked for (in the order asked), and, after the
+ * preprocessed text, the source exactly as given and each include file's text. A failed
+ * D3DPreprocess is dumped too.
  */
 
 #ifndef MYIOSDECK_COMPILE_FAILURE_DUMP_H
@@ -22,6 +28,7 @@
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define COMPILE_DUMP_ENV        "PG_D3DCOMPILER_DUMP_FAILED"
@@ -43,6 +50,43 @@
 #define COMPILE_DUMP_FIRST_LOG_FORMAT \
     "[d3dcompiler] dump: failed %s, all %s (entry vkd3d_D3DCompile2VKD3D, compiler version %u)\n"
 
+/* A25: a macro as the program passed it (the layout of D3D_SHADER_MACRO); a list ends at a NULL name */
+struct compile_dump_macro
+{
+    const char *name;
+    const char *definition;
+};
+
+/* A25: the include files the include handler was asked for, in the order asked */
+#define COMPILE_DUMP_MAX_INCLUDES       64
+#define COMPILE_DUMP_MAX_INCLUDE_BYTES  (4u << 20)     /* text kept, all files together */
+
+struct compile_dump_include_file
+{
+    char *name;             /* a copy; NULL when the handler was given none */
+    int local;              /* D3D_INCLUDE_LOCAL ("...") rather than D3D_INCLUDE_SYSTEM (<...>) */
+    unsigned int result;    /* the handler's HRESULT */
+    size_t size;            /* the size the handler returned */
+    char *text;             /* a copy of the data; NULL when the handler failed or past the limit */
+};
+
+struct compile_dump_includes
+{
+    struct compile_dump_include_file files[COMPILE_DUMP_MAX_INCLUDES];
+    size_t count;
+    size_t dropped;         /* requests past COMPILE_DUMP_MAX_INCLUDES */
+    size_t kept;            /* bytes of text kept */
+};
+
+/* A25: one return address of the call stack, innermost first */
+struct compile_dump_frame
+{
+    const char *module;         /* the module's file name; NULL when the address is in none */
+    const char *symbol;         /* the nearest export at or below the address, or NULL */
+    unsigned long long offset;  /* from the symbol, else from the module's base, else the address */
+    int own;                    /* in the module that writes the dump */
+};
+
 struct compile_dump_info
 {
     int succeeded;              /* A19: a successful compile, with its bytecode below */
@@ -58,6 +102,16 @@ struct compile_dump_info
     unsigned int result;        /* the HRESULT */
     const char *messages;       /* the error blob's text (maybe not NUL-terminated) */
     size_t messages_size;
+    /* A25 */
+    int preprocess_call;        /* a failed D3DPreprocess rather than a compile */
+    unsigned int compiler_version;  /* D3DCompile2VKD3D's: 43 or 47 (d3dcompiler), d3dx9's SDK version; 0: unknown */
+    int has_macros;             /* the program passed a macro list (macros may still be empty) */
+    const struct compile_dump_macro *macros;
+    const char *source;         /* the source as given; NULL: not written */
+    size_t source_size;
+    const struct compile_dump_includes *includes;  /* NULL: no include handler */
+    const struct compile_dump_frame *frames;
+    size_t frame_count;
 };
 
 /* the environment variable's value turns the dump on only when it is exactly "1" */
@@ -353,14 +407,312 @@ static inline void compile_dump_hex_code( struct compile_dump_out *out, const un
     }
 }
 
+/* ---- A25: macros, include files, the call stack ---- */
+
+static inline void compile_dump_hex64( struct compile_dump_out *out, unsigned long long v )
+{
+    static const char hex[] = "0123456789abcdef";
+    char text[19];
+    int i, n = 0;
+
+    text[n++] = '0';
+    text[n++] = 'x';
+    for (i = 60; i > 0 && !(v >> i); i -= 4) ;
+    for (; i >= 0; i -= 4) text[n++] = hex[(v >> i) & 0xf];
+    compile_dump_put( out, text, n );
+}
+
+static inline void compile_dump_dec( struct compile_dump_out *out, unsigned long long v )
+{
+    char text[21];
+    int n = sizeof(text);
+
+    do text[--n] = (char)('0' + v % 10); while (v /= 10);
+    compile_dump_put( out, text + n, sizeof(text) - n );
+}
+
+/* s in double quotes, \ " and control characters escaped C-style, so a value stays on its line */
+static inline void compile_dump_quoted( struct compile_dump_out *out, const char *s )
+{
+    static const char hex[] = "0123456789abcdef";
+
+    compile_dump_puts( out, "\"" );
+    for (; *s; s++)
+    {
+        unsigned char c = (unsigned char)*s;
+        char esc[4] = { '\\', 0, 0, 0 };
+
+        if (c == '\\' || c == '"') { esc[1] = (char)c; compile_dump_put( out, esc, 2 ); }
+        else if (c == '\n') compile_dump_puts( out, "\\n" );
+        else if (c == '\r') compile_dump_puts( out, "\\r" );
+        else if (c == '\t') compile_dump_puts( out, "\\t" );
+        else if (c < 0x20 || c == 0x7f)
+        {
+            esc[1] = 'x';
+            esc[2] = hex[c >> 4];
+            esc[3] = hex[c & 0xf];
+            compile_dump_put( out, esc, 4 );
+        }
+        else compile_dump_put( out, s, 1 );
+    }
+    compile_dump_puts( out, "\"" );
+}
+
+/* records one request to the include handler; data and size are what it returned (data NULL
+ * when it failed). Past the limits the request is counted (or recorded without its text). */
+static inline void compile_dump_includes_add( struct compile_dump_includes *inc, const char *name, int local,
+                                              unsigned int result, const void *data, size_t size )
+{
+    struct compile_dump_include_file *file;
+
+    if (inc->count >= COMPILE_DUMP_MAX_INCLUDES)
+    {
+        inc->dropped++;
+        return;
+    }
+    file = &inc->files[inc->count++];
+    memset( file, 0, sizeof(*file) );
+    file->local = local;
+    file->result = result;
+    file->size = data ? size : 0;
+    if (name && (file->name = malloc( strlen( name ) + 1 ))) strcpy( file->name, name );
+    if (data && size <= COMPILE_DUMP_MAX_INCLUDE_BYTES - inc->kept && (file->text = malloc( size ? size : 1 )))
+    {
+        memcpy( file->text, data, size );
+        inc->kept += size;
+    }
+}
+
+static inline void compile_dump_includes_free( struct compile_dump_includes *inc )
+{
+    size_t i;
+
+    for (i = 0; i < inc->count; i++)
+    {
+        free( inc->files[i].name );
+        free( inc->files[i].text );
+    }
+    inc->count = inc->dropped = inc->kept = 0;
+}
+
+/* a DLL a program calls to compile or preprocess HLSL: d3dcompiler_NN, d3dx9_NN, d3dx10_NN,
+ * d3dx11_NN, d3d10 and d3d10_1 (any case) */
+static inline int compile_dump_front_module( const char *name )
+{
+    static const char *const prefixes[] = { "d3dcompiler_", "d3dx9_", "d3dx10_", "d3dx11_", "d3d10.", "d3d10_1." };
+    size_t i, k;
+
+    if (!name) return 0;
+    for (i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++)
+    {
+        for (k = 0; prefixes[i][k]; k++)
+        {
+            char c = name[k];
+
+            if (c >= 'A' && c <= 'Z') c = (char)(c - 'A' + 'a');
+            if (c != prefixes[i][k]) break;
+        }
+        if (!prefixes[i][k]) return 1;
+    }
+    return 0;
+}
+
+/* a PE image mapped at base: SizeOfImage from its headers (avail bytes readable there), 0 if not a PE */
+static inline size_t compile_dump_pe_image_size( const unsigned char *base, size_t avail )
+{
+    unsigned int pe, magic;
+
+    if (!base || avail < 0x40 || base[0] != 'M' || base[1] != 'Z') return 0;
+    pe = compile_dump_rd32( base + 0x3c );
+    if (pe > avail || avail - pe < 24 + 60 || memcmp( base + pe, "PE\0\0", 4 )) return 0;
+    magic = compile_dump_rd16( base + pe + 24 );
+    if (magic != 0x10b && magic != 0x20b) return 0;
+    return compile_dump_rd32( base + pe + 24 + 56 );
+}
+
+/* the exported name whose address is the closest at or below rva, in a PE image mapped at base
+ * (image_size bytes); forwarders don't count. NULL if there is none. */
+static inline const char *compile_dump_nearest_export( const unsigned char *base, size_t image_size,
+                                                       unsigned int rva, unsigned int *export_rva )
+{
+    unsigned int pe, magic, dir, count_dirs, exp, exp_size, nfuncs, nnames, funcs, names, ords, i, best = 0;
+    const char *name = NULL;
+
+    if (!base || image_size < 0x40) return NULL;
+    pe = compile_dump_rd32( base + 0x3c );
+    if (pe > image_size || image_size - pe < 24 + 112 + 8 || memcmp( base + pe, "PE\0\0", 4 )) return NULL;
+    magic = compile_dump_rd16( base + pe + 24 );
+    if (magic == 0x10b) dir = pe + 24 + 96, count_dirs = compile_dump_rd32( base + pe + 24 + 92 );
+    else if (magic == 0x20b) dir = pe + 24 + 112, count_dirs = compile_dump_rd32( base + pe + 24 + 108 );
+    else return NULL;
+    if (!count_dirs || image_size - dir < 8) return NULL;
+    exp = compile_dump_rd32( base + dir );
+    exp_size = compile_dump_rd32( base + dir + 4 );
+    if (!exp || exp > image_size || image_size - exp < 40) return NULL;
+    nfuncs = compile_dump_rd32( base + exp + 0x14 );
+    nnames = compile_dump_rd32( base + exp + 0x18 );
+    funcs = compile_dump_rd32( base + exp + 0x1c );
+    names = compile_dump_rd32( base + exp + 0x20 );
+    ords = compile_dump_rd32( base + exp + 0x24 );
+    if (funcs > image_size || nfuncs > (image_size - funcs) / 4) return NULL;
+    if (names > image_size || nnames > (image_size - names) / 4) return NULL;
+    if (ords > image_size || nnames > (image_size - ords) / 2) return NULL;
+    for (i = 0; i < nnames; i++)
+    {
+        unsigned int ord = compile_dump_rd16( base + ords + 2 * (size_t)i ), f, n;
+
+        if (ord >= nfuncs) continue;
+        f = compile_dump_rd32( base + funcs + 4 * (size_t)ord );
+        if (!f || f > rva || (name && f <= best)) continue;
+        if (f >= exp && f - exp < exp_size) continue;   /* a forwarder: its "address" is a string */
+        n = compile_dump_rd32( base + names + 4 * (size_t)i );
+        if (n >= image_size || !memchr( base + n, 0, image_size - n )) continue;
+        best = f;
+        name = (const char *)base + n;
+    }
+    if (name && export_rva) *export_rva = best;
+    return name;
+}
+
+static inline void compile_dump_frame_text( struct compile_dump_out *out, const struct compile_dump_frame *f )
+{
+    if (!f->module)
+    {
+        compile_dump_hex64( out, f->offset );
+        return;
+    }
+    compile_dump_puts( out, f->module );
+    if (f->symbol)
+    {
+        compile_dump_puts( out, "!" );
+        compile_dump_puts( out, f->symbol );
+    }
+    compile_dump_puts( out, "+" );
+    compile_dump_hex64( out, f->offset );
+}
+
+/* "// called through: <the outermost compiler DLL frame>, from <the frame that called it>": the
+ * export the program called, in the d3dx or d3dcompiler DLL it called; then every frame */
+static inline void compile_dump_frames( struct compile_dump_out *out, const struct compile_dump_frame *frames,
+                                        size_t count )
+{
+    size_t i = 0, entry;
+
+    compile_dump_puts( out, "// called through: " );
+    while (i < count && frames[i].own) i++;
+    if (i == count) compile_dump_puts( out, "unknown (no call stack)" );
+    else if (!compile_dump_front_module( frames[i].module ))
+    {
+        compile_dump_puts( out, "no compiler DLL, called from " );
+        compile_dump_frame_text( out, &frames[i] );
+    }
+    else
+    {
+        for (entry = i; entry + 1 < count && compile_dump_front_module( frames[entry + 1].module ); entry++) ;
+        compile_dump_frame_text( out, &frames[entry] );
+        compile_dump_puts( out, ", from " );
+        if (entry + 1 < count) compile_dump_frame_text( out, &frames[entry + 1] );
+        else compile_dump_puts( out, "-" );
+    }
+    compile_dump_puts( out, "\n// call stack:" );
+    for (i = 0; i < count; i++)
+    {
+        compile_dump_puts( out, i ? " < " : " " );
+        compile_dump_frame_text( out, &frames[i] );
+    }
+    compile_dump_puts( out, count ? "\n" : " -\n" );
+}
+
+static inline void compile_dump_macros( struct compile_dump_out *out, const struct compile_dump_info *info )
+{
+    const struct compile_dump_macro *m;
+    size_t n = 0;
+
+    if (!info->has_macros || !info->macros)
+    {
+        compile_dump_puts( out, "// macros: none (NULL)\n" );
+        return;
+    }
+    for (m = info->macros; m->name; m++) n++;
+    compile_dump_puts( out, "// macros: " );
+    compile_dump_dec( out, n );
+    compile_dump_puts( out, "\n" );
+    for (m = info->macros; m->name; m++)
+    {
+        compile_dump_puts( out, "//   " );
+        compile_dump_quoted( out, m->name );
+        compile_dump_puts( out, " = " );
+        if (m->definition) compile_dump_quoted( out, m->definition );
+        else compile_dump_puts( out, "NULL" );
+        compile_dump_puts( out, "\n" );
+    }
+}
+
+static inline void compile_dump_include_header( struct compile_dump_out *out, size_t index,
+                                                const struct compile_dump_include_file *f )
+{
+    compile_dump_dec( out, index + 1 );
+    compile_dump_puts( out, ": " );
+    if (f->name) compile_dump_quoted( out, f->name );
+    else compile_dump_puts( out, "NULL" );
+    compile_dump_puts( out, f->local ? ", local, " : ", system, " );
+    if (f->result & 0x80000000u)
+    {
+        compile_dump_puts( out, "the handler failed, " );
+        compile_dump_hex( out, f->result );
+        return;
+    }
+    compile_dump_dec( out, f->size );
+    compile_dump_puts( out, f->text ? " bytes" : " bytes, text not kept (the 4 MB limit)" );
+}
+
+static inline void compile_dump_includes( struct compile_dump_out *out, const struct compile_dump_includes *inc )
+{
+    size_t i;
+
+    if (!inc)
+    {
+        compile_dump_puts( out, "// includes: no include handler\n" );
+        return;
+    }
+    compile_dump_puts( out, "// includes: " );
+    compile_dump_dec( out, inc->count + inc->dropped );
+    compile_dump_puts( out, inc->count ? " asked, in this order; their text follows the source below\n" : " asked\n" );
+    for (i = 0; i < inc->count; i++)
+    {
+        compile_dump_puts( out, "//   " );
+        compile_dump_include_header( out, i, &inc->files[i] );
+        compile_dump_puts( out, "\n" );
+    }
+    if (inc->dropped)
+    {
+        compile_dump_puts( out, "//   and " );
+        compile_dump_dec( out, inc->dropped );
+        compile_dump_puts( out, " more, not recorded\n" );
+    }
+}
+
+/* ends a "\n//==== <what>" marker line, then the text exactly as given and an end marker line
+ * (a newline before it when the text has none at its end) */
+static inline void compile_dump_section( struct compile_dump_out *out, const char *text, size_t size )
+{
+    compile_dump_puts( out, " ====\n" );
+    compile_dump_put( out, text, size );
+    if (size && text[size - 1] != '\n') compile_dump_puts( out, "\n" );
+    compile_dump_puts( out, "//==== end ====\n" );
+}
+
 /* writes at most size bytes to buf (none when buf is NULL); returns the file's full size */
 static inline size_t compile_dump_format( char *buf, size_t size, const struct compile_dump_info *info )
 {
     struct compile_dump_out out = { buf, size, 0 };
     const char *pos = info->messages, *end = info->messages ? info->messages + info->messages_size : NULL;
+    size_t i;
 
     compile_dump_puts( &out, info->succeeded
             ? "// d3dcompiler: a successful compile, dumped for diagnosis (" COMPILE_DUMP_ALL_ENV "=1)\n"
+            : info->preprocess_call
+            ? "// d3dcompiler: a failed D3DPreprocess, dumped for diagnosis (" COMPILE_DUMP_ENV "=1)\n"
             : "// d3dcompiler: a failed compile, dumped for diagnosis (" COMPILE_DUMP_ENV "=1)\n" );
     compile_dump_field( &out, "source", info->source_name ? info->source_name : "(memory)" );
     compile_dump_field( &out, "entry", info->entry );
@@ -369,8 +721,15 @@ static inline size_t compile_dump_format( char *buf, size_t size, const struct c
     compile_dump_hex( &out, info->flags );
     compile_dump_puts( &out, "\n// result: " );
     compile_dump_hex( &out, info->result );
-    compile_dump_puts( &out, info->preprocessed ? "\n// text: after preprocessing\n"
-                                                : "\n// text: as given (preprocessing failed)\n" );
+    compile_dump_puts( &out, "\n// compiler version: " );
+    if (info->compiler_version) compile_dump_dec( &out, info->compiler_version );
+    else compile_dump_puts( &out, "-" );
+    compile_dump_puts( &out, "\n" );
+    compile_dump_frames( &out, info->frames, info->frame_count );
+    compile_dump_macros( &out, info );
+    compile_dump_includes( &out, info->includes );
+    compile_dump_puts( &out, info->preprocessed ? "// text: after preprocessing\n"
+                                                : "// text: as given (preprocessing failed)\n" );
     compile_dump_puts( &out, "// messages:\n" );
     /* every line of the messages, as a comment; a trailing '\r' is dropped, empty lines skipped */
     while (pos && pos < end && *pos)
@@ -397,6 +756,23 @@ static inline size_t compile_dump_format( char *buf, size_t size, const struct c
     compile_dump_puts( &out, "\n" );
     compile_dump_put( &out, info->text, info->text_size );
     if (info->text_size && info->text[info->text_size - 1] != '\n') compile_dump_puts( &out, "\n" );
+    /* A25: the source as given (above is the preprocessed text), then the include files' text */
+    if (info->source && info->preprocessed)
+    {
+        compile_dump_puts( &out, "\n//==== source as given: " );
+        compile_dump_dec( &out, info->source_size );
+        compile_dump_puts( &out, " bytes" );
+        compile_dump_section( &out, info->source, info->source_size );
+    }
+    for (i = 0; info->includes && i < info->includes->count; i++)
+    {
+        const struct compile_dump_include_file *f = &info->includes->files[i];
+
+        if (!f->text) continue;
+        compile_dump_puts( &out, "\n//==== include " );
+        compile_dump_include_header( &out, i, f );
+        compile_dump_section( &out, f->text, f->size );
+    }
     return out.len;
 }
 

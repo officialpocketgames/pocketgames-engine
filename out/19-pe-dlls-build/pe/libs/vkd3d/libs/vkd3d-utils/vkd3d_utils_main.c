@@ -6,7 +6,10 @@
  * failed compiles (PG_D3DCOMPILER_DUMP_FAILED=1) and successful Shader Model 1-3 compiles
  * (PG_D3DCOMPILER_DUMP_ALL=1) to C:\users\Public\pg-dumps\shaders\, and to log once which dumps
  * are on (compile_failure_dump.h). These were in d3dcompiler (spec 19 A17, A19), which d3dx9
- * before SDK version 42 doesn't go through.
+ * before SDK version 42 doesn't go through. Spec 19 A25: the dumps also have the macros, the
+ * source as given, the include files the include handler was asked for (it is wrapped while a
+ * dump is on) and the call stack that names the DLL and entry point the program called; a failed
+ * D3DPreprocess is dumped too (vkd3d's D3DPreprocess is now preprocess()).
  *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
@@ -420,16 +423,140 @@ static BOOL compile_dump_on(LONG *state_cache, const char *variable)
     return state > 0;
 }
 
-/* code: the compiled shader of a successful compile (NULL for a failure) */
+/* MYIOSDECK (spec 19 A25): while a dump is on, the program's include handler is wrapped so each
+ * file the compile asks for (name, local/system, size and text) is recorded in the order asked */
+C_ASSERT(sizeof(D3D_SHADER_MACRO) == sizeof(struct compile_dump_macro));
+
+struct dump_include
+{
+    ID3DInclude ID3DInclude_iface;
+    ID3DInclude *inner;
+    struct compile_dump_includes record;
+};
+
+static struct dump_include *dump_include_from_iface(ID3DInclude *iface)
+{
+    return CONTAINING_RECORD(iface, struct dump_include, ID3DInclude_iface);
+}
+
+static HRESULT STDMETHODCALLTYPE dump_include_Open(ID3DInclude *iface, D3D_INCLUDE_TYPE type,
+        const char *filename, const void *parent_data, const void **data, UINT *size)
+{
+    struct dump_include *include = dump_include_from_iface(iface);
+    HRESULT hr = ID3DInclude_Open(include->inner, type, filename, parent_data, data, size);
+
+    compile_dump_includes_add(&include->record, filename, type == D3D_INCLUDE_LOCAL, hr,
+            SUCCEEDED(hr) ? *data : NULL, SUCCEEDED(hr) ? *size : 0);
+    return hr;
+}
+
+static HRESULT STDMETHODCALLTYPE dump_include_Close(ID3DInclude *iface, const void *data)
+{
+    return ID3DInclude_Close(dump_include_from_iface(iface)->inner, data);
+}
+
+static const struct ID3DIncludeVtbl dump_include_vtbl =
+{
+    dump_include_Open,
+    dump_include_Close,
+};
+
+/* the handler the compile gets: the wrapper, or the program's own when there is nothing to wrap
+ * (none, or D3D_COMPILE_STANDARD_FILE_INCLUDE, which d3dcompiler replaces before it calls here) */
+static ID3DInclude *dump_include_init(struct dump_include *include, ID3DInclude *inner)
+{
+    memset(include, 0, sizeof(*include));
+    if (!inner || (UINT_PTR)inner == 1)
+        return inner;
+    include->ID3DInclude_iface.lpVtbl = &dump_include_vtbl;
+    include->inner = inner;
+    return &include->ID3DInclude_iface;
+}
+
+/* MYIOSDECK (spec 19 A25): the call stack, innermost first, each return address as module, nearest
+ * export and offset; caller (the return address of D3DCompile2VKD3D or D3DPreprocess) when the
+ * stack can't be walked past this module */
+#define DUMP_MAX_FRAMES 16
+
+struct dump_frames
+{
+    struct compile_dump_frame frames[DUMP_MAX_FRAMES];
+    char modules[DUMP_MAX_FRAMES][64];
+    size_t count;
+};
+
+static void dump_frame(struct dump_frames *f, void *address, HMODULE self)
+{
+    struct compile_dump_frame *frame = &f->frames[f->count];
+    unsigned int rva, export_rva = 0;
+    char path[MAX_PATH], *base;
+    HMODULE module;
+    DWORD len;
+    size_t image_size;
+
+    memset(frame, 0, sizeof(*frame));
+    frame->offset = (UINT_PTR)address;
+    if (GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (const WCHAR *)address, &module))
+    {
+        len = GetModuleFileNameA(module, path, sizeof(path));
+        if (len >= sizeof(path))
+            len = 0;
+        path[len] = 0;
+        base = strrchr(path, '\\');
+        base = base ? base + 1 : path;
+        snprintf(f->modules[f->count], sizeof(f->modules[f->count]), "%s", *base ? base : "?");
+        frame->module = f->modules[f->count];
+        frame->own = module == self;
+        rva = (unsigned int)((UINT_PTR)address - (UINT_PTR)module);
+        frame->offset = rva;
+        image_size = compile_dump_pe_image_size((const unsigned char *)module, 0x1000);
+        if (rva < image_size && (frame->symbol = compile_dump_nearest_export((const unsigned char *)module,
+                image_size, rva, &export_rva)))
+            frame->offset = rva - export_rva;
+    }
+    ++f->count;
+}
+
+static void dump_capture_frames(struct dump_frames *f, void *caller)
+{
+    void *addresses[DUMP_MAX_FRAMES];
+    HMODULE self = NULL;
+    USHORT count, i;
+    BOOL outside = FALSE;
+
+    f->count = 0;
+    GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            (const WCHAR *)&compile_dumps, &self);
+    count = RtlCaptureStackBackTrace(0, ARRAY_SIZE(addresses), addresses, NULL);
+    for (i = 0; i < count && f->count < DUMP_MAX_FRAMES; ++i)
+    {
+        dump_frame(f, addresses[i], self);
+        if (!f->frames[f->count - 1].own)
+            outside = TRUE;
+    }
+    if (!outside && caller && f->count < DUMP_MAX_FRAMES)
+        dump_frame(f, caller, self);
+}
+
+static HRESULT preprocess(const void *data, SIZE_T size, const char *filename,
+        const D3D_SHADER_MACRO *macros, ID3DInclude *include,
+        ID3DBlob **preprocessed_blob, ID3DBlob **messages_blob);
+
+/* code: the compiled shader of a successful compile (NULL for a failure). A25: preprocess_call for a
+ * failed D3DPreprocess (no entry point or target); includes: what the include handler was asked
+ * (NULL without one); caller: the return address into the program or the DLL that called. */
 static void dump_compile(HRESULT hr, const void *data, SIZE_T data_size, const char *filename,
         const D3D_SHADER_MACRO *macros, ID3DInclude *include, const char *entry,
-        const char *target, UINT flags, ID3DBlob *messages, ID3DBlob *code)
+        const char *target, UINT flags, ID3DBlob *messages, ID3DBlob *code, BOOL preprocess_call,
+        unsigned int compiler_version, const struct compile_dump_includes *includes, void *caller)
 {
     LONG *count = code ? &compile_dumps_ok : &compile_dumps, n = 0;
     LONG max = code ? COMPILE_DUMP_ALL_MAX_FILES : COMPILE_DUMP_MAX_FILES;
     ID3DBlob *preprocessed = NULL, *preprocess_messages = NULL;
     char name[COMPILE_DUMP_NAME_SIZE], path[MAX_PATH];
     struct compile_dump_info info;
+    struct dump_frames frames;
     char *buf = NULL;
     size_t len;
     HANDLE file;
@@ -439,8 +566,10 @@ static void dump_compile(HRESULT hr, const void *data, SIZE_T data_size, const c
     if (!data || InterlockedCompareExchange(count, 0, 0) >= max)
         return;
 
-    /* the source after preprocessing, with the compile's own macros and include handler */
-    if (FAILED(D3DPreprocess(data, data_size, filename, macros, include, &preprocessed, &preprocess_messages)))
+    /* the source after preprocessing, with the compile's own macros and include handler (a failed
+     * D3DPreprocess has nothing to add) */
+    if (preprocess_call || FAILED(preprocess(data, data_size, filename, macros, include,
+            &preprocessed, &preprocess_messages)))
         preprocessed = NULL;
     if (preprocess_messages)
         ID3D10Blob_Release(preprocess_messages);
@@ -474,6 +603,14 @@ static void dump_compile(HRESULT hr, const void *data, SIZE_T data_size, const c
         info.code = ID3D10Blob_GetBufferPointer(code);
         info.code_size = ID3D10Blob_GetBufferSize(code);
     }
+    /* A25 */
+    info.preprocess_call = preprocess_call;
+    info.compiler_version = compiler_version;
+    info.has_macros = !!macros;
+    info.macros = (const struct compile_dump_macro *)macros;
+    info.source = data;
+    info.source_size = data_size;
+    info.includes = includes;
 
     compile_dump_name(name, compile_dump_hash(&info));
     snprintf(path, sizeof(path), "%s\\%s", COMPILE_DUMP_DIR, name);
@@ -482,6 +619,11 @@ static void dump_compile(HRESULT hr, const void *data, SIZE_T data_size, const c
         goto done;
     if ((n = InterlockedIncrement(count)) > max)
         goto done;
+
+    /* A25: the call stack only for a file that is written */
+    dump_capture_frames(&frames, caller);
+    info.frames = frames.frames;
+    info.frame_count = frames.count;
 
     CreateDirectoryA(COMPILE_DUMP_PARENT, NULL);
     CreateDirectoryA(COMPILE_DUMP_DIR, NULL);
@@ -519,7 +661,10 @@ HRESULT WINAPI D3DCompile2VKD3D(const void *data, SIZE_T data_size, const char *
 {
     BOOL dump_failed = compile_dump_on(&compile_dump_failed_state, COMPILE_DUMP_ENV);
     BOOL dump_all = compile_dump_on(&compile_dump_all_state, COMPILE_DUMP_ALL_ENV);
+    void *caller = __builtin_return_address(0);
     ID3DBlob *own_messages = NULL, *messages;
+    struct dump_include dump_include;
+    ID3DInclude *compile_include;
     HRESULT hr;
 
     /* once per process, at the first compile: which dumps are on, and that compiles pass here */
@@ -527,9 +672,12 @@ HRESULT WINAPI D3DCompile2VKD3D(const void *data, SIZE_T data_size, const char *
         MESSAGE(COMPILE_DUMP_FIRST_LOG_FORMAT, dump_failed ? "on" : "off", dump_all ? "on" : "off",
                 compiler_version);
 
+    /* A25: with a dump on, the include files the compile asks for are recorded */
+    compile_include = (dump_failed || dump_all) ? dump_include_init(&dump_include, include) : include;
+
     /* ps_1_x with the backwards-compatibility flag is compiled as ps_2_0 (A19); without a
      * caller's messages blob, a dump asks for one of its own (the caller never sees it) */
-    hr = compile2_vkd3d(data, data_size, filename, macros, include, entry_point,
+    hr = compile2_vkd3d(data, data_size, filename, macros, compile_include, entry_point,
             compile_effective_profile(profile, flags), flags, effect_flags, secondary_flags,
             secondary_data, secondary_data_size, shader_blob,
             messages_blob ? messages_blob : (dump_failed || dump_all) ? &own_messages : NULL,
@@ -537,11 +685,15 @@ HRESULT WINAPI D3DCompile2VKD3D(const void *data, SIZE_T data_size, const char *
     messages = messages_blob ? *messages_blob : own_messages;
 
     if (FAILED(hr) && dump_failed)
-        dump_compile(hr, data, data_size, filename, macros, include, entry_point, profile, flags, messages, NULL);
+        dump_compile(hr, data, data_size, filename, macros, include, entry_point, profile, flags, messages,
+                NULL, FALSE, compiler_version, compile_include != include ? &dump_include.record : NULL, caller);
     else if (SUCCEEDED(hr) && dump_all && shader_blob && *shader_blob && compile_dump_sm1_target(profile))
-        dump_compile(hr, data, data_size, filename, macros, include, entry_point, profile, flags,
-                messages, *shader_blob);
+        dump_compile(hr, data, data_size, filename, macros, include, entry_point, profile, flags, messages,
+                *shader_blob, FALSE, compiler_version, compile_include != include ? &dump_include.record : NULL,
+                caller);
 
+    if (compile_include != include)
+        compile_dump_includes_free(&dump_include.record);
     if (own_messages)
         ID3D10Blob_Release(own_messages);
     return hr;
@@ -578,7 +730,39 @@ HRESULT WINAPI D3DCompile(const void *data, SIZE_T data_size, const char *filena
             effect_flags, 0, NULL, 0, shader, error_messages);
 }
 
+/* MYIOSDECK (spec 19 A25): D3DPreprocess dumps a failure (PG_D3DCOMPILER_DUMP_FAILED=1) as
+ * D3DCompile2VKD3D does; the dump's own preprocessing calls this, vkd3d's D3DPreprocess renamed */
 HRESULT WINAPI D3DPreprocess(const void *data, SIZE_T size, const char *filename,
+        const D3D_SHADER_MACRO *macros, ID3DInclude *include,
+        ID3DBlob **preprocessed_blob, ID3DBlob **messages_blob)
+{
+    void *caller = __builtin_return_address(0);
+    ID3DBlob *own_messages = NULL;
+    struct dump_include dump_include;
+    ID3DInclude *preprocess_include;
+    HRESULT hr;
+
+    TRACE("data %p, size %"PRIuPTR", filename %s, macros %p, include %p, preprocessed_blob %p, messages_blob %p.\n",
+            data, (uintptr_t)size, debugstr_a(filename), macros, include, preprocessed_blob, messages_blob);
+
+    if (!compile_dump_on(&compile_dump_failed_state, COMPILE_DUMP_ENV))
+        return preprocess(data, size, filename, macros, include, preprocessed_blob, messages_blob);
+
+    preprocess_include = dump_include_init(&dump_include, include);
+    hr = preprocess(data, size, filename, macros, preprocess_include, preprocessed_blob,
+            messages_blob ? messages_blob : &own_messages);
+    if (FAILED(hr))
+        dump_compile(hr, data, size, filename, macros, include, NULL, NULL, 0,
+                messages_blob ? *messages_blob : own_messages, NULL, TRUE, 0,
+                preprocess_include != include ? &dump_include.record : NULL, caller);
+    if (preprocess_include != include)
+        compile_dump_includes_free(&dump_include.record);
+    if (own_messages)
+        ID3D10Blob_Release(own_messages);
+    return hr;
+}
+
+static HRESULT preprocess(const void *data, SIZE_T size, const char *filename,
         const D3D_SHADER_MACRO *macros, ID3DInclude *include,
         ID3DBlob **preprocessed_blob, ID3DBlob **messages_blob)
 {
@@ -594,9 +778,6 @@ HRESULT WINAPI D3DPreprocess(const void *data, SIZE_T size, const char *filename
     {
         {VKD3D_SHADER_COMPILE_OPTION_API_VERSION, VKD3D_SHADER_API_VERSION_CURRENT},
     };
-
-    TRACE("data %p, size %"PRIuPTR", filename %s, macros %p, include %p, preprocessed_blob %p, messages_blob %p.\n",
-            data, (uintptr_t)size, debugstr_a(filename), macros, include, preprocessed_blob, messages_blob);
 
     if (messages_blob)
         *messages_blob = NULL;

@@ -366,6 +366,11 @@ static void test_compile_failure_dump(void)
         "// target: vs_4_0\n"
         "// flags: 0x1000\n"
         "// result: 0x80004005\n"
+        "// compiler version: -\n"              /* A25's lines, with nothing known */
+        "// called through: unknown (no call stack)\n"
+        "// call stack: -\n"
+        "// macros: none (NULL)\n"
+        "// includes: no include handler\n"
         "// text: after preprocessing\n"
         "// messages:\n"
         "//   s.hlsl:4:12: E5005: Field \"pixel\" is not defined.\n"
@@ -580,6 +585,263 @@ static void test_compile_dump_sm1(void)
     CHECK( compile_dump_hash( &info ) != 0 );
 }
 
+/* ---- A25: macros, the source as given, include files, the call stack ---- */
+
+/* a PE image with three named exports: Alpha at 0x1000, Beta at 0x1100, Fwd a forwarder at 0x2a0 */
+static void make_pe( unsigned char *img, size_t size, int pe32 )
+{
+    unsigned int opt = 0x98, dir = opt + (pe32 ? 96 : 112);
+
+    memset( img, 0, size );
+    img[0] = 'M';
+    img[1] = 'Z';
+    put32( img + 0x3c, 0x80 );
+    memcpy( img + 0x80, "PE\0\0", 4 );
+    img[opt] = 0x0b;                                        /* 0x10b PE32, 0x20b PE32+ */
+    img[opt + 1] = pe32 ? 0x01 : 0x02;
+    put32( img + opt + 56, (unsigned int)size );            /* SizeOfImage */
+    put32( img + opt + (pe32 ? 92 : 108), 16 );             /* NumberOfRvaAndSizes */
+    put32( img + dir, 0x200 );                              /* the export directory */
+    put32( img + dir + 4, 0x100 );
+    put32( img + 0x200 + 0x14, 3 );
+    put32( img + 0x200 + 0x18, 3 );
+    put32( img + 0x200 + 0x1c, 0x240 );
+    put32( img + 0x200 + 0x20, 0x250 );
+    put32( img + 0x200 + 0x24, 0x260 );
+    put32( img + 0x240, 0x1000 );
+    put32( img + 0x244, 0x1100 );
+    put32( img + 0x248, 0x2a0 );
+    put32( img + 0x250, 0x278 );    /* names in alphabetical order, functions not */
+    put32( img + 0x254, 0x270 );
+    put32( img + 0x258, 0x280 );
+    img[0x260] = 1;                 /* Beta's ordinal (index 1); Alpha's 0, Fwd's 2 */
+    img[0x262] = 0;
+    img[0x264] = 2;
+    memcpy( img + 0x270, "Alpha", 6 );
+    memcpy( img + 0x278, "Beta", 5 );
+    memcpy( img + 0x280, "Fwd", 4 );
+    memcpy( img + 0x2a0, "X.Y", 4 );
+}
+
+static void test_compile_dump_a25(void)
+{
+    static const char expected[] =
+        "// d3dcompiler: a failed compile, dumped for diagnosis (PG_D3DCOMPILER_DUMP_FAILED=1)\n"
+        "// source: (memory)\n"
+        "// entry: main\n"
+        "// target: ps_4_0\n"
+        "// flags: 0x0\n"
+        "// result: 0x80004005\n"
+        "// compiler version: 43\n"
+        "// called through: d3dx10_43.dll!D3DX10CompileFromMemory+0x5c, from game.exe+0x1234\n"
+        "// call stack: wined3d.dll!vkd3d_D3DCompile2VKD3D+0x40 < d3dcompiler_43.dll!D3DCompile2+0x88"
+        " < D3DCompiler_43.dll!D3DCompile+0x30 < d3dx10_43.dll!D3DX10CompileFromMemory+0x5c < game.exe+0x1234"
+        " < 0x7ffe0000\n"
+        "// macros: 4\n"
+        "//   \"LIGHTS\" = \"3\"\n"
+        "//   \"NO_VALUE\" = NULL\n"
+        "//   \"EMPTY\" = \"\"\n"
+        "//   \"ODD\" = \"a \\\"b\\\"\\n\\\\c\\x01\"\n"
+        "// includes: 3 asked, in this order; their text follows the source below\n"
+        "//   1: \"common.h\", local, 22 bytes\n"
+        "//   2: \"missing.h\", system, the handler failed, 0x80004005\n"
+        "//   3: \"sys.h\", system, 9 bytes\n"
+        "// text: after preprocessing\n"
+        "// messages:\n"
+        "//   s.hlsl:9:5: E5005: Field \"pixel\" is not defined.\n"
+        "\n"
+        "struct PS { float4 c : SV_Target; };\n"
+        "\n"
+        "//==== source as given: 51 bytes ====\n"
+        "#include \"common.h\"\n"
+        "#if HAS_PIXEL\n"
+        "int pixel;\n"
+        "#endif"
+        "\n//==== end ====\n"
+        "\n"
+        "//==== include 1: \"common.h\", local, 22 bytes ====\n"
+        "#define HAS_PIXEL 1\r\n\n"
+        "//==== end ====\n"
+        "\n"
+        "//==== include 3: \"sys.h\", system, 9 bytes ====\n"
+        "float x;\n"
+        "//==== end ====\n";
+    static const char source[] = "#include \"common.h\"\n#if HAS_PIXEL\nint pixel;\n#endif";
+    static const char preprocessed[] = "struct PS { float4 c : SV_Target; };\n";
+    static const char messages[] = "s.hlsl:9:5: E5005: Field \"pixel\" is not defined.\n";
+    static const struct compile_dump_macro macros[] =
+    {
+        { "LIGHTS", "3" }, { "NO_VALUE", NULL }, { "EMPTY", "" }, { "ODD", "a \"b\"\n\\c\x01" }, { NULL, NULL },
+    };
+    static const struct compile_dump_frame frames[] =
+    {
+        { "wined3d.dll", "vkd3d_D3DCompile2VKD3D", 0x40, 1 },
+        { "d3dcompiler_43.dll", "D3DCompile2", 0x88, 0 },
+        { "D3DCompiler_43.dll", "D3DCompile", 0x30, 0 },
+        { "d3dx10_43.dll", "D3DX10CompileFromMemory", 0x5c, 0 },
+        { "game.exe", NULL, 0x1234, 0 },
+        { NULL, NULL, 0x7ffe0000, 0 },
+    };
+    static struct compile_dump_includes inc, many;
+    static unsigned char img[0x2000];
+    struct compile_dump_info info;
+    unsigned int export_rva = 0;
+    char out[4096];
+    size_t len, i;
+    char *big;
+
+    /* the include record: in the order asked, a failed request without text */
+    memset( &inc, 0, sizeof(inc) );
+    compile_dump_includes_add( &inc, "common.h", 1, 0, "#define HAS_PIXEL 1\r\n\n", 22 );
+    compile_dump_includes_add( &inc, "missing.h", 0, 0x80004005u, NULL, 0 );
+    compile_dump_includes_add( &inc, "sys.h", 0, 0, "float x;\n", 9 );
+    CHECK_EQ_U( inc.count, 3 );
+    CHECK_EQ_U( inc.kept, 31 );
+    CHECK( inc.files[1].text == NULL && inc.files[1].size == 0 );
+    /* the handler's text is copied, not referenced */
+    CHECK( inc.files[2].text && !memcmp( inc.files[2].text, "float x;\n", 9 ) );
+
+    memset( &info, 0, sizeof(info) );
+    info.text = preprocessed;
+    info.text_size = strlen( preprocessed );
+    info.preprocessed = 1;
+    info.entry = "main";
+    info.target = "ps_4_0";
+    info.result = 0x80004005u;
+    info.messages = messages;
+    info.messages_size = strlen( messages );
+    info.compiler_version = 43;
+    info.has_macros = 1;
+    info.macros = macros;
+    info.source = source;
+    info.source_size = strlen( source );
+    info.includes = &inc;
+    info.frames = frames;
+    info.frame_count = sizeof(frames) / sizeof(frames[0]);
+
+    /* the source as given has no newline at its end: one comes before the end marker (the
+     * marker line gives the exact size); the include's "\r\n\n" stays as it is */
+    len = compile_dump_format( NULL, 0, &info );
+    CHECK_EQ_U( len, strlen( expected ) );
+    memset( out, 0, sizeof(out) );
+    CHECK_EQ_U( compile_dump_format( out, sizeof(out) - 1, &info ), len );
+    CHECK( !strcmp( out, expected ) );
+    if (strcmp( out, expected )) fprintf( stderr, "got:\n%s\n", out );
+    /* the macros, the source and the includes don't name the file: the preprocessed text does */
+    {
+        struct compile_dump_info plain = info;
+
+        plain.macros = NULL;
+        plain.has_macros = 0;
+        plain.includes = NULL;
+        plain.source = NULL;
+        CHECK_EQ_U( compile_dump_hash( &plain ), compile_dump_hash( &info ) );
+    }
+
+    /* an empty macro list apart from none; no handler; a failed D3DPreprocess (text as given, so
+     * no second copy of the source) */
+    info.macros = macros + 4;
+    info.includes = NULL;
+    info.preprocess_call = 1;
+    info.preprocessed = 0;
+    info.entry = info.target = NULL;
+    info.text = source;
+    info.text_size = strlen( source );
+    len = compile_dump_format( out, sizeof(out) - 1, &info );
+    out[len < sizeof(out) ? len : sizeof(out) - 1] = 0;
+    {
+        static const char title[] = "// d3dcompiler: a failed D3DPreprocess, dumped for diagnosis (PG_D3DCOMPILER_DUMP_FAILED=1)\n";
+        CHECK( !strncmp( out, title, strlen( title ) ) );
+    }
+    CHECK( strstr( out, "// entry: -\n// target: -\n" ) != NULL );
+    CHECK( strstr( out, "// macros: 0\n// includes: no include handler\n// text: as given (preprocessing failed)\n" ) != NULL );
+    CHECK( strstr( out, "//==== source" ) == NULL );
+
+    /* the call stack: none; no compiler DLL in front; compiler DLLs to the end */
+    info.frame_count = 0;
+    len = compile_dump_format( out, sizeof(out) - 1, &info );
+    out[len < sizeof(out) ? len : sizeof(out) - 1] = 0;
+    CHECK( strstr( out, "// called through: unknown (no call stack)\n// call stack: -\n" ) != NULL );
+    info.frames = frames + 4;
+    info.frame_count = 2;
+    len = compile_dump_format( out, sizeof(out) - 1, &info );
+    out[len < sizeof(out) ? len : sizeof(out) - 1] = 0;
+    CHECK( strstr( out, "// called through: no compiler DLL, called from game.exe+0x1234\n"
+                        "// call stack: game.exe+0x1234 < 0x7ffe0000\n" ) != NULL );
+    info.frames = frames;
+    info.frame_count = 3;
+    len = compile_dump_format( out, sizeof(out) - 1, &info );
+    out[len < sizeof(out) ? len : sizeof(out) - 1] = 0;
+    CHECK( strstr( out, "// called through: D3DCompiler_43.dll!D3DCompile+0x30, from -\n" ) != NULL );
+    info.frame_count = 1;
+    len = compile_dump_format( out, sizeof(out) - 1, &info );
+    out[len < sizeof(out) ? len : sizeof(out) - 1] = 0;
+    CHECK( strstr( out, "// called through: unknown (no call stack)\n" ) != NULL );
+
+    /* the compiler DLLs, any case; others not */
+    CHECK( compile_dump_front_module( "d3dcompiler_47.dll" ) );
+    CHECK( compile_dump_front_module( "D3DX9_36.DLL" ) );
+    CHECK( compile_dump_front_module( "d3dx10_43.dll" ) );
+    CHECK( compile_dump_front_module( "d3dx11_43.dll" ) );
+    CHECK( compile_dump_front_module( "d3d10.dll" ) );
+    CHECK( compile_dump_front_module( "d3d10_1.dll" ) );
+    CHECK( !compile_dump_front_module( "d3d10core.dll" ) );
+    CHECK( !compile_dump_front_module( "d3d9.dll" ) );
+    CHECK( !compile_dump_front_module( "wined3d.dll" ) );
+    CHECK( !compile_dump_front_module( "d3dx9" ) );
+    CHECK( !compile_dump_front_module( NULL ) );
+
+    /* the limits: 64 files, then counted only; 4 MB of text, then recorded without it */
+    memset( &many, 0, sizeof(many) );
+    for (i = 0; i < COMPILE_DUMP_MAX_INCLUDES + 2; i++) compile_dump_includes_add( &many, "a.h", 1, 0, "x", 1 );
+    CHECK_EQ_U( many.count, 64 );
+    CHECK_EQ_U( many.dropped, 2 );
+    compile_dump_includes_free( &many );
+    CHECK_EQ_U( many.count, 0 );
+    if ((big = calloc( 1, COMPILE_DUMP_MAX_INCLUDE_BYTES )))
+    {
+        compile_dump_includes_add( &many, "big.h", 0, 0, big, COMPILE_DUMP_MAX_INCLUDE_BYTES - 4 );
+        compile_dump_includes_add( &many, "next.h", 0, 0, big, 5 );
+        compile_dump_includes_add( &many, "fits.h", 0, 0, big, 4 );
+        CHECK( many.files[0].text != NULL );
+        CHECK( many.files[1].text == NULL && many.files[1].size == 5 );
+        CHECK( many.files[2].text != NULL );
+        info.includes = &many;
+        len = compile_dump_format( NULL, 0, &info );
+        CHECK( len > COMPILE_DUMP_MAX_INCLUDE_BYTES );
+        compile_dump_includes_free( &many );
+        free( big );
+    }
+    compile_dump_includes_free( &inc );
+    {
+        struct compile_dump_out o = { out, sizeof(out) - 1, 0 };
+        struct compile_dump_include_file f = { NULL, 1, 0, 5, NULL };
+
+        compile_dump_include_header( &o, 0, &f );
+        out[o.len] = 0;
+        CHECK( !strcmp( out, "1: NULL, local, 5 bytes, text not kept (the 4 MB limit)" ) );
+    }
+
+    /* the nearest export, PE32+ and PE32 */
+    for (i = 0; i < 2; i++)
+    {
+        make_pe( img, sizeof(img), (int)i );
+        CHECK_EQ_U( compile_dump_pe_image_size( img, 0x1000 ), sizeof(img) );
+        CHECK( !strcmp( compile_dump_nearest_export( img, sizeof(img), 0x1050, &export_rva ), "Alpha" ) );
+        CHECK_EQ_U( export_rva, 0x1000 );
+        CHECK( !strcmp( compile_dump_nearest_export( img, sizeof(img), 0x1100, &export_rva ), "Beta" ) );
+        CHECK_EQ_U( export_rva, 0x1100 );
+        CHECK( !strcmp( compile_dump_nearest_export( img, sizeof(img), 0x1fff, &export_rva ), "Beta" ) );
+        CHECK( compile_dump_nearest_export( img, sizeof(img), 0x2b0, &export_rva ) == NULL );  /* a forwarder only */
+        CHECK( compile_dump_nearest_export( img, sizeof(img), 0xfff, NULL ) == NULL );
+        put32( img + 0x200 + 0x18, 0x40000000 );     /* names past the image */
+        CHECK( compile_dump_nearest_export( img, sizeof(img), 0x1050, &export_rva ) == NULL );
+    }
+    img[0] = 'X';
+    CHECK_EQ_U( compile_dump_pe_image_size( img, 0x1000 ), 0 );
+    CHECK( compile_dump_nearest_export( NULL, 0, 0x1050, &export_rva ) == NULL );
+}
+
 /* ---- wined3d: load_drawable's re-entry guard (A23) ---- */
 
 static void test_load_drawable_guard(void)
@@ -660,6 +922,7 @@ int main(void)
     test_compile_failure_log();
     test_compile_failure_dump();
     test_compile_dump_sm1();
+    test_compile_dump_a25();
     test_load_drawable_guard();
     test_format_check_log();
     if (failures)

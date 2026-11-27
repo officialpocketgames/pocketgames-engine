@@ -17,6 +17,12 @@
  * iN), loads read the temp, and the constant table lists it in the BOOL or INT4 set. Loops
  * become "rep" over a "defi" count of 255 with "break" (version 2.1 and later).
  *
+ * Changed for MYIOSDECK (spec 19 A24): for Shader Model 1-3, the start-of-program copy of a
+ * written uniform into its temp is removed when every component it writes is written again at
+ * the top level before anything reads it (remove_dead_uniform_copies), so the uniform takes no
+ * constant registers and isn't in the constant table; ctab_write_uniforms() lists uniforms that
+ * have a semantic.
+ *
  * This library is free software; you can redistribute it and/or
  * modify it under the terms of the GNU Lesser General Public
  * License as published by the Free Software Foundation; either
@@ -385,6 +391,210 @@ static bool divert_written_uniform_derefs_to_temp(struct hlsl_ctx *ctx, struct h
 
     deref->var = deref->var->temp_copy;
     return true;
+}
+
+/* MYIOSDECK (spec 19 A24): the copy of a written uniform into its temp, made at the start of the
+ * program (prepend_uniform_copy), is dead when every component it writes is written again at the
+ * top level of the program before anything reads it. vkd3d kept it, so a global the program
+ * writes before reading (an output struct kept in a global, say) still took constant registers
+ * and was listed in the constant table, which Microsoft's compiler doesn't do, and every
+ * uniform allocated after it moved. */
+
+/* does a deref of temp read a component still marked live? (an unknown range: any) */
+static bool uniform_copy_deref_reads_live(struct hlsl_ctx *ctx, const struct hlsl_deref *deref,
+        const struct hlsl_ir_var *temp, const bool *live, unsigned int component_count)
+{
+    unsigned int start, count, i;
+
+    if (deref->var != temp)
+        return false;
+    if (!hlsl_component_index_range_from_deref(ctx, deref, &start, &count))
+    {
+        start = 0;
+        count = component_count;
+    }
+    for (i = start; i < start + count && i < component_count; ++i)
+    {
+        if (live[i])
+            return true;
+    }
+    return false;
+}
+
+static bool uniform_copy_block_reads_live(struct hlsl_ctx *ctx, const struct hlsl_block *block,
+        const struct hlsl_ir_var *temp, const bool *live, unsigned int component_count);
+
+/* does the instruction (and, for a branch, loop or switch, anything in it) read a live component
+ * of temp? Writes in nested blocks don't count as overwriting. */
+static bool uniform_copy_instr_reads_live(struct hlsl_ctx *ctx, const struct hlsl_ir_node *instr,
+        const struct hlsl_ir_var *temp, const bool *live, unsigned int component_count)
+{
+    switch (instr->type)
+    {
+        case HLSL_IR_LOAD:
+            /* a load nothing uses reads nothing */
+            return !list_empty(&instr->uses)
+                    && uniform_copy_deref_reads_live(ctx, &hlsl_ir_load(instr)->src, temp, live, component_count);
+
+        case HLSL_IR_RESOURCE_LOAD:
+        {
+            const struct hlsl_ir_resource_load *load = hlsl_ir_resource_load(instr);
+
+            return uniform_copy_deref_reads_live(ctx, &load->resource, temp, live, component_count)
+                    || (load->sampler.var && uniform_copy_deref_reads_live(ctx, &load->sampler,
+                    temp, live, component_count));
+        }
+
+        case HLSL_IR_RESOURCE_STORE:
+            return uniform_copy_deref_reads_live(ctx, &hlsl_ir_resource_store(instr)->resource,
+                    temp, live, component_count);
+
+        case HLSL_IR_INTERLOCKED:
+            return uniform_copy_deref_reads_live(ctx, &hlsl_ir_interlocked(instr)->dst,
+                    temp, live, component_count);
+
+        case HLSL_IR_IF:
+        {
+            const struct hlsl_ir_if *iff = hlsl_ir_if(instr);
+
+            return uniform_copy_block_reads_live(ctx, &iff->then_block, temp, live, component_count)
+                    || uniform_copy_block_reads_live(ctx, &iff->else_block, temp, live, component_count);
+        }
+
+        case HLSL_IR_LOOP:
+        {
+            const struct hlsl_ir_loop *loop = hlsl_ir_loop(instr);
+
+            return uniform_copy_block_reads_live(ctx, &loop->body, temp, live, component_count)
+                    || uniform_copy_block_reads_live(ctx, &loop->iter, temp, live, component_count);
+        }
+
+        case HLSL_IR_SWITCH:
+        {
+            const struct hlsl_ir_switch *s = hlsl_ir_switch(instr);
+            const struct hlsl_ir_switch_case *c;
+
+            LIST_FOR_EACH_ENTRY(c, &s->cases, struct hlsl_ir_switch_case, entry)
+            {
+                if (uniform_copy_block_reads_live(ctx, &c->body, temp, live, component_count))
+                    return true;
+            }
+            return false;
+        }
+
+        default:
+            return false;
+    }
+}
+
+static bool uniform_copy_block_reads_live(struct hlsl_ctx *ctx, const struct hlsl_block *block,
+        const struct hlsl_ir_var *temp, const bool *live, unsigned int component_count)
+{
+    const struct hlsl_ir_node *instr;
+
+    LIST_FOR_EACH_ENTRY(instr, &block->instrs, struct hlsl_ir_node, entry)
+    {
+        if (uniform_copy_instr_reads_live(ctx, instr, temp, live, component_count))
+            return true;
+    }
+    return false;
+}
+
+/* the components a store of a scalar or vector writes, set to value in marks; false when they
+ * can't be told (a non-constant index, another class) */
+static bool uniform_copy_mark_store(struct hlsl_ctx *ctx, const struct hlsl_ir_store *store,
+        bool *marks, unsigned int component_count, bool value, unsigned int *changed)
+{
+    const struct hlsl_type *type = store->rhs.node->data_type;
+    unsigned int start, count, i;
+
+    if (type->class != HLSL_CLASS_SCALAR && type->class != HLSL_CLASS_VECTOR)
+        return false;
+    if (!hlsl_component_index_range_from_deref(ctx, &store->lhs, &start, &count))
+        return false;
+    for (i = 0; i < count && i < 4 && start + i < component_count; ++i)
+    {
+        if (!(store->writemask & (1u << i)) || marks[start + i] == value)
+            continue;
+        marks[start + i] = value;
+        ++*changed;
+    }
+    return true;
+}
+
+/* copy is a store at the top level of body; the instructions after it there are walked in order */
+static bool uniform_copy_is_dead(struct hlsl_ctx *ctx, struct hlsl_block *body, struct hlsl_ir_store *copy)
+{
+    unsigned int component_count, live_count = 0, overwritten;
+    const struct hlsl_ir_var *temp = copy->lhs.var;
+    struct hlsl_ir_node *instr;
+    struct list *cursor;
+    bool *live, dead = false;
+
+    component_count = hlsl_type_component_count(temp->data_type);
+    if (!component_count || !(live = hlsl_calloc(ctx, component_count, sizeof(*live))))
+        return false;
+    if (!uniform_copy_mark_store(ctx, copy, live, component_count, true, &live_count) || !live_count)
+        goto done;
+
+    for (cursor = list_next(&body->instrs, &copy->node.entry); cursor; cursor = list_next(&body->instrs, cursor))
+    {
+        instr = LIST_ENTRY(cursor, struct hlsl_ir_node, entry);
+        if (instr->type == HLSL_IR_STORE && hlsl_ir_store(instr)->lhs.var == temp)
+        {
+            /* overwritten components are no longer live; a write we can't place changes nothing */
+            overwritten = 0;
+            uniform_copy_mark_store(ctx, hlsl_ir_store(instr), live, component_count, false, &overwritten);
+            live_count -= overwritten;
+            if (!live_count)
+            {
+                dead = true;
+                goto done;
+            }
+            continue;
+        }
+        if (instr->type == HLSL_IR_JUMP)
+        {
+            enum hlsl_ir_jump_type type = hlsl_ir_jump(instr)->type;
+
+            if (type != HLSL_IR_JUMP_DISCARD_NEG && type != HLSL_IR_JUMP_DISCARD_NZ)
+                goto done;
+            continue;
+        }
+        if (uniform_copy_instr_reads_live(ctx, instr, temp, live, component_count))
+            goto done;
+    }
+    /* the end of the program, the live components never read */
+    dead = true;
+
+done:
+    vkd3d_free(live);
+    return dead;
+}
+
+static void remove_dead_uniform_copies(struct hlsl_ctx *ctx, struct hlsl_block *body)
+{
+    struct hlsl_ir_node *instr, *next;
+
+    LIST_FOR_EACH_ENTRY_SAFE(instr, next, &body->instrs, struct hlsl_ir_node, entry)
+    {
+        struct hlsl_ir_store *store;
+        struct hlsl_ir_load *load;
+
+        if (instr->type != HLSL_IR_STORE)
+            continue;
+        store = hlsl_ir_store(instr);
+        if (store->rhs.node->type != HLSL_IR_LOAD)
+            continue;
+        load = hlsl_ir_load(store->rhs.node);
+        if (!load->src.var->is_uniform || !load->src.var->temp_copy || load->src.var->temp_copy != store->lhs.var)
+            continue;
+        if (uniform_copy_is_dead(ctx, body, store))
+        {
+            list_remove(&instr->entry);
+            hlsl_free_instr(instr);
+        }
+    }
 }
 
 static void warn_on_field_semantic(struct hlsl_ctx *ctx,
@@ -11456,6 +11666,9 @@ static void sm1_sort_externs(struct hlsl_ctx *ctx)
     list_move_tail(&ctx->extern_vars, &sorted);
 }
 
+/* MYIOSDECK (spec 19 A24): a uniform with a semantic ("float4 c : FOGCOLOR : register(c0)") is
+ * listed like any other uniform, as Microsoft's compiler lists it; 1.19 left out every variable
+ * with a semantic, which only varyings should be */
 static void ctab_write_uniforms(struct ctab_ctx *ctab)
 {
     size_t ctab_start, vars_offset, vars_start, creator_offset, offset;
@@ -11469,7 +11682,7 @@ static void ctab_write_uniforms(struct ctab_ctx *ctab)
     {
         for (r = 0; r <= HLSL_REGSET_LAST; ++r)
         {
-            if (var->semantic.name || !var->regs[r].allocated || !var->last_read)
+            if ((var->semantic.name && !var->is_uniform) || !var->regs[r].allocated || !var->last_read)
                 continue;
 
             ++uniform_count;
@@ -11508,7 +11721,7 @@ static void ctab_write_uniforms(struct ctab_ctx *ctab)
     {
         for (r = 0; r <= HLSL_REGSET_LAST; ++r)
         {
-            if (var->semantic.name || !var->regs[r].allocated || !var->last_read)
+            if ((var->semantic.name && !var->is_uniform) || !var->regs[r].allocated || !var->last_read)
                 continue;
 
             put_u32(buffer, 0); /* name */
@@ -11545,7 +11758,7 @@ static void ctab_write_uniforms(struct ctab_ctx *ctab)
             enum hlsl_sampler_dim sampler_dim = HLSL_SAMPLER_DIM_GENERIC;
             size_t var_offset, name_offset;
 
-            if (var->semantic.name || !var->regs[r].allocated || !var->last_read)
+            if ((var->semantic.name && !var->is_uniform) || !var->regs[r].allocated || !var->last_read)
                 continue;
 
             /* Arrays can be used with multiple different dimensions.
@@ -15978,6 +16191,16 @@ static void process_entry_function(struct hlsl_ctx *ctx, struct list *semantic_v
 
     loop_unrolling_execute(ctx, body);
     hlsl_run_const_passes(ctx, body);
+    /* MYIOSDECK (spec 19 A24): Shader Model 1-3 only; 4.0's constant buffers keep their layout.
+     * Dead code goes first, so loads nothing uses (left by the lowering of member and index
+     * accesses) don't count as reads. */
+    if (hlsl_version_lt(ctx, 4, 0))
+    {
+        do
+            compute_liveness(ctx, body);
+        while (hlsl_transform_ir(ctx, dce, body, NULL));
+        remove_dead_uniform_copies(ctx, body);
+    }
 
     remove_unreachable_code(ctx, body);
     hlsl_transform_ir(ctx, normalize_switch_cases, body, NULL);
