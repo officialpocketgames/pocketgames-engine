@@ -50,6 +50,7 @@ struct opengl_ios_proc
     void *_Atomic peb;               /* the key, written last; NULL: a free slot */
     int on;                          /* B1 */
     BOOL logged_off;                 /* clarification 8's line, once */
+    _Atomic int logged_no_teb;       /* clarification 14's line, once */
     UINT64 debug_callback;           /* D7 */
     void *strings;                   /* D7, G1.4: unix_wgl.c's struct wow64_string_entry[] */
     SIZE_T strings_count;
@@ -96,6 +97,7 @@ static struct opengl_ios_proc *proc_attach( void *peb, int on )
         free( proc->strings );
         proc->on = on;
         proc->logged_off = FALSE;
+        atomic_store( &proc->logged_no_teb, 0 );
         proc->debug_callback = 0;
         proc->strings = NULL;
         proc->strings_count = 0;
@@ -171,6 +173,13 @@ NTSTATUS opengl_ios_off_call( unsigned int index )
         opengl_ios_log_line( line );
     }
     return opengl_ios_off_status( index );
+}
+
+/* clarification 14: the calling process's flag for its one no-TEB line */
+_Atomic int *opengl_ios_no_teb_flag( void )
+{
+    struct opengl_ios_proc *proc = proc_current();
+    return proc ? &proc->logged_no_teb : NULL;
 }
 
 /* ---------------------------------------------------------------- D7 */

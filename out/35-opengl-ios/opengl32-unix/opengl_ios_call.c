@@ -11,9 +11,13 @@
 // - The report (E2): at a wglSwapBuffers 10 s or more after the period began (the first counted
 //   call, then the last report), one line, then the counts start again.
 // - The upstream entry runs inside an autorelease pool (E4, pgl_call_in_pool).
+// - Clarification 14: a 64-bit call whose block starts with TEB *teb but arrives with it NULL gets
+//   the thread's TEB before dispatch, logged once per process.
 
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -94,6 +98,45 @@ static void count( unsigned int index )
     }
 }
 
+/* ---- clarification 14 ---- */
+
+static void log_no_teb( unsigned int index )
+{
+    static _Atomic int no_slot;   /* a process without a slot: once for the app */
+    _Atomic int *logged = opengl_ios_no_teb_flag();
+    char line[160];
+
+    if (atomic_exchange( logged ? logged : &no_slot, 1 )) return;
+    snprintf( line, sizeof(line), "[opengl] 64-bit GL call %s arrived with no TEB; using the thread's",
+              opengl_ios_entry_names[index] );
+    opengl_ios_log_line( line );
+}
+
+/* A 64-bit call whose parameter block starts with TEB *teb, arriving with it NULL, gets the
+ * calling thread's TEB there before dispatch: the unix side's NtCurrentTeb(), as get_teb64 gives
+ * a 32-bit call (a converted ARM64EC opengl32.dll stores x18, which iOS keeps at 0: spec 26
+ * clarification 10). thread_attach gets the TEB itself as its argument, so a NULL one is replaced
+ * the same way. A non-NULL teb is never changed; process_attach and process_detach carry none.
+ * Returns the arguments to dispatch. */
+static void *fill_teb( unsigned int index, void *args )
+{
+    TEB *teb;
+
+    if (index == unix_thread_attach)
+    {
+        if (args) return args;
+        log_no_teb( index );
+        return NtCurrentTeb();
+    }
+    if (!args || !opengl_ios_teb_first[index]) return args;
+    memcpy( &teb, args, sizeof(teb) );
+    if (teb) return args;
+    teb = NtCurrentTeb();
+    memcpy( args, &teb, sizeof(teb) );
+    log_no_teb( index );
+    return args;
+}
+
 /* ---- E4 ---- */
 
 NTSTATUS opengl_ios_call( unsigned int index, int wow64, void *args )
@@ -105,6 +148,7 @@ NTSTATUS opengl_ios_call( unsigned int index, int wow64, void *args )
     if (!(on = thread_on)) on = opengl_ios_thread_resolve();
     if (on < 0) return opengl_ios_off_call( index );
 
+    if (!wow64) args = fill_teb( index, args );   /* clarification 14; 32-bit calls unchanged */
     if (stats_on) count( index );
     table = wow64 ? opengl32_upstream_wow64_funcs : opengl32_upstream_funcs;
     return pgl_call_in_pool( (int32_t (*)( void * ))table[index], args );

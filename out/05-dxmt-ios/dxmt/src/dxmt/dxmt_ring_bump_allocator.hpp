@@ -8,6 +8,7 @@
 // finished one-off block freed wherever it is).
 // Changed for MYIOSDECK (spec 06 round 3: host blocks from a free list, in guest memory in the i386
 // build, checked).
+// Changed for MYIOSDECK (spec 06 round 4: a ring's blocks may start small and double; its bytes).
 
 #include "Metal.hpp"
 #include "dxmt_mem_track.hpp" // MYIOSDECK spec 05 item 90
@@ -36,6 +37,16 @@ namespace dxmt {
 constexpr size_t kStagingBlockSize = kI386Build ? 0x800000 : 0x2000000; // 8MB / 32MB
 constexpr size_t kStagingBlockSizeForDeferredContext = 0x200000; // 2MB
 constexpr size_t kStagingBlockLifetime = 300;
+
+/* MYIOSDECK spec 06 round 4 (item 4): a deferred command list's command and staging blocks start
+   at 64 KB in a 32-bit process and double up to kStagingBlockSizeForDeferredContext as the list
+   records more; 64-bit processes keep 2 MB blocks. A game finishing ~1,900 lists before its first
+   Present held a 2 MB block for each, however little it recorded. */
+constexpr size_t kDeferredFirstBlockSizeI386 = 0x10000; // 64 KB
+constexpr size_t
+DeferredFirstBlockSize(bool i386) {
+  return i386 ? kDeferredFirstBlockSizeI386 : kStagingBlockSizeForDeferredContext;
+}
 
 #ifdef DXMT_IOS
 /* Spec 05 D7: switch DXMT_RING_OVERSIZE_REUSE (read once; unset or empty =
@@ -97,7 +108,51 @@ public:
 
   void free_blocks(uint64_t coherent_id);
 
+  /* MYIOSDECK spec 06 round 4 (item 4): new blocks start at `first` and double, up to BlockSize,
+     each time the ring needs another; a request larger than the next size still gets a block of
+     its own size. restartGrowth starts again from `first` (a deferred list being reset). The
+     default, and `first` 0 or BlockSize, is upstream's fixed size. */
+  void
+  growFrom(size_t first) {
+    std::lock_guard<mutex> lock(mutex_);
+    first_block_size_ = (first && first < BlockSize) ? first : BlockSize;
+    next_block_size_ = first_block_size_;
+  }
+
+  void
+  restartGrowth() {
+    std::lock_guard<mutex> lock(mutex_);
+    next_block_size_ = first_block_size_;
+  }
+
+  /* the size the next new block will have, at least */
+  size_t
+  nextBlockSize() {
+    std::lock_guard<mutex> lock(mutex_);
+    return next_block_size_;
+  }
+
+  /* the bytes of the ring's blocks (a deferred list's command memory, for the backlog) */
+  uint64_t
+  blockBytes() {
+    std::lock_guard<mutex> lock(mutex_);
+    uint64_t bytes = 0;
+    for (const auto &allocation : fifo)
+      bytes += allocation.total_size;
+    return bytes;
+  }
+
+  /* the ring's blocks (the host tests) */
+  size_t
+  blockCount() {
+    std::lock_guard<mutex> lock(mutex_);
+    return fifo.size();
+  }
+
 private:
+  size_t first_block_size_ = BlockSize; // MYIOSDECK spec 06 round 4
+  size_t next_block_size_ = BlockSize;  // MYIOSDECK spec 06 round 4
+
   struct Allocation {
     size_t allocated_size;
     size_t total_size;
@@ -500,12 +555,13 @@ RingBumpState<Allocator, BlockSize, mutex>::allocate(
     latest.last_used_seq_id = seq_id;
     return suballocate(latest, size, alignment);
   }
-  return suballocate(
-      allocate_or_reuse_block(
-          seq_id, coherent_id, std::max(size, BlockSize) // in case required size is larger than block size
-      ),
-      size, alignment
+  /* MYIOSDECK spec 06 round 4 (item 4): next_block_size_ is BlockSize unless the ring grows */
+  auto &block = allocate_or_reuse_block(
+      seq_id, coherent_id, std::max(size, next_block_size_) // in case required size is larger than block size
   );
+  if (next_block_size_ < BlockSize)
+    next_block_size_ = std::min(next_block_size_ * 2, BlockSize);
+  return suballocate(block, size, alignment);
 };
 
 template <typename Allocator, size_t BlockSize, class mutex>

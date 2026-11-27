@@ -4,6 +4,7 @@
 // LGPL-2.1-or-later block from steamac's DXMT patch 0023, marked inline; spec 05 clarification 33:
 // two view accessors; clarification 71: the discard marks). Upstream: DXMT a3a6e8f, MIT.
 // Changed for MYIOSDECK (spec 05 item 90: releasedByProgram; the depth rename pool bounded).
+// Changed for MYIOSDECK (spec 05 item 91: machPort is the share-table key on iOS; import's found).
 #include "Metal.hpp"
 #include "dxmt_deptrack.hpp"
 #include "dxmt_residency.hpp"
@@ -134,7 +135,7 @@ public:
   size_t placedLength = 0; // MYIOSDECK spec 06 round 2: the placed memory's length, for its ledger
   uint64_t allocatedBytes = 0; // MYIOSDECK spec 05 item 90: its size in the memory ledger (0 unknown)
   uint64_t gpuResourceID;
-  mach_port_t machPort;
+  mach_port_t machPort; // MYIOSDECK spec 05 item 91: on iOS the share table's key (0: not shared)
   EncoderDepKey depkey;
 
 private:
@@ -276,7 +277,9 @@ public:
   /* ---- end of LGPL block ---- */
 
   Rc<TextureAllocation> allocate(Flags<TextureAllocationFlag> flags);
-  Rc<TextureAllocation> import(mach_port_t mach_port);
+  /* MYIOSDECK spec 05 item 91: `found` (if given) receives the shared texture's own description
+     (on iOS, `mach_port` is a share-table key) */
+  Rc<TextureAllocation> import(mach_port_t mach_port, WMTTextureInfo *found = nullptr);
 
   TextureView &view(TextureViewKey key);
   TextureView &view(TextureViewKey key, TextureAllocation *allocation);

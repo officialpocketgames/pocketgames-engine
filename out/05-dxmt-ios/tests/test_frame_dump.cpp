@@ -373,6 +373,61 @@ TestRequests() {
   CHECK(std::string(kFrameDumpRequestFile) == "C:\\users\\Public\\pg-dumps\\frame-request");
 }
 
+/* Spec 05 item 93: what the swap-chain passes read, from a share of its own; their draws'
+   read-backs past the 300-a-frame cap. */
+void
+TestPresentedReads() {
+  constexpr uint64_t kMB = 1ull << 20;
+  FrameDumpLedger ledger;
+  // the written textures use up the whole 256 MB...
+  for (unsigned i = 0; i < 16; i++)
+    CHECK(ledger.write({0x1000u + i, 0, 0, 0}, 16 * kMB) == FrameDumpAction::CopyNew);
+  CHECK(ledger.write({0x2000, 0, 0, 0}, 4 * kMB) == FrameDumpAction::Skip);
+  // ...and a 32x32x32 RGB10A2 lookup table and a 1x1 exposure texture still go in
+  const FrameDumpKey lut{0x3000, 0, kFrameDumpWholeVolume, 0}, exposure{0x3001, 0, 0, 0};
+  CHECK(!ledger.readSeen(lut));
+  CHECK(ledger.takeRead(lut, 32 * 32 * 32 * 4));
+  CHECK(ledger.takeRead(exposure, 16));
+  CHECK(ledger.readSeen(lut));
+  CHECK(!ledger.takeRead(lut, 32 * 32 * 32 * 4)); // once a frame
+  CHECK_EQ(ledger.readFiles(), 2u);
+  CHECK_EQ(ledger.readBytes(), uint64_t(32 * 32 * 32 * 4 + 16));
+  // one over 16 MB, or past the 32 MB share, is refused (and stays seen)
+  CHECK(!ledger.takeRead({0x3002, 0, 0, 0}, 17 * kMB));
+  CHECK(ledger.takeRead({0x3003, 0, 0, 0}, 16 * kMB));
+  CHECK(ledger.takeRead({0x3004, 0, 0, 0}, 15 * kMB));
+  CHECK(!ledger.takeRead({0x3005, 0, 0, 0}, 2 * kMB));
+  CHECK_EQ(ledger.readRefused(), 2u);
+  CHECK(ledger.readSeen({0x3002, 0, 0, 0}));
+  // a format that isn't dumped: seen, not counted
+  ledger.markRead({0x3006, 0, 0, 0});
+  CHECK(ledger.readSeen({0x3006, 0, 0, 0}));
+  CHECK_EQ(ledger.readRefused(), 2u);
+  CHECK(ledger.summary() == "dump: 16 files (0 with a first-write copy), 256.0 MB; 1 subresources left out (budget); "
+                            "read by the presented passes: 4 files, 31.1 MB, 2 left out");
+  CHECK(FrameDumpReadName("t0012-RGB10A2Unorm-32x32x32-mip0-3d.raw") == "t0012-RGB10A2Unorm-32x32x32-mip0-3d-read.raw");
+  CHECK(FrameDumpReadName("present") == "present-read");
+  CHECK_EQ(kFrameDumpMaxReadBytes, 32 * kMB);
+
+  // read-backs: the 300 a frame hold, but not for a draw into the swap-chain buffer
+  FrameDumpLedger capped;
+  for (unsigned i = 0; i < kFrameTraceMaxSrvReadbacks; i++)
+    CHECK(capped.takeSrvReadback(256));
+  CHECK(!capped.takeSrvReadback(256));
+  CHECK(capped.takeSrvReadback(256, true));
+  for (unsigned i = 0; i < kFrameTraceMaxCbReadbacks; i++)
+    CHECK(capped.takeCbReadback(4096));
+  CHECK(!capped.takeCbReadback(4096));
+  CHECK(capped.takeCbReadback(4096, true));
+  CHECK_EQ(capped.srvSkipped(), 1u);
+  CHECK_EQ(capped.cbSkipped(), 1u);
+  // the 64 MB share still holds for them
+  FrameDumpLedger full;
+  CHECK(full.takeShare(kFrameDumpMaxFirstBytes));
+  CHECK(!full.takeSrvReadback(256, true));
+  CHECK(!full.takeCbReadback(4096, true));
+}
+
 } // namespace
 
 int
@@ -386,5 +441,6 @@ main() {
   TestBudget();
   TestSrvReadbackLimit();
   TestIndex();
+  TestPresentedReads();
   return TestSummary("test_frame_dump");
 }

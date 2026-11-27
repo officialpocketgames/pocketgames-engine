@@ -1,5 +1,8 @@
 // Changed for MYIOSDECK (spec 05 B7, C, D5; spec 06 A). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 // Changed for MYIOSDECK (spec 05 item 90: the release marked in the memory ledger).
+// Changed for MYIOSDECK (spec 05 item 91: on iOS shared textures go through the app's share table,
+// never fail only because sharing isn't available, get a minimal keyed mutex, and are logged).
+// Changed for MYIOSDECK (spec 05 item 94: the automatic mip clamp by DXMT's texture total, any format).
 #include "util_bitness.hpp"
 #include "com/com_pointer.hpp"
 #include "d3d11_device.hpp"
@@ -7,8 +10,14 @@
 #include <atomic>
 #ifdef DXMT_IOS
 #include "config/config.hpp"
+#include "dxmt_mem_ledger.hpp"  // MYIOSDECK spec 05 item 94
+#include "util_env.hpp"         // MYIOSDECK spec 05 item 94
+#include "d3d11_share.hpp"
+#include "d3d11_trace_state.hpp"
+#include "dxgi_keyed_mutex.hpp"
 #include "dxmt_format.hpp"
 #include "dxmt_mip_clamp.hpp"
+#include <memory>
 #include <mutex>
 #endif
 #include "d3d11_view.hpp"
@@ -19,6 +28,19 @@
 #include "util_win32_compat.h"
 
 namespace dxmt {
+
+#ifdef DXMT_IOS
+/* MYIOSDECK spec 05 item 91: each D3DKMT call of the sharing paths, with its result */
+static void
+NoteKmt(const char *call, NTSTATUS status, const std::string &detail) {
+  share::Note(
+      std::string(call) + (status ? " failed" : ""), status != 0, share::KmtLine(call, uint32_t(status), detail)
+  );
+}
+#define DXMT_NOTE_KMT(call, status, detail) NoteKmt(call, status, detail)
+#else
+#define DXMT_NOTE_KMT(call, status, detail) ((void)0)
+#endif
 
 #pragma region DeviceTexture
 
@@ -148,10 +170,27 @@ private:
     }
   };
 
+#ifdef DXMT_IOS
+  /* MYIOSDECK spec 05 item 91: the IDXGIKeyedMutex of a D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX
+     texture, made or opened, shared or not (dxgi_keyed_mutex.hpp) */
+  std::unique_ptr<MTLDXGIKeyedMutex<DeviceTexture<tag_texture>>> keyed_mutex_;
+
+  void
+  initKeyedMutex() {
+    if (this->desc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX)
+      keyed_mutex_ = std::make_unique<MTLDXGIKeyedMutex<DeviceTexture<tag_texture>>>(this);
+  }
+#else
+  void
+  initKeyedMutex() {}
+#endif
+
 public:
   DeviceTexture(const tag_texture::DESC1 *pDesc, Rc<Texture> &&u_texture, MTLD3D11Device *pDevice) :
       TResourceBase<tag_texture, IMTLMinLODClampable>(*pDesc, pDevice),
-      underlying_texture_(std::move(u_texture)) {}
+      underlying_texture_(std::move(u_texture)) {
+    initKeyedMutex();
+  }
 
   DeviceTexture(
       const tag_texture::DESC1 *pDesc, Rc<Texture> &&u_texture, Rc<RenamableTexturePool> &&renamable,
@@ -159,14 +198,36 @@ public:
   ) :
       TResourceBase<tag_texture, IMTLMinLODClampable>(*pDesc, pDevice),
       underlying_texture_(std::move(u_texture)),
-      renamable_(std::move(renamable)) {}
+      renamable_(std::move(renamable)) {
+    initKeyedMutex();
+  }
 
   DeviceTexture(
       const tag_texture::DESC1 *pDesc, Rc<Texture> &&u_texture, D3DKMT_HANDLE localHandle, D3DKMT_HANDLE globalHandle,
       MTLD3D11Device *pDevice
   ) :
       TResourceBase<tag_texture, IMTLMinLODClampable>(*pDesc, pDevice),
-      underlying_texture_(std::move(u_texture)), local_kmt_(localHandle), global_kmt_(globalHandle) {}
+      underlying_texture_(std::move(u_texture)), local_kmt_(localHandle), global_kmt_(globalHandle) {
+    initKeyedMutex();
+  }
+
+#ifdef DXMT_IOS
+  /* MYIOSDECK spec 05 item 91 */
+  HRESULT
+  QueryExtraInterface(REFIID riid, void **ppvObject) override {
+    if (keyed_mutex_ && riid == __uuidof(IDXGIKeyedMutex)) {
+      *ppvObject = ref(static_cast<IDXGIKeyedMutex *>(keyed_mutex_.get()));
+      return S_OK;
+    }
+    return E_NOINTERFACE;
+  }
+
+  /* ReleaseSync: what was written before it is committed before the other side's work */
+  void
+  FlushForKeyedMutex() {
+    this->m_parent->GetImmediateContextPrivate()->Flush();
+  }
+#endif
 
   ~DeviceTexture() {
     if (underlying_texture_.ptr()) // MYIOSDECK spec 05 item 90: what still lives waits for the GPU
@@ -364,7 +425,13 @@ public:
       attr.Attributes = OBJ_CASE_INSENSITIVE;
     }
 
-    if (D3DKMTShareObjects(1, &local_kmt_, &attr, Access, pNTHandle)) {
+    NTSTATUS status = D3DKMTShareObjects(1, &local_kmt_, &attr, Access, pNTHandle);
+    DXMT_NOTE_KMT( // MYIOSDECK spec 05 item 91
+        "D3DKMTShareObjects", status,
+        "shared texture" + (pName ? ", name " + str::format(pName) : std::string()) +
+            (status ? std::string() : ", NT handle " + str::format(*pNTHandle))
+    );
+    if (status) {
       ERR("DeviceTexture: Failed to create shared handle");
       return E_FAIL;
     }
@@ -397,10 +464,17 @@ a 2D (2D array, cube) BC texture with more than one level.
   (default 1536) MB of headroom (os_proc_available_memory through the control
   call); an explicit mipClampBC > 0 wins.
 The policy itself is in dxmt_mip_clamp.hpp.
+
+MYIOSDECK spec 05 item 94: the automatic clamp is on in both bitnesses (d3d11.mipClampAuto=false
+or DXMT_MIP_CLAMP_AUTO=0 turns it off), and besides the 32-bit headroom rule above (BC only) it
+has the total rule, any format: a sampled-only 2D, 2D array or cube texture with 2 or more mips,
+DEFAULT or IMMUTABLE, created while DXMT's live texture total is over 1.5 GB drops its top level,
+over 3 GB its top two. Render targets, depth, UAVs, shared, staging and dynamic textures never
+clamp (the last two are made elsewhere). An explicit mipClampBC still wins for BC textures.
 */
 static uint32_t
-MipClampBias(const WMTTextureInfo &info, UINT MiscFlags) {
-  if (!IsBlockCompressionFormat(info.pixel_format) || info.mipmap_level_count <= 1)
+MipClampBias(const WMTTextureInfo &info, UINT Usage, UINT BindFlags, UINT CPUAccessFlags, UINT MiscFlags) {
+  if (info.mipmap_level_count <= 1)
     return 0;
   switch (info.type) {
   case WMTTextureType2D:
@@ -413,23 +487,163 @@ MipClampBias(const WMTTextureInfo &info, UINT MiscFlags) {
   }
   if (MiscFlags & (D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX))
     return 0;
+  const bool bc = IsBlockCompressionFormat(info.pixel_format);
 
   static const int32_t explicit_bias = Config::getInstance().getOption<int32_t>("d3d11.mipClampBC", 0);
-  // spec 06 A: the automatic clamp defaults to on in the i386 build only
-  static const bool auto_enabled = Config::getInstance().getOption<bool>("d3d11.mipClampAuto", kI386Build);
+  // MYIOSDECK spec 05 item 94: on in both bitnesses (spec 06 A had it on in the i386 build only)
+  static const bool auto_enabled = mipclamp::AutoClampSwitch(
+      Config::getInstance().getOption<bool>("d3d11.mipClampAuto", true), env::getEnvVar("DXMT_MIP_CLAMP_AUTO").c_str()
+  );
   static const int32_t auto_mb = Config::getInstance().getOption<int32_t>("d3d11.mipClampAutoMB", 1536);
   static std::mutex state_lock;
   static mipclamp::AutoState state;
 
-  uint32_t requested;
-  {
+  uint32_t requested = 0;
+  if (bc) {
+    // D5: an explicit clamp, or (spec 06 A) the 32-bit headroom rule
     std::lock_guard<std::mutex> lock(state_lock);
     requested = mipclamp::RequestedBias(
-        explicit_bias > 0 ? uint32_t(explicit_bias) : 0u, auto_enabled, uint64_t(auto_mb > 0 ? auto_mb : 0) << 20,
-        info.width, info.height, state, [](uint64_t &headroom) { return WMTQueryAvailableMemory(&headroom); }
+        explicit_bias > 0 ? uint32_t(explicit_bias) : 0u, auto_enabled && kI386Build,
+        uint64_t(auto_mb > 0 ? auto_mb : 0) << 20, info.width, info.height, state,
+        [](uint64_t &headroom) { return WMTQueryAvailableMemory(&headroom); }
     );
+    if (explicit_bias > 0) // an explicit mipClampBC wins
+      return mipclamp::ChooseBias(info.width, info.height, info.mipmap_level_count, requested);
   }
-  return mipclamp::ChooseBias(info.width, info.height, info.mipmap_level_count, requested);
+  // MYIOSDECK spec 05 item 94: DXMT's own texture total
+  mipclamp::TotalRuleTexture candidate;
+  candidate.type_ok = true;
+  candidate.mips = info.mipmap_level_count;
+  candidate.usage = Usage;
+  candidate.bind = BindFlags;
+  candidate.cpu = CPUAccessFlags;
+  candidate.shared = false;
+  if (auto_enabled && mipclamp::TotalRuleCandidate(candidate)) {
+    const uint64_t total = memledger::Global().textureLiveBytes();
+    const uint32_t total_bias = mipclamp::TotalBias(total);
+    if (total_bias > requested) {
+      requested = total_bias;
+      // the first clamp at each level, once per process
+      static std::atomic<uint32_t> logged_level{0};
+      uint32_t previous = logged_level.load(std::memory_order_relaxed);
+      while (total_bias > previous && !logged_level.compare_exchange_weak(previous, total_bias)) {
+      }
+      if (total_bias > previous)
+        Logger::info(mipclamp::TotalClampLine(total, total_bias));
+    }
+  }
+  return bc ? mipclamp::ChooseBias(info.width, info.height, info.mipmap_level_count, requested)
+            : mipclamp::ChooseBiasAny(info.mipmap_level_count, requested);
+}
+
+/* MYIOSDECK spec 05 item 91 */
+template <typename DESC>
+uint32_t
+DescHeight(const DESC &desc) {
+  if constexpr (requires { desc.Height; })
+    return desc.Height;
+  else
+    return 1;
+}
+
+/* "handle 0x40000042", or what an NT-handle texture has instead (no global handle) */
+inline std::string
+ShareHandleText(D3DKMT_HANDLE handle) {
+  return handle ? "handle " + share::Hex(handle)
+                : std::string("no global handle (an NT handle comes from CreateSharedHandle)");
+}
+
+/* MYIOSDECK spec 05 item 91: a texture that asks for sharing, on iOS. Every Windows program runs
+   in the app's one process on one MTLDevice, so the shared texture is the MTLTexture itself, in
+   the app's share table (MTLDevice_newSharedTexture registers it; the allocation's machPort is
+   its key). The key travels in D3DKMT's runtime data as a share name, where the mach port's
+   bootstrap name used to; an opener finds it there (ImportSharedTexture*).
+   Sharing can be unavailable: the table is full, there is no D3DKMT device, or
+   D3DKMTCreateAllocation2 fails. Then the texture is made as not shareable, with the line saying
+   why, and the create still succeeds. Nothing is kept on any path: the key goes back to the
+   table and no D3DKMT allocation is left. */
+template <typename tag, typename Initialize>
+HRESULT
+CreateSharedDeviceTextureIOS(
+    MTLD3D11Device *pDevice, const typename tag::DESC1 *pDesc, const typename tag::DESC1 &finalDesc,
+    Rc<Texture> &&texture, Initialize &&initialize, typename tag::COM_IMPL **ppTexture
+) {
+  Flags<TextureAllocationFlag> flags;
+  flags.set(TextureAllocationFlag::GpuPrivate);
+  if (finalDesc.Usage == D3D11_USAGE_IMMUTABLE)
+    flags.set(TextureAllocationFlag::GpuReadonly);
+  flags.set(TextureAllocationFlag::Shared);
+  auto allocation = texture->allocate(flags);
+  const uint32_t key = allocation->machPort; // the share table's key; 0: not registered
+
+  auto line = [&](const std::string &outcome) {
+    return share::TextureLine(
+        finalDesc.Width, DescHeight(finalDesc), TraceDxgiFormat(finalDesc.Format), finalDesc.MiscFlags,
+        finalDesc.BindFlags, outcome
+    );
+  };
+
+  std::string why;
+  D3DKMT_CREATEALLOCATION create = {};
+  if (!allocation->texture())
+    why = "no Metal texture";
+  else if (!key)
+    why = "the share table is full";
+  else if (!(pDevice->GetLocalD3DKMT() & 0xc0000000))
+    why = "no D3DKMT device";
+  else {
+    SharedResourceData runtimeData = {};
+    share::ShareName(key, runtimeData.mach_port_name);
+    runtimeData.dimension = tag::dimension;
+    memcpy(&runtimeData.desc, pDesc, sizeof(typename tag::DESC1));
+
+    create.hDevice = pDevice->GetLocalD3DKMT();
+    create.pPrivateRuntimeData = &runtimeData;
+    create.PrivateRuntimeDataSize = sizeof(runtimeData);
+    create.Flags.StandardAllocation = 1;
+    create.NumAllocations = 1;
+    D3DDDI_ALLOCATIONINFO2 allocationInfo = {};
+    create.pAllocationInfo2 = &allocationInfo;
+    D3DKMT_CREATESTANDARDALLOCATION standardAllocation = {};
+    create.pStandardAllocation = &standardAllocation;
+    standardAllocation.Type = D3DKMT_STANDARDALLOCATIONTYPE_EXISTINGHEAP;
+    create.Flags.ExistingSysMem = 1;
+    D3DDDI_ALLOCATIONINFO systemMem = {};
+    allocationInfo.pSystemMem = &systemMem;
+    create.Flags.CreateResource = 1;
+    create.Flags.CreateShared = 1;
+    create.Flags.NtSecuritySharing = !!(finalDesc.MiscFlags & D3D11_RESOURCE_MISC_SHARED_NTHANDLE);
+    NTSTATUS status = D3DKMTCreateAllocation2(&create);
+    share::Note(
+        status ? "D3DKMTCreateAllocation2 failed" : "D3DKMTCreateAllocation2", status != 0,
+        share::KmtLine(
+            "D3DKMTCreateAllocation2", uint32_t(status),
+            "share key " + std::to_string(key) + (status ? std::string() : ", " + ShareHandleText(create.hGlobalShare))
+        )
+    );
+    if (status)
+      why = "D3DKMTCreateAllocation2 failed";
+  }
+
+  if (!why.empty()) {
+    if (key) {
+      WMTShareRelease(key);
+      allocation->machPort = 0;
+    }
+    share::Note("shared texture not shareable", true, line("not shareable (" + why + ")"));
+    initialize(std::move(allocation));
+    *ppTexture = reinterpret_cast<typename tag::COM_IMPL *>(
+        ref(new DeviceTexture<tag>(&finalDesc, std::move(texture), pDevice))
+    );
+    return S_OK;
+  }
+
+  share::Note("shared texture", false, line(ShareHandleText(create.hGlobalShare) + ", share key " + std::to_string(key)));
+  initialize(std::move(allocation));
+  *ppTexture = reinterpret_cast<typename tag::COM_IMPL *>(
+      ref(new DeviceTexture<tag>(&finalDesc, std::move(texture), create.hResource, create.hGlobalShare, pDevice))
+  );
+  return S_OK;
 }
 #endif
 
@@ -447,7 +661,9 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
   // game sees) stays logical.
   uint32_t mip_bias = 0;
 #ifdef DXMT_IOS
-  mip_bias = MipClampBias(info, finalDesc.MiscFlags);
+  mip_bias = MipClampBias(
+      info, finalDesc.Usage, finalDesc.BindFlags, finalDesc.CPUAccessFlags, finalDesc.MiscFlags
+  ); // MYIOSDECK spec 05 item 94: the description's usage and binding too
   if (mip_bias) {
     info.width = std::max(1u, info.width >> mip_bias);
     info.height = std::max(1u, info.height >> mip_bias);
@@ -489,6 +705,10 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
   auto shared_flag =
       D3D11_RESOURCE_MISC_SHARED | D3D11_RESOURCE_MISC_SHARED_NTHANDLE | D3D11_RESOURCE_MISC_SHARED_KEYEDMUTEX;
   if (finalDesc.MiscFlags & shared_flag) {
+#ifdef DXMT_IOS
+    // MYIOSDECK spec 05 item 91 (replaces B7's mach-port path): the app's share table
+    return CreateSharedDeviceTextureIOS<tag>(pDevice, pDesc, finalDesc, std::move(texture), initialize, ppTexture);
+#else
     if (!(pDevice->GetLocalD3DKMT() & 0xc0000000)) {
       ERR("DeviceTexture: Invalid device handle");
       return E_FAIL;
@@ -503,20 +723,6 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
     auto allocation = texture->allocate(flags);
 
     mach_port_t mach_port = allocation->machPort;
-#ifdef DXMT_IOS
-    // Spec 05 B7: on iOS a shareable texture comes back without a mach port.
-    // Treat it as not shareable and keep the texture usable in this process.
-    if (!mach_port) {
-      static std::atomic<bool> logged = false;
-      if (!logged.exchange(true))
-        WARN("DeviceTexture: no mach port for shared texture, creating it as not shareable");
-      initialize(std::move(allocation));
-      *ppTexture = reinterpret_cast<typename tag::COM_IMPL *>(
-          ref(new DeviceTexture<tag>(&finalDesc, std::move(texture), pDevice))
-      );
-      return S_OK;
-    }
-#endif
     if (!mach_port) {
       ERR("DeviceTexture: Failed to get mach port for shared texture");
       return E_FAIL;
@@ -560,6 +766,7 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
                                    create.hGlobalShare, pDevice))
     );
     return S_OK;
+#endif
   }
 
   Flags<TextureAllocationFlag> flags;
@@ -573,6 +780,11 @@ HRESULT CreateDeviceTextureInternal(MTLD3D11Device *pDevice,
         ref(new DeviceTexture<tag>(&finalDesc, std::move(texture), std::move(renamable), pDevice)));
   } else {
     initialize(texture->allocate(flags));
+#ifdef DXMT_IOS
+    // MYIOSDECK spec 05 item 94: the clamp counted, with about what it saved, for [dxmt-mem]
+    if (mip_bias && texture->current())
+      memledger::Global().noteMipClamp(mipclamp::ClampSavedBytes(texture->current()->allocatedBytes, mip_bias));
+#endif
     *ppTexture = reinterpret_cast<typename tag::COM_IMPL *>(
         ref(new DeviceTexture<tag>(&finalDesc, std::move(texture), pDevice)));
   }
@@ -606,25 +818,100 @@ CreateDeviceTexture3D(MTLD3D11Device *pDevice,
                                                      pInitialData, ppTexture);
 }
 
+/* `handle` names what the program opened, for the lines (MYIOSDECK spec 05 item 91) */
 template <typename tag>
 HRESULT
 ImportSharedTextureInternal(
     MTLD3D11Device *pDevice, const typename tag::DESC1 *pDescUnchecked, mach_port_t MachPort, REFIID riid,
-    void **ppTexture
+    void **ppTexture, const std::string &handle
 ) {
   WMTTextureInfo info;
   typename tag::DESC1 finalDesc;
-  if (FAILED(CreateMTLTextureDescriptor(pDevice, pDescUnchecked, &finalDesc, &info)))
+  if (FAILED(CreateMTLTextureDescriptor(pDevice, pDescUnchecked, &finalDesc, &info))) {
+#ifdef DXMT_IOS
+    share::Note(
+        "open shared mismatch", true,
+        share::OpenLine("texture", handle, "mismatch", "its description isn't valid on this device")
+    );
+#endif
     return E_INVALIDARG;
+  }
 
   auto texture = Rc<Texture>(new Texture(info, pDevice->GetMTLDevice()));
+#ifdef DXMT_IOS
+  /* MYIOSDECK spec 05 item 91: MachPort is the share key. The opened texture wraps the same
+     MTLTexture; what the opener asks for (the creator's description, from the runtime data) must
+     be what that texture is, or the open is refused. A refused open's allocation goes at once,
+     and with it its use of the table entry. */
+  WMTTextureInfo found = {};
+  auto allocation = texture->import(MachPort, &found);
+  const std::string key_text = "share key " + std::to_string(MachPort);
+  if (!allocation) {
+    share::Note("open shared missing", true, share::OpenLine("texture", handle, "missing", key_text));
+    return E_INVALIDARG;
+  }
+  const std::string diff = share::DescriptionDiff(share::DescOf(info), share::DescOf(found));
+  if (!diff.empty()) {
+    share::Note("open shared mismatch", true, share::OpenLine("texture", handle, "mismatch", diff));
+    return E_INVALIDARG;
+  }
+  share::Note("open shared found", false, share::OpenLine("texture", handle, "found", key_text));
+#else
   auto allocation = texture->import(MachPort);
   if (!allocation)
     return E_FAIL;
+#endif
   texture->rename(std::move(allocation));
 
   Com<DeviceTexture<tag>> device_texture = (ref(new DeviceTexture<tag>(&finalDesc, std::move(texture), pDevice)));
   return device_texture->QueryInterface(riid, ppTexture);
+}
+
+/* The mach port (macOS: through the bootstrap server) or the share key (iOS, MYIOSDECK spec 05
+   item 91: the name in the runtime data) that the creator left for an opener. */
+static bool
+LookUpShared(const SharedResourceData &runtimeData, const std::string &handle, mach_port_t *port) {
+#ifdef DXMT_IOS
+  uint32_t key = 0;
+  if (!share::ParseShareName(runtimeData.mach_port_name, sizeof(runtimeData.mach_port_name), &key)) {
+    share::Note(
+        "open shared missing", true, share::OpenLine("texture", handle, "missing", "no share key in its runtime data")
+    );
+    return false;
+  }
+  *port = key;
+  return true;
+#else
+  if (!WMTBootstrapLookUp(runtimeData.mach_port_name, port)) {
+    ERR("ImportSharedTexture: Failed to look up mach port");
+    return false;
+  }
+  return true;
+#endif
+}
+
+static HRESULT
+ImportSharedByDimension(
+    MTLD3D11Device *pDevice, SharedResourceData &runtimeData, mach_port_t port, REFIID riid, void **ppTexture,
+    const std::string &handle
+) {
+  switch (runtimeData.dimension) {
+  case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
+    return ImportSharedTextureInternal<tag_texture_1d>(
+        pDevice, &runtimeData.desc.desc1d, port, riid, ppTexture, handle
+    );
+  case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
+    return ImportSharedTextureInternal<tag_texture_2d>(
+        pDevice, &runtimeData.desc.desc2d, port, riid, ppTexture, handle
+    );
+  case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
+    return ImportSharedTextureInternal<tag_texture_3d>(
+        pDevice, &runtimeData.desc.desc3d, port, riid, ppTexture, handle
+    );
+  default:
+    ERR("ImportSharedTexture: Unsupported resource dimension");
+    return E_INVALIDARG;
+  }
 }
 
 HRESULT
@@ -639,6 +926,7 @@ ImportSharedTexture(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void
   if (ppTexture == nullptr)
     return S_FALSE;
 
+  const std::string handle = "handle " + str::format(hResource); // MYIOSDECK spec 05 item 91
   struct SharedResourceData runtimeData;
 
   D3DKMT_QUERYRESOURCEINFO query = {};
@@ -647,7 +935,9 @@ ImportSharedTexture(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void
   query.pPrivateRuntimeData = &runtimeData;
   query.PrivateRuntimeDataSize = sizeof(runtimeData);
 
-  if (D3DKMTQueryResourceInfo(&query)) {
+  NTSTATUS status = D3DKMTQueryResourceInfo(&query);
+  DXMT_NOTE_KMT("D3DKMTQueryResourceInfo", status, handle);
+  if (status) {
     WARN("ImportSharedTexture: Failed to query resource: ", hResource);
     return E_INVALIDARG;
   }
@@ -655,7 +945,7 @@ ImportSharedTexture(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void
   if (query.PrivateRuntimeDataSize != sizeof(runtimeData)) {
     WARN("ImportSharedTexture: Unexpected size: ", query.PrivateRuntimeDataSize);
     return E_INVALIDARG;
-  } 
+  }
 
   D3DDDI_OPENALLOCATIONINFO2 alloc = {};
   D3DKMT_OPENRESOURCE open = {};
@@ -666,7 +956,9 @@ ImportSharedTexture(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void
   open.pPrivateRuntimeData = &runtimeData;
   open.PrivateRuntimeDataSize = query.PrivateRuntimeDataSize;
 
-  if (D3DKMTOpenResource2(&open)) {
+  status = D3DKMTOpenResource2(&open);
+  DXMT_NOTE_KMT("D3DKMTOpenResource2", status, handle);
+  if (status) {
     WARN("ImportSharedTexture: Failed to open resource: ", hResource);
     return E_INVALIDARG;
   }
@@ -677,29 +969,10 @@ ImportSharedTexture(MTLD3D11Device *pDevice, HANDLE hResource, REFIID riid, void
   D3DKMTDestroyAllocation(&destroy);
 
   mach_port_t mach_port;
-  if (!WMTBootstrapLookUp(runtimeData.mach_port_name, &mach_port)) {
-    ERR("ImportSharedTexture: Failed to look up mach port");
+  if (!LookUpShared(runtimeData, handle, &mach_port))
     return E_INVALIDARG;
-  }
 
-  switch (runtimeData.dimension)
-  {
-  case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
-    return ImportSharedTextureInternal<tag_texture_1d>(
-        pDevice, &runtimeData.desc.desc1d, mach_port, riid, ppTexture
-    );
-  case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
-    return ImportSharedTextureInternal<tag_texture_2d>(
-        pDevice, &runtimeData.desc.desc2d, mach_port, riid, ppTexture
-    );
-  case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
-    return ImportSharedTextureInternal<tag_texture_3d>(
-        pDevice, &runtimeData.desc.desc3d, mach_port, riid, ppTexture
-    );
-  default:
-    ERR("ImportSharedTexture: Unsupported resource dimension");
-    return E_INVALIDARG;
-  }
+  return ImportSharedByDimension(pDevice, runtimeData, mach_port, riid, ppTexture, handle);
 }
 
 HRESULT
@@ -714,6 +987,7 @@ ImportSharedTextureFromNtHandle(MTLD3D11Device *pDevice, HANDLE hResource, REFII
   if (ppTexture == nullptr)
     return S_FALSE;
 
+  const std::string handle = "NT handle " + str::format(hResource); // MYIOSDECK spec 05 item 91
   struct SharedResourceData runtimeData;
 
   D3DKMT_QUERYRESOURCEINFOFROMNTHANDLE query = {};
@@ -722,7 +996,9 @@ ImportSharedTextureFromNtHandle(MTLD3D11Device *pDevice, HANDLE hResource, REFII
   query.pPrivateRuntimeData = &runtimeData;
   query.PrivateRuntimeDataSize = sizeof(runtimeData);
 
-  if (D3DKMTQueryResourceInfoFromNtHandle(&query)) {
+  NTSTATUS status = D3DKMTQueryResourceInfoFromNtHandle(&query);
+  DXMT_NOTE_KMT("D3DKMTQueryResourceInfoFromNtHandle", status, handle);
+  if (status) {
     WARN(str::format("ImportSharedTextureFromNtHandle: Failed to query resource: ", hResource));
     return E_INVALIDARG;
   }
@@ -745,7 +1021,9 @@ ImportSharedTextureFromNtHandle(MTLD3D11Device *pDevice, HANDLE hResource, REFII
   open.pTotalPrivateDriverDataBuffer = &dummy;
   open.TotalPrivateDriverDataBufferSize = 0;
 
-  if (D3DKMTOpenResourceFromNtHandle(&open)) {
+  status = D3DKMTOpenResourceFromNtHandle(&open);
+  DXMT_NOTE_KMT("D3DKMTOpenResourceFromNtHandle", status, handle);
+  if (status) {
     WARN(str::format("ImportSharedTextureFromNtHandle: Failed to open resource: ", hResource));
     return E_INVALIDARG;
   }
@@ -769,29 +1047,10 @@ ImportSharedTextureFromNtHandle(MTLD3D11Device *pDevice, HANDLE hResource, REFII
   }
 
   mach_port_t mach_port;
-  if (!WMTBootstrapLookUp(runtimeData.mach_port_name, &mach_port)) {
-    ERR("ImportSharedTexture: Failed to look up mach port");
+  if (!LookUpShared(runtimeData, handle, &mach_port))
     return E_INVALIDARG;
-  }
 
-  switch (runtimeData.dimension)
-  {
-  case D3D11_RESOURCE_DIMENSION_TEXTURE1D:
-    return ImportSharedTextureInternal<tag_texture_1d>(
-        pDevice, &runtimeData.desc.desc1d, mach_port, riid, ppTexture
-    );
-  case D3D11_RESOURCE_DIMENSION_TEXTURE2D:
-    return ImportSharedTextureInternal<tag_texture_2d>(
-        pDevice, &runtimeData.desc.desc2d, mach_port, riid, ppTexture
-    );
-  case D3D11_RESOURCE_DIMENSION_TEXTURE3D:
-    return ImportSharedTextureInternal<tag_texture_3d>(
-        pDevice, &runtimeData.desc.desc3d, mach_port, riid, ppTexture
-    );
-  default:
-    ERR("ImportSharedTexture: Unsupported resource dimension");
-    return E_INVALIDARG;
-  }
+  return ImportSharedByDimension(pDevice, runtimeData, mach_port, riid, ppTexture, handle);
 }
 
 HRESULT
@@ -819,7 +1078,9 @@ ImportSharedTextureByName(
   attr.Attributes = OBJ_CASE_INSENSITIVE;
   openFromName.pObjAttrib = &attr;
 
-  if (D3DKMTOpenNtHandleFromName(&openFromName)) {
+  NTSTATUS status = D3DKMTOpenNtHandleFromName(&openFromName);
+  DXMT_NOTE_KMT("D3DKMTOpenNtHandleFromName", status, "name " + str::format(lpName)); // MYIOSDECK spec 05 item 91
+  if (status) {
     WARN(str::format("ImportSharedTextureByName: Failed to open NT handle from name: ", lpName));
     return E_INVALIDARG;
   }

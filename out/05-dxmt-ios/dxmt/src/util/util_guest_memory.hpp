@@ -24,6 +24,12 @@
 // 256 MB (a 4-second run never reaches the 10 s line):
 //   [dxmt-wow] guest memory: <n> blocks, <MB> MB (maps <MB>, staging <MB>, commands <MB>, other
 //   <MB>); ring and command blocks: <MB> MB x <n>, …
+//
+// Spec 06 round 4 (item 4): the deferred command lists and the immediate context counted too,
+// and added to the line once there is any:
+//   …; command lists: <n> made, <n> alive, <n> waiting in chunks, <n> pooled; <n> presents, <n>
+//   commits
+// (alive: made and not in the pool: recording, held by the program or waiting in a chunk).
 
 #pragma once
 
@@ -55,10 +61,21 @@ struct SizeCount {
 };
 constexpr unsigned kSizeSlots = 12;
 
+/* spec 06 round 4 (item 4): what the deferred command lists and the immediate context did */
+enum class ListCount : unsigned {
+  Made,     // command lists made (the pool's instances)
+  Pooled,   // in the pool, waiting to be reused
+  Waiting,  // executed, held by a chunk that hasn't finished
+  Presents, // Present calls (not DXGI_PRESENT_TEST)
+  Commits,  // the immediate context's commits (Present, flush, backlog)
+  Count
+};
+
 struct Snapshot {
   uint64_t blocks = 0;
   uint64_t bytes[unsigned(Use::Count)] = {};
   SizeCount sizes[kSizeSlots] = {};
+  uint64_t lists[unsigned(ListCount::Count)] = {}; // spec 06 round 4
 };
 
 inline std::string
@@ -94,6 +111,15 @@ ReportLine(const Snapshot &s) {
   for (unsigned i = 0; i < n; i++)
     line += (i ? ", " : "; ring and command blocks: ") + Megabytes(sizes[i].size) + " MB x " +
             std::to_string(sizes[i].count);
+  /* spec 06 round 4: the command lists, the presents and the commits */
+  const uint64_t *l = s.lists;
+  const uint64_t made = l[unsigned(ListCount::Made)], pooled = l[unsigned(ListCount::Pooled)];
+  if (made || l[unsigned(ListCount::Presents)] || l[unsigned(ListCount::Commits)])
+    line += "; command lists: " + std::to_string(made) + " made, " +
+            std::to_string(made > pooled ? made - pooled : 0) + " alive, " +
+            std::to_string(l[unsigned(ListCount::Waiting)]) + " waiting in chunks, " + std::to_string(pooled) +
+            " pooled; " + std::to_string(l[unsigned(ListCount::Presents)]) + " presents, " +
+            std::to_string(l[unsigned(ListCount::Commits)]) + " commits";
   return line;
 }
 
@@ -131,7 +157,21 @@ public:
     for (unsigned i = 0; i < kSizeSlots; i++)
       s.sizes[i] = sizes_[i];
     unlock();
+    for (unsigned c = 0; c < unsigned(ListCount::Count); c++) // spec 06 round 4
+      s.lists[c] = lists_[c].load(std::memory_order_relaxed);
     return s;
+  }
+
+  /* spec 06 round 4 (item 4): one use's bytes (the commands, for FinishCommandList's wait) */
+  uint64_t
+  bytesOf(Use use) const {
+    return bytes_[unsigned(use)].load(std::memory_order_relaxed);
+  }
+
+  /* spec 06 round 4 (item 4): a command list or immediate-context count moves */
+  void
+  countList(ListCount count, int64_t delta) {
+    lists_[unsigned(count)].fetch_add(uint64_t(delta), std::memory_order_relaxed);
   }
 
   uint64_t
@@ -212,6 +252,7 @@ private:
   std::atomic<uint64_t> next_step_{kReportStepBytes};
   mutable std::atomic_flag size_lock_ = ATOMIC_FLAG_INIT;
   SizeCount sizes_[kSizeSlots] = {};
+  std::atomic<uint64_t> lists_[unsigned(ListCount::Count)] = {}; // spec 06 round 4
 };
 
 /* ---- util_guest_memory.cpp ---- */

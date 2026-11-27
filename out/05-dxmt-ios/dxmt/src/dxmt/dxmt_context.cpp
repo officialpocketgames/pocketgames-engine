@@ -8,6 +8,8 @@
 // Changed for MYIOSDECK (spec 06 round 2: the dummy constant buffer counted as guest memory).
 // Changed for MYIOSDECK (spec 05 item 90: Metal objects in the memory ledger).
 // Changed for MYIOSDECK (spec 06 round 3: the encoder heaps in guest memory, checked).
+// Changed for MYIOSDECK (spec 05 item 93: trace notes kept across a render-pass merge; the textures
+// the swap-chain passes read dumped first; their draws' read-backs past the 300-a-frame cap).
 #include "dxmt_context.hpp"
 #include "Metal.hpp"
 #include "dxmt_command_queue.hpp"
@@ -693,6 +695,7 @@ ArgumentEncodingContext::signalEventByHandle(obj_handle_t event_handle, uint64_t
 void
 ArgumentEncodingContext::present(Rc<Texture> &texture, Rc<Presenter> &presenter, double after, DXMTPresentMetadata metadata) {
   assert(!encoder_current);
+  notePresented(texture.ptr()); // MYIOSDECK spec 05 item 93
   if (dump_active_) // spec 05 clarification 35
     dumpPresent(texture);
   auto encoder_info = allocate<PresentData>();
@@ -1000,6 +1003,7 @@ ArgumentEncodingContext::$$setEncodingContext(uint64_t seq_id, uint64_t frame_id
       dump_active_ = traced && (fixed || FrameDumpActive(FrameDumpSwitch(), true, present, requested));
       if (dump_active_) {
         dump_present_ = present;
+        dump_pass_reads_.clear(); // MYIOSDECK spec 05 item 93
         if (!requested) // a requested dump counts from its request (FrameDumpCheckRequest)
           FrameDumpStarted();
       }
@@ -1488,12 +1492,117 @@ ArgumentEncodingContext::dumpHandleWrite(
   );
 }
 
+/* MYIOSDECK spec 05 item 93: the swap chains' textures, as presents hand them (most recent 4) */
+void
+ArgumentEncodingContext::notePresented(const Texture *texture) {
+  if (!texture || presentedTexture(texture))
+    return;
+  presented_textures_[presented_next_ % 4] = texture;
+  presented_next_++;
+}
+
+/* MYIOSDECK spec 05 item 93: the textures a pass that writes the swap-chain buffer read (the
+   frame's last passes: a tone map's lookup table, an exposure value), copied from their own share
+   (kFrameDumpMaxReadBytes, outside the 256 MB) so the frame's earlier writes can't use it up. Mip
+   0 of each, a 3D one whole (or as clarification 42's three slices when it is over 16 MB), a
+   layered one's first layer; named as its written file with -read. In a blit pass of their own. */
+void
+ArgumentEncodingContext::dumpPassReads(const std::string &writer, std::vector<TextureAllocation *> &reads) {
+  struct Copy {
+    TextureAllocation *allocation;
+    unsigned z;
+    uint64_t width, height, depth;
+    unsigned texel;
+    int file;
+  };
+  std::vector<Copy> copies;
+  std::vector<TextureAllocation *> seen;
+  for (auto *allocation : reads) {
+    if (std::find(seen.begin(), seen.end(), allocation) != seen.end())
+      continue;
+    seen.push_back(allocation);
+    Texture *texture = allocation->descriptor;
+    if (!texture || !allocation->texture().handle)
+      continue;
+    obj_handle_t handle = allocation->texture().handle;
+    unsigned id = dumpTextureId(handle);
+    auto format = texture->pixelFormat();
+    auto type = texture->textureType();
+    unsigned texel = FrameDumpBytesPerTexel(format);
+    uint64_t width = std::max(texture->width(), 1u), height = std::max(texture->height(), 1u);
+    uint64_t depth = type == WMTTextureType3D ? std::max(texture->depth(), 1u) : 1;
+    std::string label = TracePixelFormat(format);
+    std::string size = type == WMTTextureType3D ? FrameDumpSizeText(width, height, depth) : FrameDumpSizeText(width, height);
+    struct Part {
+      unsigned key_slice, z;
+      uint64_t depth;
+      std::string layer, name;
+    };
+    std::vector<Part> parts;
+    if (type == WMTTextureType3D) {
+      auto plan = FrameDumpPlan3D(width, height, depth, std::max(texel, 1u));
+      if (plan.whole)
+        parts.push_back({kFrameDumpWholeVolume, 0, depth, "mip0-3d",
+                         FrameDumpVolumeName(id, label, width, height, depth, 0, false)});
+      else
+        for (unsigned i = 0; i < plan.count; i++)
+          parts.push_back({plan.slices[i], plan.slices[i], 1, FrameDumpDepthSliceName(0, plan.slices[i]),
+                           FrameDumpSubresourceName(id, label, width, height, FrameDumpDepthSliceName(0, plan.slices[i]), false)});
+    } else {
+      std::string layer = FrameDumpLayerName(FrameDumpLayersOf(type), type == WMTTextureTypeCubeArray, 0, 0);
+      parts.push_back({0, 0, 1, layer, FrameDumpSubresourceName(id, label, width, height, layer, false)});
+    }
+    for (auto &part : parts) {
+      FrameDumpKey key{handle, 0, part.key_slice, 0};
+      if (dump_ledger_.readSeen(key))
+        continue; // each subresource once in the frame
+      std::string name = FrameDumpReadName(part.name);
+      const uint64_t bytes = width * height * part.depth * texel;
+      FrameDumpReason reason = FrameDumpReason::Dumped;
+      int file = -1;
+      if (!texel)
+        reason = FrameDumpReason::Format;
+      else if (FrameDumpLayersOf(type) == FrameDumpLayers::NotDumped)
+        reason = FrameDumpReason::Type;
+      if (reason != FrameDumpReason::Dumped)
+        dump_ledger_.markRead(key); // not tried again this frame
+      else if (!dump_ledger_.takeRead(key, bytes) || (file = dumpNewBuffer(name, bytes)) < 0)
+        reason = FrameDumpReason::Budget;
+      if (reason == FrameDumpReason::Dumped)
+        copies.push_back({allocation, part.z, width, height, part.depth, texel, file});
+      dump_index_ += FrameDumpIndexLine(writer + " read", "", id, label, type, size, part.layer, reason, name);
+      dump_index_ += "\n";
+    }
+  }
+  if (copies.empty())
+    return;
+  bool own_pass = !encoder_current; // as dumpWrites: the open blit pass, or one of its own
+  if (own_pass) {
+    dump_encoding_ = true;
+    startBlitPass();
+  }
+  for (auto &copy : copies) {
+    trackTexture<false>(copy.allocation, DXMT_ENCODER_RESOURCE_ACESS_READ);
+    dumpCopyTexture3D(
+        copy.allocation->texture().handle, 0, 0, copy.z, copy.width, copy.height, copy.depth, copy.texel,
+        WMTBlitOptionNone, dump_files_[copy.file].buffer
+    );
+  }
+  if (own_pass) {
+    endPass();
+    dump_encoding_ = false;
+  }
+}
+
 /* spec 05 clarifications 33 and 34: called by endPass for each pass of a dumped frame (not our
    own copy passes); the textures it wrote, copied in a blit pass right after it */
 void
 ArgumentEncodingContext::dumpAfterPass(EncoderData *ended) {
   std::vector<DumpWrite> writes;
   std::string writer;
+  std::vector<TextureAllocation *> reads = std::move(dump_pass_reads_); // MYIOSDECK spec 05 item 93
+  dump_pass_reads_.clear();
+  bool writes_presented = false;
   switch (ended->type) {
   case EncoderType::Render: {
     auto data = static_cast<RenderEncoderData *>(ended);
@@ -1503,6 +1612,9 @@ ArgumentEncodingContext::dumpAfterPass(EncoderData *ended) {
       auto &color = data->colors[i];
       if (!color.attachment)
         continue;
+      // MYIOSDECK spec 05 item 93: a pass into a swap chain's buffer
+      if (color.attachment->allocation && presentedTexture(color.attachment->allocation->descriptor))
+        writes_presented = true;
       auto reason = color.store_action == WMTStoreActionStore ? FrameDumpReason::Dumped : FrameDumpReason::NotStored;
       dumpViewWrites(writes, color.attachment.ptr(), color.level, color.slice, layers, "c" + std::to_string(i), reason);
       if (color.resolve_attachment) // an MSAA target's resolve
@@ -1556,6 +1668,8 @@ ArgumentEncodingContext::dumpAfterPass(EncoderData *ended) {
   }
   if (!writes.empty())
     dumpWrites(writer, writes, ended);
+  if (writes_presented && !reads.empty()) // MYIOSDECK spec 05 item 93
+    dumpPassReads(writer, reads);
 }
 
 /* spec 05 clarification 35: the image about to be presented, outside the budget */
@@ -1635,21 +1749,23 @@ ArgumentEncodingContext::traceAfterDispatch() {
 }
 
 void
-ArgumentEncodingContext::traceSrvReadback(std::vector<TraceSrvBuffer> &&buffers) {
+ArgumentEncodingContext::traceSrvReadback(std::vector<TraceSrvBuffer> &&buffers, Texture *target) {
   // spec 05 clarification 50; runs in the blit pass the context opened before the draw, whose
   // serial in the frame is the next one
   if (!trace_active_ || !dump_active_)
     return;
   unsigned serial = trace_draw_serial_ + 1;
   constexpr unsigned bytes = kFrameTraceSrvReadbackValues * 4;
+  const bool presented = presentedTexture(target); // MYIOSDECK spec 05 item 93
   for (auto &srv : buffers) {
     if (!srv.buffer.ptr())
       continue;
     unsigned length = std::min<uint32_t>(srv.byte_length, bytes) & ~3u;
     if (!length)
       continue;
-    // at most 300 a frame, out of the dump's 64 MB share (clarification 41)
-    if (!dump_ledger_.takeSrvReadback(bytes))
+    // at most 300 a frame (item 93: not for a draw into the swap-chain buffer), out of the dump's
+    // 64 MB share (clarification 41)
+    if (!dump_ledger_.takeSrvReadback(bytes, presented))
       continue;
     auto [src, src_offset] = access(srv.buffer, srv.byte_offset, length, DXMT_ENCODER_RESOURCE_ACESS_READ);
     auto [mapped, readback, readback_offset] = queue_.AllocateArgumentBuffer(seq_id_, bytes);
@@ -1669,19 +1785,21 @@ ArgumentEncodingContext::traceSrvReadback(std::vector<TraceSrvBuffer> &&buffers)
 }
 
 void
-ArgumentEncodingContext::traceCbReadback(std::vector<TraceCbBuffer> &&buffers) {
+ArgumentEncodingContext::traceCbReadback(std::vector<TraceCbBuffer> &&buffers, Texture *target) {
   // spec 05 clarification 58; the same blit pass as traceSrvReadback, before the same draw
   if (!trace_active_ || !dump_active_)
     return;
   unsigned serial = trace_draw_serial_ + 1;
+  const bool presented = presentedTexture(target); // MYIOSDECK spec 05 item 93
   for (auto &cb : buffers) {
     if (!cb.buffer.ptr())
       continue;
     unsigned length = std::min<uint32_t>(cb.byte_length, kFrameTraceCbReadbackMaxBytes) & ~3u;
     if (!length)
       continue;
-    // at most 300 a frame (apart from the views'), out of the dump's 64 MB share
-    if (!dump_ledger_.takeCbReadback(length))
+    // at most 300 a frame (apart from the views'; item 93: not for a draw into the swap-chain
+    // buffer), out of the dump's 64 MB share
+    if (!dump_ledger_.takeCbReadback(length, presented))
       continue;
     auto [src, src_offset] = access(cb.buffer, cb.byte_offset, length, DXMT_ENCODER_RESOURCE_ACESS_READ);
     auto [mapped, readback, readback_offset] = queue_.AllocateArgumentBuffer(seq_id_, length);
@@ -1777,11 +1895,17 @@ ArgumentEncodingContext::traceEncoders(EncoderData **encoders, unsigned count) {
       // a clear not merged into the next render pass (merged ones show as its "clear" load)
       auto data = static_cast<ClearEncoderData *>(current);
       auto texture = data->attachment.texture();
-      std::string what = data->clear_dsv ? "clear depth-stencil " : "clear color ";
+      // clarification 64: the texture's number; MYIOSDECK spec 07 clarification 9: the values
+      std::string values =
+          data->clear_dsv
+              ? TraceClearDepthStencil(data->clear_dsv, data->depth_stencil.first, data->depth_stencil.second)
+              : TraceClearColor(data->color.r, data->color.g, data->color.b, data->color.a);
       frame_trace_.line(
-          what + "t" + std::to_string(traceTextureNumber(texture.handle)) + " " + // clarification 64
-              TraceTexture(texture.pixelFormat(), data->width, data->height) + " slices " +
-              std::to_string(data->array_length) + " rect " + TraceRect(0, 0, data->width, data->height),
+          TraceClearPass(
+              data->clear_dsv != 0, traceTextureNumber(texture.handle),
+              TraceTexture(texture.pixelFormat(), data->width, data->height), data->array_length,
+              TraceRect(0, 0, data->width, data->height), values
+          ),
           out
       );
       break;
@@ -1888,7 +2012,8 @@ ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<st
     attachments.push_back(TraceAttachment(
         "c" + std::to_string(i), texture.pixelFormat(), texture.width(), texture.height(), color.level, color.slice,
         color.load_action, type_of(color.attachment), int(traceTextureNumber(texture.handle)),
-        TraceStoreAction(color.store_action)
+        TraceStoreAction(color.store_action), // MYIOSDECK spec 07 clarification 9: a clear's values
+        TraceClearColor(color.clear_color.r, color.clear_color.g, color.clear_color.b, color.clear_color.a)
     ));
     traceCountLoadStore(color.attachment, 0, color.load_action, color.store_action); // clarification 64
   }
@@ -1897,7 +2022,7 @@ ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<st
     attachments.push_back(TraceAttachment(
         "depth", texture.pixelFormat(), texture.width(), texture.height(), data->depth.level, data->depth.slice,
         data->depth.load_action, type_of(data->depth.attachment), int(traceTextureNumber(texture.handle)),
-        TraceStoreAction(data->depth.store_action)
+        TraceStoreAction(data->depth.store_action), TraceClearNumber(data->depth.clear_depth)
     ));
     traceCountLoadStore(data->depth.attachment, 1, data->depth.load_action, data->depth.store_action);
   }
@@ -1906,7 +2031,7 @@ ArgumentEncodingContext::traceRenderPass(RenderEncoderData *data, std::vector<st
     attachments.push_back(TraceAttachment(
         "stencil", texture.pixelFormat(), texture.width(), texture.height(), data->stencil.level, data->stencil.slice,
         data->stencil.load_action, type_of(data->stencil.attachment), int(traceTextureNumber(texture.handle)),
-        TraceStoreAction(data->stencil.store_action)
+        TraceStoreAction(data->stencil.store_action), std::to_string(data->stencil.clear_stencil)
     ));
     traceCountLoadStore(data->stencil.attachment, 2, data->stencil.load_action, data->stencil.store_action);
   }
@@ -2838,6 +2963,10 @@ ArgumentEncodingContext::checkEncoderRelation(EncoderData *former, EncoderData *
         a.discard_store |= b.discard_store;
         a.discard_store_would |= b.discard_store_would;
       }
+      // MYIOSDECK spec 05 item 93: the former's traced draws and states go with its commands
+      // (they were lost with it, and its draws disappeared from the trace)
+      TraceMergeDrawNotes(trace_draw_notes_, r0, r1);
+      TraceMergeStateNotes(trace_state_notes_, r0, r1);
 
       currentFrameStatistics().render_pass_optimized++;
       PassStatAdd(g_encoder_pass_stats.merged_render); // spec 05 clarification 63

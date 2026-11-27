@@ -58,6 +58,7 @@ spec17-include|09-ntdll-processes/include|include|17
 spec17-unixlib|09-ntdll-processes/ntdll-unix/unixlib.h|dlls/ntdll/unixlib.h|17
 spec14-metahost|14-media-audio-ios/pe/metahost.c|dlls/mscoree/metahost.c|14
 spec14-openal32|14-media-audio-ios/pe/dlls/openal32|dlls/openal32|14
+spec14-winegstreamer|14-media-audio-ios/pe/dlls/winegstreamer|dlls/winegstreamer|14
 spec15|15-controllers/pe|.|15
 spec16|16-sync-ios/pe|.|16
 spec18|18-pe-ntdll-wow64/pe|.|18

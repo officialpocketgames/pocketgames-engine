@@ -5,11 +5,16 @@
 // `bias` mip levels out of the Metal texture; physical level p is logical
 // level p + bias. This header holds the policy as pure functions (no Windows
 // or Metal types) so it can be unit-tested on any host.
+//
+// Spec 05 item 94: an automatic clamp of any format by DXMT's live texture total, both bitnesses
+// (TotalBias, TotalRuleCandidate, ChooseBiasAny); d3d11_texture_device.cpp applies it.
 
 #pragma once
 
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <string>
 
 namespace dxmt::mipclamp {
 
@@ -86,6 +91,79 @@ RequestedBias(
     state.last_headroom = headroom;
   }
   return AutoBias(state.last_headroom, threshold);
+}
+
+/* ---- Spec 05 item 94: the automatic clamp by DXMT's own texture total, both bitnesses ----
+   A program creating textures past what the phone allows: sampled-only 2D, 2D array and cube
+   textures with 2 or more mips (any format), created while DXMT's live texture total is over
+   1.5 GB, drop their top level; over 3 GB, their top two. Render targets, depth, UAVs, staging
+   and dynamic textures never clamp, and a texture keeps the clamp it was created with. */
+constexpr uint64_t kTotalClampOneBytes = 1536ull << 20;
+constexpr uint64_t kTotalClampTwoBytes = 3072ull << 20;
+
+/* Whether the automatic clamp is on: d3d11.mipClampAuto (`config`, default on) unless
+   DXMT_MIP_CLAMP_AUTO is "0" (`env`: null or empty when unset) */
+inline bool
+AutoClampSwitch(bool config, const char *env) {
+  if (env && env[0] == '0' && env[1] == '\0')
+    return false;
+  return config;
+}
+
+/* The levels the total asks to drop */
+inline uint32_t
+TotalBias(uint64_t texture_bytes) {
+  if (texture_bytes > kTotalClampTwoBytes)
+    return 2;
+  if (texture_bytes > kTotalClampOneBytes)
+    return 1;
+  return 0;
+}
+
+/* What the rule looks at in a texture's description (Direct3D 11's values as numbers, so this
+   stays free of Windows types): `type_ok` for 2D, 2D array, cube, cube array. */
+struct TotalRuleTexture {
+  bool type_ok = false;
+  uint32_t mips = 1;
+  uint32_t usage = 0;     // D3D11_USAGE: 0 DEFAULT, 1 IMMUTABLE, 2 DYNAMIC, 3 STAGING
+  uint32_t bind = 0;      // D3D11_BIND_FLAG
+  uint32_t cpu = 0;       // D3D11_CPU_ACCESS_FLAG
+  bool shared = false;    // any D3D11_RESOURCE_MISC_SHARED*
+};
+
+constexpr uint32_t kBindShaderResource = 0x8; // D3D11_BIND_SHADER_RESOURCE
+
+/* sampled only (shader-resource and nothing else), DEFAULT or IMMUTABLE, no CPU access, not
+   shared, 2 or more mips, a clampable type */
+inline bool
+TotalRuleCandidate(const TotalRuleTexture &t) {
+  return t.type_ok && t.mips >= 2 && (t.usage == 0 || t.usage == 1) && t.bind == kBindShaderResource && !t.cpu &&
+         !t.shared;
+}
+
+/* The largest bias <= requested that leaves at least one level, for a format without blocks
+   (ChooseBias keeps BC's 4x4 rule). */
+inline uint32_t
+ChooseBiasAny(uint32_t levels, uint32_t requested) {
+  if (levels <= 1)
+    return 0;
+  return requested < levels - 1 ? requested : levels - 1;
+}
+
+/* "[d3d11] mip clamp: texture total <MB> MB; new sampled textures drop <n> top level(s)" */
+inline std::string
+TotalClampLine(uint64_t texture_bytes, uint32_t bias) {
+  char mb[32];
+  std::snprintf(mb, sizeof(mb), "%.1f", double(texture_bytes) / (1024.0 * 1024.0));
+  return std::string("[d3d11] mip clamp: texture total ") + mb + " MB; new sampled textures drop " +
+         std::to_string(bias) + (bias == 1 ? " top level" : " top levels");
+}
+
+/* The bytes a clamp saved, from the clamped texture's own size: a full chain is about 4/3 of its
+   top level, so dropping `bias` levels leaves about 1/4^bias of the whole */
+inline uint64_t
+ClampSavedBytes(uint64_t clamped_bytes, uint32_t bias) {
+  return bias ? clamped_bytes * ((uint64_t(1) << (2 * bias)) - 1) : 0;
 }
 
 /* A view's mip range translated to physical levels, clamped into range.

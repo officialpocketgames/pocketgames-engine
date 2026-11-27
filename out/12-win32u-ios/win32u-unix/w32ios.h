@@ -59,6 +59,8 @@ struct w32ios_proc
     /* E6: when the foreground window was last fixed for this process */
     DWORD            foreground_fix_time;
     BOOL             foreground_fix_done;
+    /* item 15: its first NtUserGetForegroundWindow answer of 0 was logged */
+    LONG             foreground_none_logged;
     /* class.c */
     struct list      pp_class_list;
     /* dce.c */
@@ -212,6 +214,15 @@ NTSTATUS w32ios_wait_objects( DWORD count, const HANDLE *handles, WAIT_TYPE type
                               LARGE_INTEGER *abs );
 /* E6: a process asks for controller state: make its own window the foreground one if needed */
 void w32ios_foreground_fix( void );
+/* item 15 (w32ios_driver.c, called from patched window.c and input.c): */
+/* set_window_pos showed a window: a qualifying top-level one takes an absent foreground */
+void w32ios_window_shown( HWND hwnd );
+/* the reason the next foreground change is logged with, on this thread; it replaces the current
+ * one when force is set or none is set. Returns the one it replaced (to restore it). */
+const char *w32ios_foreground_reason( const char *reason, BOOL force );
+/* set_foreground_window changed the foreground; NtUserGetForegroundWindow answered */
+void w32ios_foreground_changed( HWND hwnd, BOOL mouse, BOOL internal );
+void w32ios_foreground_asked( HWND hwnd );
 
 /* ---------------------------------------------------------------- Part F: XInput */
 

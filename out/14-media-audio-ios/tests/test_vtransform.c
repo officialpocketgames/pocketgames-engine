@@ -182,6 +182,8 @@ static void test_push_read( void )
     }
     CHECK_INT( CALL( unix_wg_transform_get_status, &st ), STATUS_SUCCESS );
     CHECK_INT( st.accepts_input, 1 );
+    /* round 6 item 7: the first converted frame, once per transform */
+    CHECK_INT( test_log_count( "[wg-transform] first video frame converted NV12 16x16 -> RGB32 in " ), 1 );
 
     /* a 2D output buffer (stride 128 bytes) */
     CHECK_INT( push( t, frame, sizeof(frame), 3000, &status ), S_OK );
@@ -280,6 +282,10 @@ static void test_wow64( void )
     CHECK_INT( CALL32( unix_wg_transform_read_data, d ), STATUS_SUCCESS );
     CHECK_INT( d->result, MF_E_TRANSFORM_NEED_MORE_INPUT );
     CHECK_INT( CALL32( unix_wg_transform_destroy, &c->transform ), STATUS_SUCCESS );
+    /* this transform's own first-frame line; the earlier transform's stays at one */
+    CHECK_INT( test_log_count( "first video frame converted I420 16x16 -> NV12 in " ), 1 );
+    CHECK_INT( test_log_count( "first video frame converted NV12 16x16 -> RGB32" ), 1 );
+    CHECK_INT( test_log_count( "first video frame converted" ), 2 );
     test_leave_window();
 }
 

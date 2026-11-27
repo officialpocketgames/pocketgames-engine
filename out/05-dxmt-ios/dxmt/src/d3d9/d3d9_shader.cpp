@@ -985,7 +985,8 @@ MTLD3D9VertexShaderModule::MTLD3D9VertexShaderModule(
     MTLD3D9Device *device, const DWORD *byte_code, size_t dwordCount, DxsoShaderMetadata metadata
 ) :
     m_device(device),
-    m_metadata(std::move(metadata)) {
+    m_metadata(std::move(metadata)),
+    m_hash(bytecode_hash(byte_code, dwordCount)) { // MYIOSDECK spec 07 clarification 9
   m_bytecode.assign(byte_code, byte_code + dwordCount);
 }
 
@@ -1193,7 +1194,8 @@ MTLD3D9PixelShaderModule::MTLD3D9PixelShaderModule(
     MTLD3D9Device *device, const DWORD *byte_code, size_t dwordCount, DxsoShaderMetadata metadata
 ) :
     m_device(device),
-    m_metadata(std::move(metadata)) {
+    m_metadata(std::move(metadata)),
+    m_hash(bytecode_hash(byte_code, dwordCount)) { // MYIOSDECK spec 07 clarification 9
   m_bytecode.assign(byte_code, byte_code + dwordCount);
 }
 

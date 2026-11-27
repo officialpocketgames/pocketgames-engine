@@ -7,9 +7,14 @@
 // ring code in bench_dynamic_discard.cpp (CheckGuestWindow).
 // Spec 06 round 3 (item 2): the commands use, the ring and command blocks by size, the line each
 // 256 MB; the command blocks over 1000 frames are in bench_dynamic_discard.cpp (CheckCommandBlocks).
+// Spec 06 round 4 (item 4): the command lists and the immediate context in the line; the backlog's
+// rule and its first line; the wait's rule at the 1 GB mark and the chunk it waits for; the
+// FinishCommandList line. The 2,000 lists and the wait on DXMT's ring code are in
+// bench_dynamic_discard.cpp (CheckDeferredListBacklog).
 
 #include "test_common.hpp"
 
+#include "dxmt_cmdlist_backlog.hpp"
 #include "dxmt_dynamic_policy.hpp"
 #include "util_guest_memory.hpp"
 
@@ -155,6 +160,83 @@ TestCapRule() {
   CHECK_EQ(kGuestDynamicAllocations, 3u);
 }
 
+/* Spec 06 round 4 (item 4) */
+void
+TestRound4() {
+  using guest_memory::ListCount;
+  constexpr uint64_t kMB = 1ull << 20;
+
+  // the line: the lists, the presents and the commits, once there is any
+  guest_memory::Snapshot s;
+  s.blocks = 2;
+  s.bytes[unsigned(guest_memory::Use::Commands)] = 4 * kMB;
+  s.sizes[0] = {2 * kMB, 2};
+  CHECK(guest_memory::ReportLine(s) == "[dxmt-wow] guest memory: 2 blocks, 4.0 MB (maps 0.0, staging 0.0, commands 4.0, "
+                                       "other 0.0); ring and command blocks: 2.0 MB x 2");
+  s.lists[unsigned(ListCount::Made)] = 40;
+  s.lists[unsigned(ListCount::Pooled)] = 25;
+  s.lists[unsigned(ListCount::Waiting)] = 9;
+  s.lists[unsigned(ListCount::Presents)] = 0;
+  s.lists[unsigned(ListCount::Commits)] = 211;
+  CHECK(guest_memory::ReportLine(s) ==
+        "[dxmt-wow] guest memory: 2 blocks, 4.0 MB (maps 0.0, staging 0.0, commands 4.0, other 0.0); ring and command "
+        "blocks: 2.0 MB x 2; command lists: 40 made, 15 alive, 9 waiting in chunks, 25 pooled; 0 presents, 211 "
+        "commits");
+  guest_memory::Snapshot presented;
+  presented.lists[unsigned(ListCount::Presents)] = 3;
+  presented.lists[unsigned(ListCount::Commits)] = 3;
+  CHECK(guest_memory::ReportLine(presented) ==
+        "[dxmt-wow] guest memory: 0 blocks, 0.0 MB (maps 0.0, staging 0.0, commands 0.0, other 0.0); command lists: 0 "
+        "made, 0 alive, 0 waiting in chunks, 0 pooled; 3 presents, 3 commits");
+
+  // the ledger's counts and one use's bytes
+  guest_memory::Ledger ledger;
+  ledger.countList(ListCount::Made, 3);
+  ledger.countList(ListCount::Pooled, 2);
+  ledger.countList(ListCount::Pooled, -1);
+  ledger.countList(ListCount::Waiting, 1);
+  ledger.add(guest_memory::Use::Commands, 64 * 1024);
+  ledger.add(guest_memory::Use::Maps, 4096);
+  guest_memory::Snapshot counted = ledger.snapshot();
+  CHECK_EQ(counted.lists[unsigned(ListCount::Made)], 3u);
+  CHECK_EQ(counted.lists[unsigned(ListCount::Pooled)], 1u);
+  CHECK_EQ(counted.lists[unsigned(ListCount::Waiting)], 1u);
+  CHECK_EQ(ledger.bytesOf(guest_memory::Use::Commands), 64u * 1024u);
+  CHECK_EQ(ledger.bytesOf(guest_memory::Use::Maps), 4096u);
+
+  // the backlog: more than 8 lists, or more than 16 MB, since the last commit
+  CommandListBacklog backlog;
+  for (unsigned i = 1; i <= kBacklogLists; i++)
+    CHECK(!backlog.executed(64 * 1024));
+  CHECK(backlog.executed(64 * 1024)); // the 9th
+  CHECK_EQ(backlog.lists(), 9u);
+  CHECK(backlog.takeFirstLine() == "[d3d11] command list backlog: 9 lists, 0.6 MB since the last commit; committing");
+  CHECK(backlog.takeFirstLine().empty()); // the first only
+  backlog.committed();
+  CHECK_EQ(backlog.lists(), 0u);
+  CHECK_EQ(backlog.bytes(), 0u);
+  CHECK(!backlog.executed(16 * kMB)); // 16 MB exactly isn't past it
+  CHECK(backlog.executed(1));         // one byte more is
+  backlog.committed();
+  CHECK(backlog.executed(40 * kMB)); // one large list alone
+  CHECK_EQ(kBacklogBytes, 16 * kMB);
+
+  // the wait: a 32-bit process past 1 GB of command memory only
+  CHECK_EQ(kCommandWaitBytes, 1024 * kMB);
+  CHECK(!CommandMemoryWaitDue(true, 1024 * kMB));
+  CHECK(CommandMemoryWaitDue(true, 1024 * kMB + 1));
+  CHECK(!CommandMemoryWaitDue(false, 3824 * kMB)); // 64-bit: never
+  CHECK(CommandMemoryWaitDue(true, 33 * kMB, 32 * kMB));
+  // the chunk waited for: the oldest committed and unfinished; none when all have finished
+  CHECK_EQ(OldestUnfinishedChunk(10, 14), 11u);
+  CHECK_EQ(OldestUnfinishedChunk(13, 14), 0u); // only the chunk being recorded
+  CHECK_EQ(OldestUnfinishedChunk(0, 1), 0u);
+  CHECK(CommandWaitLine(1025 * kMB) ==
+        "[d3d11] command memory 1025.0 MB, past 1024 MB: FinishCommandList waits for the oldest committed chunk");
+  CHECK(FinishOutOfMemoryLine(3824 * kMB) ==
+        "[d3d11] FinishCommandList -> E_OUTOFMEMORY: a command block couldn't be had (commands 3824.0 MB)");
+}
+
 } // namespace
 
 int
@@ -163,5 +245,6 @@ main() {
   TestLedger();
   TestRound3();
   TestCapRule();
+  TestRound4();
   return TestSummary("test_guest_memory");
 }

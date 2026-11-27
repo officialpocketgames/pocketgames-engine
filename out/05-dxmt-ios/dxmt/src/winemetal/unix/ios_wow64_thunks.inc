@@ -366,7 +366,7 @@ wow_MTLRenderCommandEncoder_encodeCommands(void *obj) {
 }
 
 /* ---- C7: the control call answers the ops without pointers only: 7 (and spec 05 item 90's
-   8, 9 and 10) ---- */
+   8, 9 and 10, item 91's 11, 12 and 13) ---- */
 
 static NTSTATUS
 wow_DXMTIOS_control(void *obj) {
@@ -376,7 +376,14 @@ wow_DXMTIOS_control(void *obj) {
   case DXMT_IOS_CONTROL_FOOTPRINT:
   case DXMT_IOS_CONTROL_GRAPHICS_FOOTPRINT:
   case DXMT_IOS_CONTROL_MEMORY_WARNINGS:
+  case DXMT_IOS_CONTROL_SHARE_EVENT:   /* ptr is an object handle, which passes unchanged */
+  case DXMT_IOS_CONTROL_SHARE_RELEASE: /* ptr is a key */
     return _DXMTIOS_control(obj);
+  case DXMT_IOS_CONTROL_OPEN_SHARED_EVENT: { /* ptr is a key; the event handed out is recorded */
+    NTSTATUS status = _DXMTIOS_control(obj);
+    dxmt_ios_wow_created(params->ret);
+    return status;
+  }
   default:
     return STATUS_NOT_IMPLEMENTED;
   }

@@ -5,7 +5,8 @@
 // parts: which stored formats are read directly, the row sizes with GL_PACK_ALIGNMENT, the
 // conversion from RGBA8 to every format/type pair wined3d's DirectDraw and Direct3D read-backs
 // use (values checked as numbers, so the host's byte order doesn't matter), and the once-per-format
-// gate of the failure log.
+// gate of the failure log. Item 15: the framebuffer colour attachment failure line, the GLES
+// context's ES version, and the internal format glTexImage2D gets on ES 3.
 
 #include <stdint.h>
 #include <stdio.h>
@@ -22,6 +23,8 @@
 #define BGR_ 0x80E0
 #define BGRA_ 0x80E1
 #define RG_ 0x8227
+#define R8_ 0x8229
+#define RG8_ 0x822B
 #define UB_ 0x1401
 #define U4444 0x8033
 #define U5551 0x8034
@@ -159,14 +162,67 @@ int main( void )
         check( untouched, "nothing written for a refused pair" );
     }
 
-    /* the failure log's gate: once per key, then quiet; 64 keys at most */
+    /* item 15: the framebuffer failure line */
+    {
+        char line[200];
+        int len;
+
+        check( !strcmp( gl4es_ios_gl_reason( 0x0502 ), "GL_INVALID_OPERATION" ) &&
+               !strcmp( gl4es_ios_gl_reason( 0x0500 ), "GL_INVALID_ENUM" ) &&
+               !strcmp( gl4es_ios_gl_reason( 0x0506 ), "GL_INVALID_FRAMEBUFFER_OPERATION" ), "error names" );
+        check( !strcmp( gl4es_ios_gl_reason( 0x8CD6 ), "GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT" ) &&
+               !strcmp( gl4es_ios_gl_reason( 0x8CD7 ), "GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT" ) &&
+               !strcmp( gl4es_ios_gl_reason( 0x8CDD ), "GL_FRAMEBUFFER_UNSUPPORTED" ), "status names" );
+        check( !gl4es_ios_gl_reason( 0 ) && !gl4es_ios_gl_reason( 0x8CD5 ), "no name for no error or COMPLETE" );
+
+        /* wined3d's P8 without GL_ARB_texture_rg: GL_ALPHA8, stored as ALPHA, which GLES can't render to */
+        gl4es_ios_fbo_line( line, sizeof(line), 0x803C, ALPHA_, UB_, 0, 2, 0x8CD6 );
+        check( !strcmp( line, "[gl4es] FBO colour attach failed: internal 0x803C stored as 0x1906/0x1401 (ES 2): "
+                              "GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT" ), "refused ALPHA8 line" );
+        gl4es_ios_fbo_line( line, sizeof(line), 0x8229, RED_, UB_, 0, 3, 0x0502 );
+        check( !strcmp( line, "[gl4es] FBO colour attach failed: internal 0x8229 stored as 0x1903/0x1401 (ES 3): "
+                              "GL_INVALID_OPERATION" ), "R8 attach error line" );
+        gl4es_ios_fbo_line( line, sizeof(line), 0x8058, 0x8058, 0, 1, 2, 0x0500 );
+        check( !strcmp( line, "[gl4es] FBO colour attach failed: internal 0x8058 stored as renderbuffer 0x8058 (ES 2): "
+                              "GL_INVALID_ENUM" ), "renderbuffer line" );
+        gl4es_ios_fbo_line( line, sizeof(line), 0x1908, RGBA_, UB_, 0, 2, 0x1234 );
+        check( !strcmp( line, "[gl4es] FBO colour attach failed: internal 0x1908 stored as 0x1908/0x1401 (ES 2): 0x1234" ),
+               "an unknown code as a number" );
+        memset( line, 'x', sizeof(line) );
+        len = gl4es_ios_fbo_line( line, 20, 0x803C, ALPHA_, UB_, 0, 2, 0x8CD6 );
+        check( len > 20 && strlen( line ) == 19 && line[20] == 'x', "a short buffer: cut, terminated, full length returned" );
+    }
+
+    /* item 15: the ES version of the GLES context */
+    check( gl4es_ios_es_major_of( "OpenGL ES 3.0 (ANGLE 2.1.25000 git hash: 751417514a52)" ) == 3, "ES 3.0" );
+    check( gl4es_ios_es_major_of( "OpenGL ES 2.0 (ANGLE 2.1.25000 git hash: 751417514a52)" ) == 2, "ES 2.0" );
+    check( gl4es_ios_es_major_of( "OpenGL ES 3.1" ) == 3 && gl4es_ios_es_major_of( "OpenGL ES-CM 1.1" ) == 1, "ES 3.1, ES-CM 1.1" );
+    check( gl4es_ios_es_major_of( NULL ) == 2 && gl4es_ios_es_major_of( "4.1 Metal" ) == 2 &&
+           gl4es_ios_es_major_of( "OpenGL ES " ) == 2 && gl4es_ios_es_major_of( "OpenGL ES x.0" ) == 2,
+           "anything else: 2" );
+
+    /* item 15: what GLES's glTexImage2D gets as the internal format (gl4es passes the format) */
+    check( gl4es_ios_gles_internal( 3, RED_, RED_, UB_ ) == R8_ && gl4es_ios_gles_internal( 3, RG_, RG_, UB_ ) == RG8_,
+           "ES 3: RED and RG bytes become R8 and RG8" );
+    check( gl4es_ios_gles_internal( 2, RED_, RED_, UB_ ) == RED_ && gl4es_ios_gles_internal( 2, RG_, RG_, UB_ ) == RG_,
+           "ES 2: unsized RED and RG stay (GL_EXT_texture_rg)" );
+    check( gl4es_ios_gles_internal( 3, RGBA_, RGBA_, UB_ ) == RGBA_ && gl4es_ios_gles_internal( 3, RGB_, RGB_, U565 ) == RGB_ &&
+           gl4es_ios_gles_internal( 3, BGRA_, BGRA_, UB_ ) == BGRA_ && gl4es_ios_gles_internal( 3, LUM_, LUM_, UB_ ) == LUM_ &&
+           gl4es_ios_gles_internal( 3, ALPHA_, ALPHA_, UB_ ) == ALPHA_, "ES 3: ES 3.0's unsized formats and BGRA stay" );
+    check( gl4es_ios_gles_internal( 3, RED_, RED_, FLOAT_ ) == RED_ && gl4es_ios_gles_internal( 3, R8_, RED_, UB_ ) == R8_ &&
+           gl4es_ios_gles_internal( 3, RGBA_, RED_, UB_ ) == RGBA_, "ES 3: other types, a sized or different internal format stay" );
+
+    /* the failure logs' gate: once per key, then quiet; 256 keys at most; the framebuffer line's
+     * keys apart from glGetTexImage's */
     {
         unsigned int k;
         int firsts = 0;
         check( gl4es_ios_first_time( 0x8059 ) == 1 && gl4es_ios_first_time( 0x8059 ) == 0, "once per key" );
         check( gl4es_ios_first_time( 0x803C ) == 1, "another key" );
-        for (k = 1; k <= 100; k++) firsts += gl4es_ios_first_time( 0x10000 + k );
-        check( firsts == 62, "64 keys in all, then quiet" );
+        check( gl4es_ios_first_time( GL4ES_IOS_ONCE_FBO | 0x8059 ) == 1 &&
+               gl4es_ios_first_time( GL4ES_IOS_ONCE_FBO | 0x8059 ) == 0, "the framebuffer line's own key" );
+        for (k = 1; k <= 300; k++) firsts += gl4es_ios_first_time( 0x10000 + k );
+        check( firsts == 253, "256 keys in all, then quiet" );
         check( gl4es_ios_first_time( 0x8059 ) == 0, "a known key stays quiet" );
     }
 

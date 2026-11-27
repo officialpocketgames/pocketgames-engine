@@ -14,6 +14,9 @@
 //   [d3d9] <Interface>::<Method> -> <result> failed <n> more times (last: <its arguments>)
 // (Limiter::repeatLines).
 //
+// Spec 07 clarification 8: failed CreateVertexShader / CreatePixelShader calls have their own log
+// (ShaderFailLog): each in full with its version token, up to 10, then counted every 10 s.
+//
 // Pure: no Windows or Metal types, so the host test (tests/test_d3d9_fail_log.cpp) builds it as
 // it is. HRESULTs are 32-bit values, the D3D enums plain numbers (Microsoft's d3d9.h and
 // d3d9types.h). The covered methods (d3d9_call_stats.cpp's NoteFailure) wrap their body in
@@ -370,6 +373,77 @@ private:
   Entry entries_[kMaxLines];
   unsigned used_ = 0;
   uint64_t due_ns_ = 0; // 0: no repeat waiting
+  std::atomic<bool> pending_{false};
+};
+
+/* Clarification 8: a shader's version token ("vs_2_0", "ps_3_0"); "none" with no bytecode, the
+   word in hex for one that isn't a shader version */
+inline std::string
+ShaderVersionToken(bool present, uint32_t version) {
+  if (!present)
+    return "none";
+  const uint32_t kind = version >> 16;
+  if (kind != 0xFFFEu && kind != 0xFFFFu)
+    return Hex(version);
+  return std::string(kind == 0xFFFEu ? "vs_" : "ps_") + std::to_string((version >> 8) & 0xFF) + "_" +
+         std::to_string(version & 0xFF);
+}
+
+constexpr unsigned kShaderFailLines = 10;
+
+/* Clarification 8: a failed CreateVertexShader or CreatePixelShader (one log each), every one in
+   full up to kShaderFailLines (results alike or not), with its version token:
+     [d3d9] IDirect3DDevice9::CreatePixelShader failed: <result>; version ps_3_0
+   then counted, and 10 s after the first not yet reported (as clarification 7) one line:
+     [d3d9] IDirect3DDevice9::CreatePixelShader failed <n> more times (last: <result>, version ps_3_0) */
+class ShaderFailLog {
+public:
+  std::string
+  take(const char *name, int32_t hr, bool null_out, const std::string &version, uint64_t now_ns) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (lines_ < kShaderFailLines) {
+      lines_++;
+      return Line(name, hr, null_out, "version " + version);
+    }
+    name_ = name;
+    repeats_++;
+    last_ = ResultText(hr, null_out) + ", version " + version;
+    if (due_ns_ == 0) {
+      due_ns_ = now_ns + kRepeatPeriodNs;
+      pending_.store(true, std::memory_order_relaxed);
+    }
+    return std::string();
+  }
+
+  bool
+  pending() const {
+    return pending_.load(std::memory_order_relaxed);
+  }
+
+  /* the count line when due ("" otherwise); the count starts over */
+  std::string
+  repeatLine(uint64_t now_ns) {
+    if (!pending())
+      return std::string();
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (due_ns_ == 0 || now_ns < due_ns_)
+      return std::string();
+    std::string line =
+        std::string("[d3d9] ") + name_ + " failed " + std::to_string(repeats_) + " more times (last: " + last_ + ")";
+    repeats_ = 0;
+    last_.clear();
+    due_ns_ = 0;
+    pending_.store(false, std::memory_order_relaxed);
+    return line;
+  }
+
+private:
+  std::mutex mutex_;
+  unsigned lines_ = 0;
+  const char *name_ = "";
+  uint32_t repeats_ = 0;
+  std::string last_;
+  uint64_t due_ns_ = 0;
   std::atomic<bool> pending_{false};
 };
 

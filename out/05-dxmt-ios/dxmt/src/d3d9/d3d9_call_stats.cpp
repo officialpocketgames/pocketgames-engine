@@ -104,14 +104,29 @@ NowNs() {
   return d9cs::NowNs();
 }
 
-/* Clarification 7: from a failing call and from every Present. */
+/* Clarification 8: the shader creates' own logs */
+ShaderFailLog &
+ProcessShaderLog(bool pixel) {
+  static ShaderFailLog vertex, pixel_log;
+  return pixel ? pixel_log : vertex;
+}
+
+/* Clarification 7: from a failing call and from every Present (clarification 8: the shader
+   creates' counts too). */
 void
 Tick() {
   Limiter &limiter = ProcessLimiter();
-  if (!limiter.pending())
+  ShaderFailLog &vs = ProcessShaderLog(false), &ps = ProcessShaderLog(true);
+  if (!limiter.pending() && !vs.pending() && !ps.pending())
     return;
-  for (const auto &line : limiter.repeatLines(NowNs()))
+  const uint64_t now = NowNs();
+  for (const auto &line : limiter.repeatLines(now))
     Write(line);
+  for (ShaderFailLog *log : {&vs, &ps}) {
+    std::string line = log->repeatLine(now);
+    if (!line.empty())
+      Write(line);
+  }
 }
 
 } // namespace dxmt::d9fail

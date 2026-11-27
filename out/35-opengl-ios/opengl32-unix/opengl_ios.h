@@ -22,6 +22,12 @@ extern const unixlib_entry_t opengl32_unix_call_wow64_funcs[];
 extern const char *const opengl_ios_entry_names[];   /* E2: "glVertex3f", ... */
 extern const unsigned int opengl_ios_entry_count;
 extern const unsigned int opengl_ios_swap_index;     /* unix_wglSwapBuffers */
+/* clarification 14: 1 for an entry whose parameter block starts with TEB *teb */
+extern const unsigned char opengl_ios_teb_first[];
+
+/* clarification 14: the calling process's flag for the no-TEB line, NULL when the process has no
+ * slot (opengl_ios.c) */
+extern _Atomic int *opengl_ios_no_teb_flag( void );
 
 /* the upstream tables of the generated unix_thunks.c (built with __wine_unix_call_funcs renamed);
  * build-unix.sh gives a build without the generated thunks empty ones and present 0 */

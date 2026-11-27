@@ -65,15 +65,16 @@ void pgl_log_rare( _Atomic uint64_t *counter, const char *fmt, ... )
     log_line( buf );
 }
 
-/* gl4es's messages (C3.3). A line this tree's gl4es changes write already formatted
- * ("[opengl] ...", each once: clarification 13's glGetTexImage failures) goes out as it is and
- * isn't counted against upstream's messages. */
+/* gl4es's messages (C3.3). A line this tree's gl4es changes write already formatted, each once
+ * ("[opengl] ...": clarification 13's glGetTexImage failures; "[gl4es] ...": item 15's
+ * framebuffer colour attachments), goes out as it is and isn't counted against upstream's
+ * messages. */
 static void gl4es_log( const char *line )
 {
     static _Atomic uint64_t lines;
     uint64_t n;
 
-    if (!strncmp( line, "[opengl] ", 9 ))
+    if (!strncmp( line, "[opengl] ", 9 ) || !strncmp( line, "[gl4es] ", 8 ))
     {
         log_line( line );
         return;

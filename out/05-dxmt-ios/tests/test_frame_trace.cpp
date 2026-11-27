@@ -65,6 +65,31 @@ TestFormats() {
   CHECK(TraceAttachment("c0", WMTPixelFormatRGBA16Float, 1280, 720, 0, 0, WMTLoadActionClear) ==
         "c0 RGBA16Float 1280x720 mip 0 slice 0 clear");
 
+  // MYIOSDECK spec 07 clarification 9: the clear's values, on clear loads and on clear lines
+  CHECK(TraceClearNumber(0) == "0");
+  CHECK(TraceClearNumber(1) == "1");
+  CHECK(TraceClearNumber(128 / 255.0) == "0.502");
+  CHECK(TraceClearNumber(-0.25) == "-0.25");
+  CHECK(TraceClearNumber(1000) == "1000");
+  CHECK(TraceClearColor(0, 128 / 255.0, 0, 1) == "0,0.502,0,1");
+  CHECK(TraceClearDepthStencil(1, 1.0, 0) == "depth 1");
+  CHECK(TraceClearDepthStencil(2, 1.0, 7) == "stencil 7");
+  CHECK(TraceClearDepthStencil(3, 0.5, 255) == "depth 0.5 stencil 255");
+  CHECK(TraceClearDepthStencil(0, 1.0, 0) == "-");
+  CHECK(TraceAttachment("c0", WMTPixelFormatRGBA8Unorm, 1280, 720, 0, 0, WMTLoadActionClear, "2d", 3, "store",
+                        TraceClearColor(0, 0, 0, 1)) == "c0 t3 RGBA8Unorm 1280x720 2d mip 0 slice 0 clear 0,0,0,1 store");
+  CHECK(TraceAttachment("depth", WMTPixelFormatDepth32Float, 1280, 720, 0, 0, WMTLoadActionClear, "2d", 4, "dontcare",
+                        TraceClearNumber(1)) == "depth t4 Depth32Float 1280x720 2d mip 0 slice 0 clear 1 dontcare");
+  // a load or dontcare has no values to show
+  CHECK(TraceAttachment("c0", WMTPixelFormatRGBA8Unorm, 64, 64, 0, 0, WMTLoadActionLoad, "2d", 3, "store",
+                        TraceClearColor(0, 0, 0, 1)) == "c0 t3 RGBA8Unorm 64x64 2d mip 0 slice 0 load store");
+  CHECK(TraceClearPass(false, 3, TraceTexture(WMTPixelFormatRGBA8Unorm, 1280, 720), 1, TraceRect(0, 0, 1280, 720),
+                       TraceClearColor(0.25, 0.5, 0.75, 1)) ==
+        "clear color t3 RGBA8Unorm 1280x720 slices 1 rect 0,0 1280x720 color 0.25,0.5,0.75,1");
+  CHECK(TraceClearPass(true, 4, TraceTexture(WMTPixelFormatDepth32Float_Stencil8, 1280, 720), 1,
+                       TraceRect(0, 0, 1280, 720), TraceClearDepthStencil(3, 1, 0)) ==
+        "clear depth-stencil t4 Depth32Float_Stencil8 1280x720 slices 1 rect 0,0 1280x720 depth 1 stencil 0");
+
   std::vector<std::string> viewports, scissors;
   TraceAddDistinct(viewports, TraceRect(0, 0, 1280, 720));
   TraceAddDistinct(viewports, TraceRect(0, 0, 1280, 720)); // distinct only
@@ -397,6 +422,42 @@ TestSummaryLine() {
   CHECK(StartsWith(line, "dxmt-frame 1800: "));
 }
 
+/* Spec 05 item 93: a render pass merged into the next takes its draws and states along. */
+void
+TestMergedPassNotes() {
+  struct Note {
+    unsigned serial;
+    std::string lines;
+  };
+  int former_pass = 0, latter_pass = 0, other_pass = 0;
+  std::map<const void *, std::vector<Note>> draws;
+  draws[&former_pass] = {{1, "draw 1"}, {2, "draw 2"}};
+  draws[&latter_pass] = {{3, "draw 3"}};
+  draws[&other_pass] = {{4, "draw 4"}};
+  TraceMergeDrawNotes(draws, &former_pass, &latter_pass);
+  CHECK(draws.find(&former_pass) == draws.end());
+  CHECK_EQ(draws[&latter_pass].size(), 3u);
+  if (draws[&latter_pass].size() == 3) {
+    CHECK(draws[&latter_pass][0].lines == "draw 1"); // the former's first, in order
+    CHECK(draws[&latter_pass][1].serial == 2u);
+    CHECK(draws[&latter_pass][2].lines == "draw 3");
+  }
+  CHECK_EQ(draws[&other_pass].size(), 1u);
+  // a former pass with no traced draws changes nothing; into a pass with none, they move over
+  TraceMergeDrawNotes(draws, &former_pass, &latter_pass);
+  CHECK_EQ(draws[&latter_pass].size(), 3u);
+  int empty_pass = 0;
+  TraceMergeDrawNotes(draws, &other_pass, &empty_pass);
+  CHECK_EQ(draws[&empty_pass].size(), 1u);
+
+  std::map<const void *, std::vector<std::string>> states;
+  states[&former_pass] = {"blend a", "ds b"};
+  states[&latter_pass] = {"ds b", "rs c"};
+  TraceMergeStateNotes(states, &former_pass, &latter_pass);
+  CHECK(states.find(&former_pass) == states.end());
+  CHECK(states[&latter_pass] == std::vector<std::string>({"blend a", "ds b", "rs c"})); // distinct
+}
+
 } // namespace
 
 int
@@ -409,5 +470,6 @@ main() {
   TestDrawReadbacks();
   TestConstantBufferReadbacks();
   TestSummaryLine();
+  TestMergedPassNotes();
   return TestSummary("test_frame_trace");
 }

@@ -89,6 +89,34 @@ Checked(Body &&body, unsigned method, NullOut &&null_out, Args &&args) {
 }
 } // namespace dxmt::d9fail
 
+/* Clarification 8: CreateVertexShader / CreatePixelShader. A failure goes to its own log
+   (ShaderFailLog: each in full up to 10, then counted) instead of the limiter, with `version`
+   (a std::string, built only for a failure). Written as
+     return D9_CHECKED_SHADER_BEGIN { ...the body... } D9_CHECKED_SHADER_END(label, method, pixel, null_out, version); */
+namespace dxmt::d9fail {
+ShaderFailLog &ProcessShaderLog(bool pixel);
+
+template <typename Body, typename NullOut, typename Version>
+inline auto
+CheckedShader(Body &&body, unsigned method, bool pixel, NullOut &&null_out, Version &&version) {
+  auto hr = body();
+  const bool failed = int32_t(hr) < 0;
+  const bool null = !failed && null_out();
+  if (likely(!failed && !null))
+    return hr;
+  std::string line = ProcessShaderLog(pixel).take(::dxmt::d9cs::kD9CallNames[method], int32_t(hr), null, version(), NowNs());
+  if (!line.empty())
+    Write(line);
+  Tick();
+  return hr;
+}
+} // namespace dxmt::d9fail
+
+#define D9_CHECKED_SHADER_BEGIN ::dxmt::d9fail::CheckedShader([&]() -> HRESULT
+#define D9_CHECKED_SHADER_END(label, method, pixel, null_out, version)                                                 \
+  , ::dxmt::d9cs::D9C_##label##_##method, (pixel), [&]() -> bool { return (null_out); },                              \
+      [&]() -> std::string { return (version); })
+
 #define D9_CHECKED_BEGIN ::dxmt::d9fail::Checked([&]() -> HRESULT
 #define D9_CHECKED_END(label, method, null_out, args)                                                                  \
   , ::dxmt::d9cs::D9C_##label##_##method, [&]() -> bool { return (null_out); },                                       \

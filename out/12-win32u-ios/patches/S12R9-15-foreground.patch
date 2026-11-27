@@ -1,0 +1,56 @@
+Spec 12 round 9 item 15: a shown top-level window becomes the foreground window when the
+foreground is 0 or its process has ended (w32ios_window_shown, w32ios_driver.c), and every
+foreground change and a process's first "none" answer are logged. Applied after F-02 (line
+numbers are those after B-04-window.patch and B-09-ui-state.patch).
+
+--- a/dlls/win32u/input.c
++++ b/dlls/win32u/input.c
+@@ -566,6 +566,9 @@
+         hwnd = wine_server_ptr_handle( input_shm->active );
+     if (status) hwnd = 0;
+ 
++#ifdef WINE_IOS
++    w32ios_foreground_asked( hwnd );   /* spec 12 item 15: the first "none" per process is logged */
++#endif
+     return hwnd;
+ }
+ 
+@@ -2202,7 +2205,15 @@
+  */
+ BOOL WINAPI NtUserSetForegroundWindow( HWND hwnd )
+ {
++#ifdef WINE_IOS
++    /* spec 12 item 15: the log names the reason (a caller that set its own keeps it) */
++    const char *old = w32ios_foreground_reason( "SetForegroundWindow", FALSE );
++    BOOL ret = set_foreground_window( hwnd, FALSE, FALSE );
++    w32ios_foreground_reason( old, TRUE );
++    return ret;
++#else
+     return set_foreground_window( hwnd, FALSE, FALSE );
++#endif
+ }
+ 
+ /*******************************************************************
+@@ -2231,6 +2242,9 @@
+     SERVER_END_REQ;
+ 
+     TRACE( "hwnd %p, mouse %u, internal %u -> ret %u, previous %p\n", hwnd, mouse, internal, ret, previous );
++#ifdef WINE_IOS
++    if (ret && previous != hwnd) w32ios_foreground_changed( hwnd, mouse, internal );   /* item 15 */
++#endif
+ 
+     if (ret && previous != hwnd)
+     {
+--- a/dlls/win32u/window.c
++++ b/dlls/win32u/window.c
+@@ -3969,6 +3969,10 @@
+         else if (!(style & WS_MINIMIZE))
+             set_foreground_window( winpos->hwnd, FALSE, FALSE );
+     }
++#ifdef WINE_IOS
++    /* spec 12 item 15: no window manager gives a shown window the foreground on iOS */
++    if (winpos->flags & SWP_SHOWWINDOW) w32ios_window_shown( winpos->hwnd );
++#endif
+ 
+     if(!(orig_flags & SWP_DEFERERASE))
+     {

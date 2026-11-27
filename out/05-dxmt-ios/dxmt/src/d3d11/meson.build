@@ -1,4 +1,4 @@
-# Changed for MYIOSDECK (spec 05 clarification 63: d3d11_call_stats.cpp). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
+# Changed for MYIOSDECK (spec 05 clarification 63: d3d11_call_stats.cpp; item 91: d3d11_share.cpp). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 d3d11_res = wrc_generator.process('version.rc')
 
 d3d11_src = [
@@ -30,6 +30,7 @@ d3d11_src = [
   'd3d11_context_def.cpp',
   'd3d11_multithread.cpp',
   'd3d11_fence.cpp',
+  'd3d11_share.cpp', # MYIOSDECK spec 05 item 91
 ]
 
 d3d10_src = [

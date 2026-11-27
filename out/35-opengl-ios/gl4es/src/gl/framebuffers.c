@@ -1,5 +1,7 @@
-// Changed for MYIOSDECK (spec 35 C3.1, out/35-opengl-ios/CHANGES.md): glFramebufferTexture2D's
-// scrap texture is the state's. gl4es is MIT (its LICENSE).
+// Changed for MYIOSDECK (spec 35 C3.1 and item 15, out/35-opengl-ios/CHANGES.md):
+// glFramebufferTexture2D's scrap texture is the state's; a colour attachment that fails is logged;
+// an attachment is always made, even under a name gl4es remembers; a cube map face's attachment
+// doesn't bind the cube map to GL_TEXTURE_2D. gl4es is MIT (its LICENSE).
 #include "framebuffers.h"
 
 #include "../glx/hardext.h"
@@ -10,12 +12,57 @@
 #include "glstate.h"
 #include "init.h"
 #include "loader.h"
+#ifdef GL4ES_IOS
+#include "gl4es_ios_pixels.h"
+#endif
 
 //#define DEBUG
 #ifdef DEBUG
 #define DBG(a) a
 #else
 #define DBG(a)
+#endif
+
+#ifdef GL4ES_IOS
+// spec 35 item 15: a colour attachment GLES refuses (an error from the attach, or an incomplete
+// status) is logged once per internal format the application asked for, with what gl4es
+// created in GLES (gl4es_ios_pixels.h has the line)
+static void ios_log_colour_failure(GLenum internal, GLenum format, GLenum type, int renderbuffer, GLenum code) {
+    char line[200];
+    if (!gl4es_ios_first_time(GL4ES_IOS_ONCE_FBO | internal))
+        return;
+    gl4es_ios_fbo_line(line, sizeof(line), internal, format, type, renderbuffer, gl4es_ios_es_major, code);
+    printf("%s\n", line);
+}
+
+// the texture gl4es keeps under that name, NULL if none (gl4es_getTexture would create one)
+static gltexture_t *ios_find_texture(GLuint name) {
+    khash_t(tex) *list = glstate->texture.list;
+    khint_t k;
+    if (!list)
+        return NULL;
+    k = kh_get(tex, list, name);
+    return (k != kh_end(list)) ? kh_value(list, k) : NULL;
+}
+
+glrenderbuffer_t* find_renderbuffer(GLuint renderbuffer);   // below
+
+// glCheckFramebufferStatus said status: every colour attachment of fb, as gl4es recorded it
+static void ios_log_incomplete(glframebuffer_t *fb, GLenum status) {
+    if (!fb || !fb->id)
+        return;
+    for (int i = 0; i < MAX_DRAW_BUFFERS; ++i) {
+        if (!fb->color[i])
+            continue;
+        if (fb->t_color[i] == GL_RENDERBUFFER) {
+            glrenderbuffer_t *rend = find_renderbuffer(fb->color[i]);
+            ios_log_colour_failure(rend ? rend->format : 0, rend ? rend->actual : 0, 0, 1, status);
+        } else {
+            gltexture_t *tex = ios_find_texture(fb->color[i]);
+            ios_log_colour_failure(tex ? tex->wanted_internal : 0, tex ? tex->format : 0, tex ? tex->type : 0, 0, status);
+        }
+    }
+}
 #endif
 
 KHASH_MAP_IMPL_INT(renderbufferlist_t, glrenderbuffer_t *);
@@ -214,6 +261,11 @@ GLenum APIENTRY_GL4ES gl4es_glCheckFramebufferStatus(GLenum target) {
         if(target==GL_DRAW_FRAMEBUFFER)
             rtarget = GL_FRAMEBUFFER;
         result = gles_glCheckFramebufferStatus(rtarget);
+#ifdef GL4ES_IOS
+        // spec 35 item 15: GLES checked the framebuffer gl4es keeps bound, current_fb
+        if (result && result != GL_FRAMEBUFFER_COMPLETE)
+            ios_log_incomplete(glstate->fbo.current_fb, result);
+#endif
      }
     DBG(printf("glCheckFramebufferStatus(0x%04X)=0x%04X\n", target, result);)
     return result;
@@ -573,12 +625,20 @@ void APIENTRY_GL4ES gl4es_glFramebufferTexture2D(GLenum target, GLenum attachmen
         tex->binded_attachment = attachment;
     }
 
+#ifdef GL4ES_IOS
+    // spec 35 item 15: always attach. gl4es remembers attachments by name, and glDeleteTextures
+    // doesn't forget them; but GLES detaches a deleted texture from the bound framebuffer, and a
+    // texture created after it can get the same name, so "same name, same target" doesn't mean
+    // GLES has it attached. wined3d's format check deletes its attachment and creates another
+    // of the same type, which then stayed unattached (incomplete, missing attachment).
+#else
     if ((old_attachment_type == textarget) && (old_attachment == (tex?tex->texture:texture)))
     {
         // no need to reattach
         noerrorShim();
         return;
     }
+#endif
 
     SetAttachment(fb, attachment, textarget, tex?tex->texture:texture, level);
 
@@ -597,6 +657,15 @@ void APIENTRY_GL4ES gl4es_glFramebufferTexture2D(GLenum target, GLenum attachmen
                 tex->mipmap_auto = 0;
             }
         }
+#ifdef GL4ES_IOS
+        // spec 35 item 15: not for a cube map's face. realize_1texture binds the texture to
+        // GL_TEXTURE_2D, which a cube map can't be (GL_INVALID_OPERATION, once per cube map
+        // wined3d's format check attaches), sets the parameters on the face given
+        // (GL_INVALID_ENUM: a face is no parameter target), and then records them as applied.
+        // A cube map's parameters stay pending until gl4es realises it for drawing, with
+        // GL_TEXTURE_CUBE_MAP; the attachment doesn't depend on them.
+        if(!(textarget>=GL_TEXTURE_CUBE_MAP_POSITIVE_X && textarget<GL_TEXTURE_CUBE_MAP_POSITIVE_X+6))
+#endif
         realize_1texture(map_tex_target(textarget), -1, tex, NULL);
     }
 
@@ -811,6 +880,20 @@ void APIENTRY_GL4ES gl4es_glFramebufferTexture2D(GLenum target, GLenum attachmen
     GLenum realtarget = GL_TEXTURE_2D;
     if(textarget>=GL_TEXTURE_CUBE_MAP_POSITIVE_X && textarget<GL_TEXTURE_CUBE_MAP_POSITIVE_X+6)
         realtarget = textarget;
+#ifdef GL4ES_IOS
+    if(tex && attachment>=GL_COLOR_ATTACHMENT0 && attachment<(GL_COLOR_ATTACHMENT0+hardext.maxcolorattach)) {
+        // spec 35 item 15: GLES's error is read here to log it, and kept for glGetError (an
+        // error left by an earlier call first, as GLES would report it)
+        LOAD_GLES(glGetError);
+        GLenum before = gles_glGetError();
+        gles_glFramebufferTexture2D(ntarget, attachment, realtarget, texture, 0);
+        GLenum err = gles_glGetError();
+        if (before) errorShim(before);
+        else if (err) errorShim(err);
+        if (err)
+            ios_log_colour_failure(tex->wanted_internal, tex->format, tex->type, 0, err);
+    } else
+#endif
     gles_glFramebufferTexture2D(ntarget, attachment, realtarget, texture, 0);
     DBG(CheckGLError(1);)
     ReadDraw_Pop(target);
@@ -923,12 +1006,14 @@ void APIENTRY_GL4ES gl4es_glFramebufferRenderbuffer(GLenum target, GLenum attach
 
     fb->width  = rend->width;
     fb->height = rend->height;
+#ifndef GL4ES_IOS   // spec 35 item 15: always attach, as in glFramebufferTexture2D (renderbuffers alike)
     if ((GetAttachmentType(fb, attachment) == GL_RENDERBUFFER) && (GetAttachment(fb, attachment)==renderbuffer))
     {
         // no need to reattach
         noerrorShim();
         return;
     }
+#endif
 
     SetAttachment(fb, attachment, GL_RENDERBUFFER, renderbuffer, 0);
 
@@ -942,6 +1027,18 @@ void APIENTRY_GL4ES gl4es_glFramebufferRenderbuffer(GLenum target, GLenum attach
     GLenum ntarget = ReadDraw_Push(target);
 
     errorGL();
+#ifdef GL4ES_IOS
+    if(renderbuffer && attachment>=GL_COLOR_ATTACHMENT0 && attachment<(GL_COLOR_ATTACHMENT0+hardext.maxcolorattach)) {
+        // spec 35 item 15, as in glFramebufferTexture2D
+        GLenum before = gles_glGetError();
+        gles_glFramebufferRenderbuffer(ntarget, attachment, renderbuffertarget, renderbuffer);
+        GLenum err = gles_glGetError();
+        if (before) errorShim(before);
+        else if (err) errorShim(err);
+        if (err)
+            ios_log_colour_failure(rend->format, rend->actual, 0, 1, err);
+    } else
+#endif
     gles_glFramebufferRenderbuffer(ntarget, attachment, renderbuffertarget, renderbuffer);
     DBG(CheckGLError(1);)
     ReadDraw_Pop(target);

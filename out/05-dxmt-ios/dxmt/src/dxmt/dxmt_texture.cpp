@@ -3,6 +3,8 @@
 // Changed for MYIOSDECK (spec 06 round 2: placed memory counted as guest memory, its failure seen).
 // Changed for MYIOSDECK (spec 05 item 90: each allocation in the memory ledger; the depth rename
 // pool bounded).
+// Changed for MYIOSDECK (spec 05 item 91: on iOS a shared allocation releases its share-table key;
+// import gives the found description and refuses a missing key without asserting).
 #include "dxmt_texture.hpp"
 #include "dxmt_bc_emulation.hpp"
 #include "dxmt_mem_track.hpp"
@@ -91,6 +93,12 @@ TextureAllocation::TextureAllocation(
 TextureAllocation::~TextureAllocation(){
 #if defined(__i386__) || defined(DXMT_IOS_WOW_NATIVE) /* MYIOSDECK spec 33 B2 */
   guest_memory::Free(mappedMemory, placedLength, guest_memory::Use::Maps); // spec 06 round 2
+#endif
+#ifdef DXMT_IOS
+  // MYIOSDECK spec 05 item 91: on iOS machPort is the share table's key (0: not shared); this
+  // allocation was one of the entry's users, the creator's or an opener's
+  if (machPort)
+    WMTShareRelease(machPort);
 #endif
 };
 
@@ -266,11 +274,13 @@ Texture::releasedByProgram() {
 }
 
 Rc<TextureAllocation>
-Texture::import(mach_port_t mach_port) {
+Texture::import(mach_port_t mach_port, WMTTextureInfo *found) {
   Flags<TextureAllocationFlag> flags;
-  WMTTextureInfo info;
+  WMTTextureInfo info = {}; // MYIOSDECK spec 05 item 91: zeroed (on iOS a missing key leaves it so)
   info.mach_port = mach_port;
   auto texture = device_.newSharedTexture(info);
+  if (found) // MYIOSDECK spec 05 item 91: the shared texture's own description, for the opener's check
+    *found = info;
   // now allocation's info is populated
   // and we may check if it is consitent with texture's info (it should be)
   if (texture) {
@@ -289,7 +299,9 @@ Texture::import(mach_port_t mach_port) {
     );
     return allocation;
   }
+#ifndef DXMT_IOS // MYIOSDECK spec 05 item 91: on iOS a key no texture has is refused, not fatal
   assert(texture && "failed to import shared texture");
+#endif
   return nullptr;
 }
 

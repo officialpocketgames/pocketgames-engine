@@ -70,6 +70,16 @@ int w32ios_toplevel_due( int hook_defined, int own_thread, int is_desktop, int m
  * WS_POPUP changed). */
 int w32ios_style_changes_parenting( uint32_t old_style, uint32_t new_style );
 
+/* Item 15: a shown window that can take an absent foreground: top-level, visible, not a child,
+ * not a tool window, not owned, at least 320 x 200. */
+int w32ios_first_show_qualifies( int top_level, uint32_t style, uint32_t exstyle, int owned, int w, int h );
+/* ... it takes it when the fix is on (PG_FOREGROUND_FIX) and the foreground is 0 or belongs to
+ * no running process (foreground_none). */
+int w32ios_first_show_due( int enabled, int qualifies, int foreground_none );
+/* The reason a foreground change is logged with: the one its caller set, else "internal",
+ * "click" (mouse) or "activated" (a window shown or activated without SWP_NOACTIVATE). */
+const char *w32ios_foreground_reason_name( const char *set, int mouse, int internal );
+
 /* B1: the allocation ceiling of a thread. A WoW64 thread gets the guest ceiling OR 0x7fffffff;
  * every other thread 0. */
 uint64_t w32ios_ceiling( int wow64, uint64_t highest_user_address );

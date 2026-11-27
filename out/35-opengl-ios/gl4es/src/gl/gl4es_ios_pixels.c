@@ -1,14 +1,17 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 the MYIOSDECK author
 //
-// Spec 35 clarification 13: the pure parts of glGetTexImage's read-back (gl4es_ios_pixels.h).
-// New in this tree's gl4es (not upstream); written from the OpenGL 2.1 specification's pixel
-// formats and packed types.
+// Spec 35 clarification 13: the pure parts of glGetTexImage's read-back (gl4es_ios_pixels.h);
+// item 15: the line for a failed framebuffer colour attachment and the ES version of the GLES
+// context. New in this tree's gl4es (not upstream); written from the OpenGL 2.1 specification's
+// pixel formats and packed types, and the OpenGL ES 2.0/3.0 specifications' errors, framebuffer
+// statuses and version string.
 
 #include "gl4es_ios_pixels.h"
 
 #include <pthread.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 /* GL's values (gl.xml), named here so this file needs no GL header */
@@ -148,7 +151,7 @@ int gl4es_ios_from_rgba8( const unsigned char *rgba, int width, int height, unsi
 }
 
 static pthread_mutex_t seen_lock = PTHREAD_MUTEX_INITIALIZER;
-static unsigned int seen[64];
+static unsigned int seen[256];
 static int seen_count;
 
 int gl4es_ios_first_time( unsigned int key )
@@ -164,4 +167,67 @@ int gl4es_ios_first_time( unsigned int key )
     }
     pthread_mutex_unlock( &seen_lock );
     return first;
+}
+
+/* ---------------------------------------------------------------- item 15: FBO failures */
+
+const char *gl4es_ios_gl_reason( unsigned int code )
+{
+    switch (code)
+    {
+    case 0x0500: return "GL_INVALID_ENUM";
+    case 0x0501: return "GL_INVALID_VALUE";
+    case 0x0502: return "GL_INVALID_OPERATION";
+    case 0x0505: return "GL_OUT_OF_MEMORY";
+    case 0x0506: return "GL_INVALID_FRAMEBUFFER_OPERATION";
+    case 0x8219: return "GL_FRAMEBUFFER_UNDEFINED";
+    case 0x8CD6: return "GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT";
+    case 0x8CD7: return "GL_FRAMEBUFFER_INCOMPLETE_MISSING_ATTACHMENT";
+    case 0x8CD9: return "GL_FRAMEBUFFER_INCOMPLETE_DIMENSIONS";
+    case 0x8CDD: return "GL_FRAMEBUFFER_UNSUPPORTED";
+    case 0x8D56: return "GL_FRAMEBUFFER_INCOMPLETE_MULTISAMPLE";
+    default:     return NULL;
+    }
+}
+
+int gl4es_ios_fbo_line( char *buf, size_t size, unsigned int internal, unsigned int format,
+                        unsigned int type, int renderbuffer, int es_major, unsigned int code )
+{
+    const char *reason = gl4es_ios_gl_reason( code );
+    char hex[16];
+    char stored[48];
+
+    if (!reason)
+    {
+        snprintf( hex, sizeof(hex), "0x%04X", code );
+        reason = hex;
+    }
+    if (renderbuffer) snprintf( stored, sizeof(stored), "renderbuffer 0x%04X", format );
+    else snprintf( stored, sizeof(stored), "0x%04X/0x%04X", format, type );
+    return snprintf( buf, size, "[gl4es] FBO colour attach failed: internal 0x%04X stored as %s (ES %d): %s",
+                     internal, stored, es_major, reason );
+}
+
+int gl4es_ios_es_major_of( const char *version )
+{
+    static const char prefix[] = "OpenGL ES";
+    const char *p;
+
+    if (!version || strncmp( version, prefix, sizeof(prefix) - 1 )) return 2;
+    p = version + sizeof(prefix) - 1;
+    if (*p == '-') while (*p && *p != ' ') p++;   /* "OpenGL ES-CM 1.1", "OpenGL ES-CL 1.1" */
+    while (*p == ' ') p++;
+    if (*p < '1' || *p > '9' || p[1] != '.') return 2;
+    return *p - '0';
+}
+
+unsigned int gl4es_ios_gles_internal( int es_major, unsigned int internal, unsigned int format,
+                                      unsigned int type )
+{
+    enum { PX_R8 = 0x8229, PX_RG8 = 0x822B };
+
+    if (es_major < 3 || type != PX_UNSIGNED_BYTE || internal != format) return internal;
+    if (format == PX_RED) return PX_R8;
+    if (format == PX_RG) return PX_RG8;
+    return internal;
 }

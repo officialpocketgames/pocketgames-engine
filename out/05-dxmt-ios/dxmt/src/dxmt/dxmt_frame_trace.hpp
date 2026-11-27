@@ -138,15 +138,55 @@ TraceTextureType(WMTTextureType type) {
   }
 }
 
-/* "c0 RGBA16Float 1280x720 2d mip 0 slice 0 load" (clarification 44: with the texture's type) */
+/* MYIOSDECK spec 07 clarification 9: a clear's values. A number with up to 4 significant digits
+   ("0", "1", "0.502", "-0.25"). */
+inline std::string
+TraceClearNumber(double v) {
+  char text[32];
+  std::snprintf(text, sizeof(text), "%.4g", v);
+  return text;
+}
+
+/* "0,0.502,0,1" (r,g,b,a) */
+inline std::string
+TraceClearColor(double r, double g, double b, double a) {
+  return TraceClearNumber(r) + "," + TraceClearNumber(g) + "," + TraceClearNumber(b) + "," + TraceClearNumber(a);
+}
+
+/* "depth 1 stencil 0", "depth 1", "stencil 0" (planes: bit 1 depth, bit 2 stencil, as TracePlanes);
+   "-" for neither */
+inline std::string
+TraceClearDepthStencil(unsigned planes, double depth, unsigned stencil) {
+  std::string text;
+  if (planes & 1)
+    text = "depth " + TraceClearNumber(depth);
+  if (planes & 2)
+    text += (text.empty() ? "" : " ") + std::string("stencil ") + std::to_string(stencil);
+  return text.empty() ? std::string("-") : text;
+}
+
+/* A clear not merged into a render pass: "clear color t3 RGBA8Unorm 1280x720 slices 1 rect 0,0
+   1280x720 color 0,0,0,1", "clear depth-stencil t4 Depth32Float 1280x720 slices 1 rect 0,0
+   1280x720 depth 1" (spec 07 clarification 9: with the values) */
+inline std::string
+TraceClearPass(bool depth_stencil, unsigned texture_number, const std::string &texture, unsigned slices,
+               const std::string &rect, const std::string &values) {
+  return std::string(depth_stencil ? "clear depth-stencil t" : "clear color t") + std::to_string(texture_number) +
+         " " + texture + " slices " + std::to_string(slices) + " rect " + rect + " " +
+         (depth_stencil ? values : "color " + values);
+}
+
+/* "c0 RGBA16Float 1280x720 2d mip 0 slice 0 load" (clarification 44: with the texture's type).
+   Spec 07 clarification 9: `clear`, when given, follows a clear load: "... clear 0,0,0,1 store". */
 inline std::string
 TraceAttachment(const std::string &name, WMTPixelFormat format, uint64_t width, uint64_t height, unsigned level,
                 unsigned slice, WMTLoadAction load, const char *type = nullptr, int texture_number = -1,
-                const char *store = nullptr) {
+                const char *store = nullptr, const std::string &clear = std::string()) {
   // clarification 64: "c0 t7 RGB10A2Unorm 1920x1080 2d mip 0 slice 0 load store"
   return name + (texture_number >= 0 ? " t" + std::to_string(texture_number) : std::string()) + " " +
          TraceTexture(format, width, height) + (type ? std::string(" ") + type : std::string()) + " mip " +
          std::to_string(level) + " slice " + std::to_string(slice) + " " + TraceLoadAction(load) +
+         (load == WMTLoadActionClear && !clear.empty() ? " " + clear : std::string()) +
          (store ? std::string(" ") + store : std::string());
 }
 
@@ -340,6 +380,36 @@ TraceAddDistinct(std::vector<std::string> &list, const std::string &item) {
     if (existing == item)
       return;
   list.push_back(item);
+}
+
+/* Spec 05 item 93: a render pass merged into the next one (checkEncoderRelation) takes its trace
+   notes along, keyed by the pass. The draws: the former's, then the latter's, in order; the
+   states: the former's, then the latter's that differ. Nothing when the former had none. */
+template <typename Note>
+inline void
+TraceMergeDrawNotes(std::map<const void *, std::vector<Note>> &notes, const void *from, const void *into) {
+  auto found = notes.find(from);
+  if (found == notes.end())
+    return;
+  std::vector<Note> merged = std::move(found->second);
+  notes.erase(found);
+  auto &later = notes[into];
+  for (auto &note : later)
+    merged.push_back(std::move(note));
+  later = std::move(merged);
+}
+
+inline void
+TraceMergeStateNotes(std::map<const void *, std::vector<std::string>> &notes, const void *from, const void *into) {
+  auto found = notes.find(from);
+  if (found == notes.end())
+    return;
+  std::vector<std::string> merged = std::move(found->second);
+  notes.erase(found);
+  auto &later = notes[into];
+  for (auto &state : later)
+    TraceAddDistinct(merged, state);
+  later = std::move(merged);
 }
 
 inline std::string

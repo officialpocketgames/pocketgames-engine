@@ -45,6 +45,17 @@ constexpr size_t kReportTop = 16;
    stays far under Wine's debug buffer. */
 constexpr size_t kReportPairsPerLine = 4;
 
+/* Spec 07 clarification 9: the bool and int constant setters, listed on their own line in every
+   report whether they were called or not (a shader's static branches and loops follow them). */
+inline const unsigned kD9ConstantCalls[] = {
+    D9C_IDirect3DDevice9_SetVertexShaderConstantB,
+    D9C_IDirect3DDevice9_SetVertexShaderConstantI,
+    D9C_IDirect3DDevice9_SetPixelShaderConstantB,
+    D9C_IDirect3DDevice9_SetPixelShaderConstantI,
+};
+constexpr size_t kD9ConstantCallCount = sizeof(kD9ConstantCalls) / sizeof(kD9ConstantCalls[0]);
+static_assert(kD9ConstantCallCount <= kReportPairsPerLine, "the constants' line keeps clarification 4's limit");
+
 /* The report lines for one period of `elapsed_ns` (spec 07 clarifications 3
    and 4):
      d3d9 calls: <total>/s, <n>/s from other threads, <calls per Present> per Present (<Presents>/s)
@@ -55,11 +66,14 @@ constexpr size_t kReportPairsPerLine = 4;
    `counts` and `names` have `n` entries. Per-second figures are rounded to
    whole numbers, per-Present ones to one decimal place. A period without a
    Present says "no Present" in place of the summary's per-Present figures, and
-   the pairs carry no per-Present figure. */
+   the pairs carry no per-Present figure.
+   Clarification 9: with `listed` (`listed_count` ids), one more line last,
+     d3d9 calls, constants: <Interface>::<Method> <n>/s (<m>/Present), ...
+   with each of those pairs in the given order, called or not. */
 inline std::vector<std::string>
 FormatCallReport(
     const uint32_t *counts, const char *const *names, size_t n, uint64_t other_thread, uint64_t presents,
-    uint64_t elapsed_ns, size_t top = kReportTop
+    uint64_t elapsed_ns, size_t top = kReportTop, const unsigned *listed = nullptr, size_t listed_count = 0
 ) {
   const double seconds = double(elapsed_ns ? elapsed_ns : 1) / 1e9;
   auto per_second = [seconds](uint64_t count) {
@@ -96,16 +110,27 @@ FormatCallReport(
     summary += "no Present";
   lines.push_back(std::move(summary));
 
+  auto pair_text = [&](uint32_t id) {
+    std::string text = std::string(names[id]) + " " + per_second(counts[id]) + "/s";
+    if (presents)
+      text += " (" + per_present(counts[id]) + "/Present)";
+    return text;
+  };
   for (size_t first = 0; first < shown; first += kReportPairsPerLine) {
     const size_t last = std::min(first + kReportPairsPerLine, shown); // exclusive
     std::string line = "d3d9 calls, top " + std::to_string(first + 1) + "-" + std::to_string(last) + ":";
-    for (size_t k = first; k < last; k++) {
-      const uint32_t id = used[k];
-      line += k > first ? ", " : " ";
-      line += names[id];
-      line += " " + per_second(counts[id]) + "/s";
-      if (presents)
-        line += " (" + per_present(counts[id]) + "/Present)";
+    for (size_t k = first; k < last; k++)
+      line += (k > first ? ", " : " ") + pair_text(used[k]);
+    lines.push_back(std::move(line));
+  }
+  if (listed && listed_count) {
+    std::string line = "d3d9 calls, constants:";
+    bool first = true;
+    for (size_t k = 0; k < listed_count; k++) {
+      if (listed[k] >= n)
+        continue;
+      line += (first ? " " : ", ") + pair_text(listed[k]);
+      first = false;
     }
     lines.push_back(std::move(line));
   }
@@ -167,7 +192,11 @@ public:
     const uint64_t start = start_ns_.load(std::memory_order_relaxed);
     start_ns_.store(now_ns ? now_ns : 1, std::memory_order_relaxed);
     const uint64_t elapsed = now_ns > start ? now_ns - start : 0;
-    return FormatCallReport(counts, kD9CallNames, kD9CallCount, other_thread, presents, elapsed, top);
+    // clarification 9: and the constant setters' line
+    return FormatCallReport(
+        counts, kD9CallNames, kD9CallCount, other_thread, presents, elapsed, top, kD9ConstantCalls,
+        kD9ConstantCallCount
+    );
   }
 
   uint32_t

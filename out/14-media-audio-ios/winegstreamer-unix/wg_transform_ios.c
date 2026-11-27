@@ -42,6 +42,8 @@ struct video_state
     UINT32 flags;
     uint64_t frames, ns, period_start;   /* the 10 s statistics */
     GUID in_guid;                        /* the input subtype, for logs */
+    const char *out_name;                /* the output subtype's name, for logs */
+    int first_logged;                    /* round 6 item 7: the first converted frame */
 };
 
 #define WAVE_TAG_PCM 0x0001
@@ -248,6 +250,7 @@ static NTSTATUS create_video( struct wg_transform_create_params *params )
     memcpy( t->out_format, params->output_type.u.format, params->output_type.format_size );
     t->out_size = params->output_type.format_size;
     t->video->in_guid = in->guidFormat;
+    t->video->out_name = wgv_subtype_name( out->guidFormat.Data1 );
     pthread_mutex_init( &t->lock, NULL );
     if (!(params->transform = wgh_alloc( WG_HANDLE_TRANSFORM, t )))
     {
@@ -394,6 +397,7 @@ static NTSTATUS set_video_output( struct transform *t, const struct wg_media_typ
     {
         wgv_conv_free( &t->video->conv );
         t->video->conv = conv;
+        t->video->out_name = wgv_subtype_name( out->guidFormat.Data1 );
         free( t->out_format );
         t->out_format = copy;
         t->out_size = mt->format_size;
@@ -509,6 +513,13 @@ static NTSTATUS read_video( struct video_state *v, struct wg_sample *sample, BYT
     }
     end = now_ns();
     v->has_held = 0;
+    if (!v->first_logged)
+    {
+        v->first_logged = 1;
+        iom_log( VLOG_PREFIX, "first video frame converted %s %ux%u -> %s in %.2f ms",
+                 wgv_subtype_name( v->in_guid.Data1 ), v->conv.width, v->conv.height, v->out_name,
+                 (end - start) / 1e6 );
+    }
 
     sample->size = l.size;
     sample->pts = v->pts;

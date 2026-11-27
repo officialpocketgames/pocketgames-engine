@@ -4,9 +4,11 @@
 // and LICENSE.LGPL at the top of this tree. Imported for MYIOSDECK (spec 07).
 // Changed for MYIOSDECK (spec 07): see out/05-dxmt-ios/CHANGES.md, section "spec 07".
 // Changed for MYIOSDECK (spec 33): the ios_wow_native build; see out/05-dxmt-ios/CHANGES.md, section "spec 33".
+// Changed for MYIOSDECK (spec 07 clarification 8): the adapter identity, NVIDIA by default.
 #include "d3d9_interface.hpp"
 
 #include "Metal.hpp"
+#include "d3d9_adapter_identity.hpp" // MYIOSDECK spec 07 clarification 8
 #include "d3d9_device.hpp"
 #include "d3d9_format.hpp"
 #include "dxmt_format.hpp"
@@ -204,22 +206,38 @@ MTLD3D9Interface::GetAdapterIdentifier(UINT Adapter, DWORD Flags, D3DADAPTER_IDE
 
   std::memset(pIdentifier, 0, sizeof(*pIdentifier));
   std::snprintf(pIdentifier->Driver, MAX_DEVICE_IDENTIFIER_STRING, "%s", "DXMT (Metal)");
-  device.name().getCString(pIdentifier->Description, MAX_DEVICE_IDENTIFIER_STRING, WMTUTF8StringEncoding);
   std::snprintf(pIdentifier->DeviceName, sizeof(pIdentifier->DeviceName), "%s", "\\\\.\\DISPLAY1");
 
-  // 0x106B is Apple's PCI vendor ID, the same value dxgi_adapter.cpp
-  // hands back to D3D11 callers. DeviceId / SubSysId / Revision aren't
-  // meaningful for Metal but keep DeviceId non-zero; some titles
-  // treat 0 as "no adapter" and fall through to a different code path.
-  pIdentifier->VendorId = 0x106B;
-  pIdentifier->DeviceId = 1;
+  /* MYIOSDECK spec 07 clarification 8: the identity (d3d9_adapter_identity.hpp), chosen once per
+     process from PG_D3D9_ADAPTER, with its line. By default an NVIDIA GeForce 8600 GT, which an
+     engine that picks its shaders by vendor and device knows; `metal` gives back the Apple
+     identity (0x106B, the same value dxgi_adapter.cpp hands back to D3D11 callers, DeviceId 1,
+     the device's name, the newest-possible driver version as DXVK reports, d3d9_adapter.cpp).
+     Only these fields follow from it. */
+  static const d9adapter::Identity identity = [&] {
+    char metal_name[MAX_DEVICE_IDENTIFIER_STRING] = {};
+    device.name().getCString(metal_name, MAX_DEVICE_IDENTIFIER_STRING, WMTUTF8StringEncoding);
+    const std::string value = env::getEnvVar("PG_D3D9_ADAPTER");
+    bool malformed = false;
+    d9adapter::Identity chosen = d9adapter::Choose(value.c_str(), metal_name, &malformed);
+    if (malformed)
+      Logger::warn(d9adapter::MalformedLine(value.c_str()));
+    Logger::info(d9adapter::Line(chosen));
+    return chosen;
+  }();
+  if (identity.source == d9adapter::Source::Metal)
+    device.name().getCString(pIdentifier->Description, MAX_DEVICE_IDENTIFIER_STRING, WMTUTF8StringEncoding);
+  else
+    std::snprintf(pIdentifier->Description, MAX_DEVICE_IDENTIFIER_STRING, "%s", identity.description.c_str());
+  // DeviceId stays non-zero for every source but an override's; some titles treat 0 as "no adapter"
+  pIdentifier->VendorId = identity.vendor;
+  pIdentifier->DeviceId = identity.device;
   // SubSysId / Revision intentionally 0; wined3d does the same.
 
-  // Apps gate driver-bug workarounds on this version; a low value
-  // re-enables ancient workaround paths. DXVK reports INT64_MAX
-  // ("newest possible driver", d3d9_adapter.cpp) after games
-  // misbehaved on small values; mirror it.
-  pIdentifier->DriverVersion.QuadPart = INT64_MAX;
+  // Apps gate driver-bug workarounds on this version; a low value re-enables ancient workaround
+  // paths. The NVIDIA default reports that card's driver; `metal` and an override report INT64_MAX
+  // ("newest possible driver", as DXVK does) as before.
+  pIdentifier->DriverVersion.QuadPart = d9adapter::DriverVersionQuad(identity);
 
   pIdentifier->DeviceIdentifier = kD3DDeviceD3DUID;
   pIdentifier->WHQLLevel = (Flags & D3DENUM_WHQL_LEVEL) ? 1 : 0;

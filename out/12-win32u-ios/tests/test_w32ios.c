@@ -517,6 +517,75 @@ static void test_toplevel_report( void )
     CHECK( !w32ios_style_changes_parenting( 0, 0 ) );
 }
 
+/* item 15: the desktop's foreground as w32ios_window_shown changes it; the messages are those
+ * upstream's set_active_window sends for an activation */
+struct fg_state { int window, pid, alive; int msgs[4], n_msgs; };
+
+static void fg_show( struct fg_state *st, int enabled, int window, int pid, uint32_t style, uint32_t exstyle,
+                     int owned, int w, int h )
+{
+    static const int activation[4] = { 0x0086 /* WM_NCACTIVATE */, 0x001c /* WM_ACTIVATEAPP */,
+                                       0x0006 /* WM_ACTIVATE */, 0x0007 /* WM_SETFOCUS */ };
+    int none = !st->window || !st->alive;
+
+    if (!w32ios_first_show_due( enabled, w32ios_first_show_qualifies( 1, style, exstyle, owned, w, h ), none )) return;
+    st->window = window;
+    st->pid = pid;
+    st->alive = 1;
+    memcpy( st->msgs, activation, sizeof(activation) );
+    st->n_msgs = 4;
+}
+
+static void test_first_show( void )
+{
+    const uint32_t shown = 0x10CF0000 /* WS_VISIBLE | WS_OVERLAPPEDWINDOW */, popup = 0x90000000;
+    struct fg_state st = { 0 };
+
+    /* the rule alone */
+    CHECK( w32ios_first_show_qualifies( 1, shown, 0, 0, 1280, 720 ) );
+    CHECK( w32ios_first_show_qualifies( 1, popup, 0, 0, 320, 200 ) );           /* a full-screen popup */
+    CHECK( !w32ios_first_show_qualifies( 1, shown, 0, 0, 319, 720 ) );          /* small */
+    CHECK( !w32ios_first_show_qualifies( 1, shown, 0, 0, 640, 199 ) );
+    CHECK( !w32ios_first_show_qualifies( 1, shown, 0x80, 0, 1280, 720 ) );      /* tool window */
+    CHECK( !w32ios_first_show_qualifies( 1, shown, 0, 1, 1280, 720 ) );         /* owned */
+    CHECK( !w32ios_first_show_qualifies( 1, shown & ~0x10000000u, 0, 0, 1280, 720 ) );   /* hidden */
+    CHECK( !w32ios_first_show_qualifies( 1, 0x50000000, 0, 0, 1280, 720 ) );    /* a child */
+    CHECK( !w32ios_first_show_qualifies( 0, shown, 0, 0, 1280, 720 ) );         /* not top-level */
+    CHECK( !w32ios_first_show_due( 0, 1, 1 ) );                                  /* PG_FOREGROUND_FIX=0 */
+    CHECK( !w32ios_first_show_due( 1, 1, 0 ) );                                  /* a running foreground */
+    CHECK( w32ios_first_show_due( 1, 1, 1 ) );
+
+    /* small, tool and owned windows don't take the foreground */
+    fg_show( &st, 1, 1, 0x20, shown, 0, 0, 200, 100 );
+    fg_show( &st, 1, 2, 0x20, shown, 0x80, 0, 1280, 720 );
+    fg_show( &st, 1, 3, 0x20, shown, 0, 1, 1280, 720 );
+    CHECK( !st.window && !st.n_msgs );
+    /* with PG_FOREGROUND_FIX=0 the game's window doesn't either */
+    fg_show( &st, 0, 4, 0x20, shown, 0, 0, 1280, 720 );
+    CHECK( !st.window );
+    /* the game's shown window becomes foreground, with the activation messages */
+    fg_show( &st, 1, 5, 0x20, shown, 0, 0, 1280, 720 );
+    CHECK_EQ( st.window, 5 );
+    CHECK_EQ( st.n_msgs, 4 );
+    CHECK( st.msgs[0] == 0x86 && st.msgs[1] == 0x1c && st.msgs[2] == 0x06 && st.msgs[3] == 0x07 );
+    /* a second program's window doesn't take it from the running one */
+    st.n_msgs = 0;
+    fg_show( &st, 1, 6, 0x24, shown, 0, 0, 1280, 720 );
+    CHECK_EQ( st.window, 5 );
+    CHECK_EQ( st.n_msgs, 0 );
+    /* once that program has ended, it does */
+    st.alive = 0;
+    fg_show( &st, 1, 6, 0x24, shown, 0, 0, 1280, 720 );
+    CHECK( st.window == 6 && st.pid == 0x24 );
+
+    /* the logged reasons */
+    CHECK( !strcmp( w32ios_foreground_reason_name( "first shown", 0, 1 ), "first shown" ) );
+    CHECK( !strcmp( w32ios_foreground_reason_name( "controller", 0, 0 ), "controller" ) );
+    CHECK( !strcmp( w32ios_foreground_reason_name( NULL, 1, 0 ), "click" ) );
+    CHECK( !strcmp( w32ios_foreground_reason_name( NULL, 0, 1 ), "internal" ) );
+    CHECK( !strcmp( w32ios_foreground_reason_name( NULL, 0, 0 ), "activated" ) );
+}
+
 static void test_pp_table( void )
 {
     static struct w32ios_pp_table table;
@@ -888,6 +957,7 @@ int main( void )
     test_pp_table();
     test_init_user_mark();
     test_toplevel_report();
+    test_first_show();
     test_client_procs();
     test_builtin_action();
     test_ceiling();

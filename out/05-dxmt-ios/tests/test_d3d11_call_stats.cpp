@@ -250,6 +250,42 @@ TestCap() {
   CHECK(Contains(short_report[0], "6.0 per Present (1 Presents/s)"));
 }
 
+/* Spec 05 item 92: a draw skipped for want of a vertex shader is counted, and logged once; the
+   skipped draws by reason in the work line. */
+void
+TestSkippedDraws() {
+  DrawSkips skips;
+  CHECK(skips.note(DrawSkip::NoVertexShader)); // the first: the line
+  CHECK(!skips.note(DrawSkip::NoVertexShader));
+  CHECK(!skips.note(DrawSkip::PipelineFailed)); // other reasons never write it
+  CHECK(!skips.note(DrawSkip::InvalidState));
+  CHECK(!skips.note(DrawSkip::NoVertexShader));
+  CHECK_EQ(skips.count(DrawSkip::NoVertexShader), 3u);
+  CHECK_EQ(skips.count(DrawSkip::PipelineFailed), 1u);
+  CHECK_EQ(skips.count(DrawSkip::InvalidState), 1u);
+  CHECK(std::string(kNoVertexShaderLine) == "[d3d11] Draw: no vertex shader bound, draw skipped");
+  CHECK(&ProcessDrawSkips() == &ProcessDrawSkips());
+
+  // the work line: unchanged with none skipped, the reasons per Present with some
+  std::vector<uint32_t> counts(kD11CallCount, 0);
+  D11Work work;
+  work.draws = 40;
+  D11Period p;
+  p.counts = counts.data();
+  p.presents = 10;
+  p.elapsed_ns = kSecond;
+  p.work = &work;
+  CHECK(FormatD11Report(p)[1] == "d3d11 work per Present: 4.0 draws (0.0 indirect), 0.0 dispatches, maps 0.0 discard "
+                                 "/ 0.0 no-overwrite / 0.0 other, 0.0 updates, 0.0 copies, 0.0 clears, 0.0 command "
+                                 "lists");
+  work.draws_skipped[unsigned(DrawSkip::NoVertexShader)] = 25;
+  work.draws_skipped[unsigned(DrawSkip::InvalidState)] = 5;
+  CHECK(FormatD11Report(p)[1] == "d3d11 work per Present: 4.0 draws (0.0 indirect), 0.0 dispatches, maps 0.0 discard "
+                                 "/ 0.0 no-overwrite / 0.0 other, 0.0 updates, 0.0 copies, 0.0 clears, 0.0 command "
+                                 "lists; 3.0 draws skipped (2.5 no vertex shader, 0.0 pipeline failed, 0.5 invalid "
+                                 "state)");
+}
+
 } // namespace
 
 int
@@ -260,5 +296,6 @@ main() {
   TestCutsAndTime();
   TestQueryAndChildLines();
   TestCap();
+  TestSkippedDraws();
   return TestSummary("test_d3d11_call_stats");
 }

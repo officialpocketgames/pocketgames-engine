@@ -5,7 +5,8 @@
 // loader looks up for opengl32.dll. Every entry of both points to a wrapper generated from the
 // enum make_opengl wrote (gen-entries.sh -> opengl_ios_entries.h), so B1's answers, E1's counts
 // and the autorelease pool cover every entry by construction. The wrappers call the upstream
-// entries of the generated unix_thunks.c.
+// entries of the generated unix_thunks.c. Clarification 14: the table of the entries whose
+// parameter block starts with TEB *teb, from the same list, checked against unixlib.h.
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -51,6 +52,23 @@ const char *const opengl_ios_entry_names[] =
 
 const unsigned int opengl_ios_entry_count = funcs_count;
 const unsigned int opengl_ios_swap_index = unix_wglSwapBuffers;
+
+/* clarification 14: the entries whose parameter block starts with TEB *teb (the 64-bit entries
+ * give such a block that arrives with a NULL teb the thread's) */
+#define OPENGL_IOS_ENTRY( name )
+#define OPENGL_IOS_TEB_FIRST( name, params ) [name] = 1,
+const unsigned char opengl_ios_teb_first[funcs_count] =
+{
+#include "opengl_ios_entries.h"
+};
+#undef OPENGL_IOS_TEB_FIRST
+/* and each of them really does: a TEB * at offset 0 */
+#define OPENGL_IOS_TEB_FIRST( name, params ) \
+    C_ASSERT( offsetof( struct params##_params, teb ) == 0 && \
+              _Generic( ((struct params##_params *)0)->teb, TEB *: 1, default: 0 ) );
+#include "opengl_ios_entries.h"
+#undef OPENGL_IOS_TEB_FIRST
+#undef OPENGL_IOS_ENTRY
 
 /* every enum entry has its line (no NULL holes), and the tables have the enum's size */
 C_ASSERT( OPENGL_IOS_ENTRY_COUNT == funcs_count );

@@ -1,5 +1,6 @@
-// Changed for MYIOSDECK (spec 35 clarification 13, out/35-opengl-ios/CHANGES.md): glTexImage2D's
-// fallback upload doesn't apply a pixel buffer's offset twice. gl4es is MIT (its LICENSE).
+// Changed for MYIOSDECK (spec 35 clarification 13 and item 15, out/35-opengl-ios/CHANGES.md):
+// glTexImage2D's fallback upload doesn't apply a pixel buffer's offset twice; GL_RG8 is kept as
+// RG like GL_R8 as RED. gl4es is MIT (its LICENSE).
 #include "texture.h"
 
 #include "../glx/hardext.h"
@@ -63,6 +64,10 @@ static int inline maxlevel(int w, int h) {
     return mlevel;
 }
 
+#if defined(GL4ES_IOS) && !defined(GL_RG8)
+#define GL_RG8 0x822B   // spec 35 item 15 (gl.xml's value)
+#endif
+
 static int is_fake_compressed_rgb(GLenum internalformat)
 {
     if(internalformat==GL_COMPRESSED_RGB) return 1;
@@ -97,6 +102,9 @@ void internal2format_type(GLenum internalformat, GLenum *format, GLenum *type)
             }
             break;
         case GL_RG:
+#ifdef GL4ES_IOS
+        case GL_RG8:    // spec 35 item 15: as GL_R8 is with GL_RED (upstream: an unknown format, RGBA)
+#endif
             if(!hardext.rgtex) {
                 *format = GL_RGB;
                 *type = GL_UNSIGNED_BYTE;
@@ -569,6 +577,9 @@ GLenum swizzle_internalformat(GLenum *internalformat, GLenum format, GLenum type
                 sret = GL_RED;
             break;
         case GL_RG:
+#ifdef GL4ES_IOS
+        case GL_RG8:    // spec 35 item 15, as above
+#endif
             if(!hardext.rgtex) {
                 ret = GL_RGB; sret = GL_RGB;
             } else

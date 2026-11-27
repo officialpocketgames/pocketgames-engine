@@ -11,8 +11,9 @@
  * pipeline's maxTotalThreadsPerThreadgroup (23: its guard). Spec 05 clarification 25: the
  * compute memory barrier record. Spec 05 item 89: what a program is handed is counted per
  * pseudo-process and released at its end (ios_support.m). Spec 05 item 90: a texture's
- * allocatedSize written back, the control call's ops 8-10. Upstream: DXMT a3a6e8f, MIT (see
- * LICENSE).
+ * allocatedSize written back, the control call's ops 8-10. Spec 05 item 91: on iOS shared
+ * textures and fences go through the app's share table (dxmt_share_table.h), and no mach-port
+ * selector is compiled. Upstream: DXMT a3a6e8f, MIT (see LICENSE).
  */
 #include <stdatomic.h>
 #include <dlfcn.h>
@@ -72,6 +73,60 @@ execute_on_main(dispatch_block_t block) {
 #define DXMT_PROC_CREATED(handle) dxmt_ios_proc_created((uint64_t)(handle))
 #else
 #define DXMT_PROC_CREATED(handle) ((void)0)
+#endif
+
+/* MYIOSDECK spec 05 item 91: the app's share table. Every Windows program runs in this one
+   process on one MTLDevice, so a shared texture or fence is the Metal object itself, kept here
+   under a key (dxmt_share_table.h). One lock around each table call. */
+#if defined(DXMT_IOS)
+#include <pthread.h>
+#include "dxmt_share_table.h"
+
+static void
+share_retain(uint64_t object) {
+  [(id)(uintptr_t)object retain];
+}
+
+static void
+share_release(uint64_t object) {
+  [(id)(uintptr_t)object release];
+}
+
+static pthread_mutex_t g_share_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct dxmt_share_table g_share_table = {
+    .capacity = DXMT_SHARE_TABLE_CAPACITY,
+    .retain = share_retain,
+    .release = share_release,
+};
+
+/* the key of `object`, now shared (the table retains it), or 0 when the table is full */
+static uint32_t
+share_add(enum dxmt_share_kind kind, id object) {
+  pthread_mutex_lock(&g_share_lock);
+  uint32_t key = dxmt_share_add(&g_share_table, kind, (uint64_t)(uintptr_t)object);
+  pthread_mutex_unlock(&g_share_lock);
+  return key;
+}
+
+/* the object of `key`, +1 for the caller (one more user), or nil */
+static id
+share_open(enum dxmt_share_kind kind, uint32_t key, enum dxmt_share_open_result *result) {
+  uint64_t object = 0;
+  pthread_mutex_lock(&g_share_lock);
+  enum dxmt_share_open_result found = dxmt_share_open(&g_share_table, kind, key, &object);
+  pthread_mutex_unlock(&g_share_lock);
+  if (result)
+    *result = found;
+  return (id)(uintptr_t)object;
+}
+
+static bool
+share_release_key(uint32_t key) {
+  pthread_mutex_lock(&g_share_lock);
+  bool last = dxmt_share_release(&g_share_table, key);
+  pthread_mutex_unlock(&g_share_lock);
+  return last;
+}
 #endif
 
 static NTSTATUS
@@ -3097,6 +3152,46 @@ _DispatchData_alloc_init(void *obj) {
   return STATUS_SUCCESS;
 }
 
+#if defined(DXMT_IOS)
+
+/* MYIOSDECK spec 05 item 91 (replaces B7's mach-port path): inside the app's one process a shared
+   texture is the MTLTexture itself, kept in the share table. WMTTextureInfo::mach_port carries
+   the table key both ways; no mach port is made or read, and no private selector is compiled.
+   - key 0 (a create): a plain texture (no IOSurface is needed in one process), registered; the
+     key comes back, or 0 when the table is full (the Windows half then keeps it unshared);
+   - key != 0 (an open): the registered texture, +1 for the caller and one more user, with its
+     description written back; null when no texture has the key. The key stays in the info, so
+     the opener's allocation releases its use of the entry when it goes. */
+static NTSTATUS
+_MTLDevice_newSharedTexture(void *obj) {
+  struct unixcall_mtldevice_newtexture *params = obj;
+  id<MTLDevice> device = (id<MTLDevice>)params->device;
+  struct WMTTextureInfo *info = params->info.ptr;
+
+  if (info->mach_port) {
+    id<MTLTexture> ret = share_open(DXMT_SHARE_TEXTURE, info->mach_port, NULL);
+    if (ret) {
+      extract_texture_descriptor(ret, info);
+      info->gpu_resource_id = [ret gpuResourceID]._impl;
+    }
+    params->ret = (obj_handle_t)ret;
+  } else {
+    MTLTextureDescriptor *desc = [[MTLTextureDescriptor alloc] init];
+    fill_texture_descriptor(desc, info);
+    id<MTLTexture> ret = [device newTextureWithDescriptor:desc];
+    params->ret = (obj_handle_t)ret;
+    info->gpu_resource_id = [ret gpuResourceID]._impl;
+    info->allocated_kb = texture_allocated_kb(ret); /* spec 05 item 90 */
+    info->mach_port = ret ? share_add(DXMT_SHARE_TEXTURE, ret) : 0;
+    [desc release];
+  }
+
+  DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
+  return STATUS_SUCCESS;
+}
+
+#else
+
 @interface MTLSharedTextureHandle ()
 
 - (MTLSharedTextureHandle *)initWithMachPort:(mach_port_t)port;
@@ -3120,24 +3215,6 @@ _MTLDevice_newSharedTexture(void *obj) {
   } else {
     MTLTextureDescriptor *desc = [[MTLTextureDescriptor alloc] init];
     fill_texture_descriptor(desc, info);
-#if defined(DXMT_IOS)
-    /* B7: iOS gives back no mach port for a shareable texture. Report port 0
-       ("not shareable") and keep the texture usable; if the device can't make
-       a shareable texture at all, make a plain one. */
-    id<MTLTexture> ret = [device newSharedTextureWithDescriptor:desc];
-    info->mach_port = 0;
-    if (ret) {
-      MTLSharedTextureHandle *handle = [ret newSharedTextureHandle];
-      if (handle && [handle respondsToSelector:@selector(createMachPort)])
-        info->mach_port = [handle createMachPort];
-      [handle release];
-    } else {
-      ret = [device newTextureWithDescriptor:desc];
-    }
-    params->ret = (obj_handle_t)ret;
-    info->gpu_resource_id = [ret gpuResourceID]._impl;
-    info->allocated_kb = texture_allocated_kb(ret); /* spec 05 item 90 */
-#else
     id<MTLTexture> ret = [device newSharedTextureWithDescriptor:desc];
     MTLSharedTextureHandle *handle = [ret newSharedTextureHandle];
     params->ret = (obj_handle_t)ret;
@@ -3145,13 +3222,14 @@ _MTLDevice_newSharedTexture(void *obj) {
     info->allocated_kb = texture_allocated_kb(ret); /* spec 05 item 90 */
     info->mach_port = [handle createMachPort]; // implicitly add ref to underlying IOSurface
     [handle release];
-#endif
     [desc release];
   }
 
   DXMT_PROC_CREATED(params->ret); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
+
+#endif /* DXMT_IOS */
 
 #if defined(DXMT_IOS)
 
@@ -3202,6 +3280,27 @@ _WMTBootstrapLookUp(void *obj) {
 
 #endif /* DXMT_IOS */
 
+#if defined(DXMT_IOS)
+
+/* MYIOSDECK spec 05 item 91: no mach port for a shared event on iOS (eventPort and
+   newSharedEventWithMachPort: aren't public); a shared fence goes through the share table
+   (the control call's ops 11-13). These two answer "none" for a caller that still asks. */
+static NTSTATUS
+_MTLSharedEvent_createMachPort(void *obj) {
+  struct unixcall_mtlsharedevent_createmachport *params = obj;
+  params->ret_mach_port = 0;
+  return STATUS_SUCCESS;
+}
+
+static NTSTATUS
+_MTLDevice_newSharedEventWithMachPort(void *obj) {
+  struct unixcall_mtldevice_newsharedeventwithmachport *params = obj;
+  params->ret_event = 0;
+  return STATUS_SUCCESS;
+}
+
+#else
+
 @protocol MTLDeviceSPI <MTLDevice>
 
 - (id<MTLSharedEvent>)newSharedEventWithMachPort:(mach_port_t)machPort;
@@ -3240,6 +3339,8 @@ _MTLDevice_newSharedEventWithMachPort(void *obj) {
   DXMT_PROC_CREATED(params->ret_event); /* spec 05 item 89 */
   return STATUS_SUCCESS;
 }
+
+#endif /* DXMT_IOS */
 
 static NTSTATUS
 _MTLDevice_registryID(void *obj) {
@@ -3306,6 +3407,27 @@ _DXMTIOS_control(void *obj) {
     return STATUS_SUCCESS;
 #else
     return STATUS_NOT_IMPLEMENTED;
+#endif
+#if defined(DXMT_IOS)
+  /* spec 05 item 91: a shared fence's event in the share table (macOS keeps its mach ports) */
+  case DXMT_IOS_CONTROL_SHARE_EVENT: {
+    id event = (id)(uintptr_t)params->ptr;
+    params->ret = event ? share_add(DXMT_SHARE_EVENT, event) : 0;
+    return STATUS_SUCCESS;
+  }
+  case DXMT_IOS_CONTROL_OPEN_SHARED_EVENT: {
+    enum dxmt_share_open_result result = DXMT_SHARE_MISSING;
+    params->ret = (uint64_t)(uintptr_t)share_open(DXMT_SHARE_EVENT, (uint32_t)params->ptr, &result);
+    if (result == DXMT_SHARE_WRONG_KIND)
+      return (NTSTATUS)0xC0000024; /* STATUS_OBJECT_TYPE_MISMATCH */
+    if (!params->ret)
+      return (NTSTATUS)0xC0000225; /* STATUS_NOT_FOUND */
+    DXMT_PROC_CREATED(params->ret); /* spec 05 item 89: the opener's +1 */
+    return STATUS_SUCCESS;
+  }
+  case DXMT_IOS_CONTROL_SHARE_RELEASE:
+    params->ret = share_release_key((uint32_t)params->ptr) ? 1 : 0;
+    return STATUS_SUCCESS;
 #endif
   default:
     return STATUS_NOT_IMPLEMENTED;

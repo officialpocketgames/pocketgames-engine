@@ -5,6 +5,7 @@
 // read-write UAV format line; clarifications 21, 24, 27 and 28: the frame trace and dump).
 // Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 // Also changed for MYIOSDECK (spec 05 round 17: the serialize level and fence, the pass-cut notes and discard marks).
+// Also changed for MYIOSDECK (spec 05 item 93: a dumped pass's reads, the presented textures, read-backs past the cap).
 
 // Changed for MYIOSDECK (spec 05 item 90: Metal objects in the memory ledger).
 // Changed for MYIOSDECK (spec 06 round 3: the encoder heaps in guest memory, checked).
@@ -378,6 +379,11 @@ class ArgumentEncodingContext {
   void
   trackTexture(TextureAllocation *allocation, DXMT_ENCODER_RESOURCE_ACESS flags) {
     retainAllocation(allocation);
+    /* MYIOSDECK spec 05 item 93: in a dumped frame, what a render pass only reads (read-only
+       textures too), for the dump of a pass that writes the swap-chain buffer */
+    if (unlikely(dump_active_) && !dump_encoding_ && (flags & DXMT_ENCODER_RESOURCE_ACESS_READ) &&
+        !(flags & DXMT_ENCODER_RESOURCE_ACESS_WRITE) && encoder_current && encoder_current->type == EncoderType::Render)
+      dump_pass_reads_.push_back(allocation);
     if (allocation->flags().test(TextureAllocationFlag::GpuReadonly))
       return;
     if (flags & DXMT_ENCODER_RESOURCE_ACESS_READ)
@@ -974,7 +980,9 @@ public:
     uint32_t byte_offset;
     uint32_t byte_length;
   };
-  void traceSrvReadback(std::vector<TraceSrvBuffer> &&buffers);
+  /* MYIOSDECK spec 05 item 93: `target` is the draw's first render target, so a draw into the
+     swap-chain buffer isn't held to the 300-a-frame cap */
+  void traceSrvReadback(std::vector<TraceSrvBuffer> &&buffers, Texture *target = nullptr);
   /* spec 05 clarification 58, in the same blit pass: up to 4096 bytes of each vertex-shader
      constant buffer from its binding's offset, with the CPU's hash of them when dynamic */
   struct TraceCbBuffer {
@@ -985,7 +993,7 @@ public:
     bool cpu_hash_valid;
     uint64_t cpu_hash;
   };
-  void traceCbReadback(std::vector<TraceCbBuffer> &&buffers);
+  void traceCbReadback(std::vector<TraceCbBuffer> &&buffers, Texture *target = nullptr); // item 93: as above
   /* spec 05 clarification 50: a draw the context turned down after its read-backs: it takes its
      serial (its read-backs then go at the end of trace.txt), and an indirect read-back's
      number isn't handed to the next draw */
@@ -1232,6 +1240,23 @@ private:
   void dumpHandleWrite(std::vector<DumpWrite> &writes, obj_handle_t texture, unsigned mip, unsigned slice);
   void dumpAfterPass(EncoderData *ended);
   void dumpPresent(Rc<Texture> &texture);
+  /* MYIOSDECK spec 05 item 93: the textures presented lately (the swap chains' buffers), the
+     reads of the dumped frame's open render pass, and the copy of those a pass that writes a
+     swap-chain buffer read */
+  const Texture *presented_textures_[4] = {};
+  unsigned presented_next_ = 0;
+  std::vector<TextureAllocation *> dump_pass_reads_;
+  bool
+  presentedTexture(const Texture *texture) const {
+    if (!texture)
+      return false;
+    for (auto *presented : presented_textures_)
+      if (presented == texture)
+        return true;
+    return false;
+  }
+  void notePresented(const Texture *texture);
+  void dumpPassReads(const std::string &writer, std::vector<TextureAllocation *> &reads);
   FrameTraceLog frame_trace_;
   bool trace_active_ = false;
   uint32_t trace_cs_hash_ = 0;

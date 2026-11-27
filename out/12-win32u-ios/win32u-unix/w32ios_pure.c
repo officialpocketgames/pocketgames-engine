@@ -131,6 +131,26 @@ int w32ios_style_changes_parenting( uint32_t old_style, uint32_t new_style )
     return ((old_style ^ new_style) & (0x40000000u /* WS_CHILD */ | 0x80000000u /* WS_POPUP */)) != 0;
 }
 
+int w32ios_first_show_qualifies( int top_level, uint32_t style, uint32_t exstyle, int owned, int w, int h )
+{
+    if (!top_level || owned) return 0;
+    if (!(style & 0x10000000u /* WS_VISIBLE */) || (style & 0x40000000u /* WS_CHILD */)) return 0;
+    if (exstyle & 0x00000080u /* WS_EX_TOOLWINDOW */) return 0;
+    return w >= 320 && h >= 200;
+}
+
+int w32ios_first_show_due( int enabled, int qualifies, int foreground_none )
+{
+    return enabled && qualifies && foreground_none;
+}
+
+const char *w32ios_foreground_reason_name( const char *set, int mouse, int internal )
+{
+    if (set) return set;
+    if (internal) return "internal";
+    return mouse ? "click" : "activated";
+}
+
 uint64_t w32ios_ceiling( int wow64, uint64_t highest_user_address )
 {
     if (!wow64) return 0;

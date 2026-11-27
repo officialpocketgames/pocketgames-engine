@@ -1203,6 +1203,36 @@ WMTQueryMemoryWarnings(uint64_t *count) {
   return true;
 }
 
+/* MYIOSDECK spec 05 item 91: the share table (iOS; elsewhere these answer 0 / false) */
+WINEMETAL_API uint32_t
+WMTShareEvent(obj_handle_t event) {
+  uint64_t ret = 0;
+  if (!event || !WMTControl(DXMT_IOS_CONTROL_SHARE_EVENT, event, &ret))
+    return 0;
+  return (uint32_t)ret;
+}
+
+WINEMETAL_API obj_handle_t
+WMTOpenSharedEvent(uint32_t key, bool *wrong_kind) {
+  struct unixcall_dxmt_ios_control params;
+  params.op = DXMT_IOS_CONTROL_OPEN_SHARED_EVENT;
+  params.padding = 0;
+  params.ptr = key;
+  params.ret = 0;
+  NTSTATUS status = WINE_UNIX_CALL(unix_dxmt_ios_control, &params);
+  if (wrong_kind)
+    *wrong_kind = status == (NTSTATUS)0xC0000024; /* STATUS_OBJECT_TYPE_MISMATCH */
+  return status ? 0 : params.ret;
+}
+
+WINEMETAL_API bool
+WMTShareRelease(uint32_t key) {
+  uint64_t ret = 0;
+  if (!key || !WMTControl(DXMT_IOS_CONTROL_SHARE_RELEASE, key, &ret))
+    return false;
+  return ret == 1;
+}
+
 WINEMETAL_API bool
 MTLCommandBuffer_getGPUTimes(obj_handle_t cmdbuf, double *start, double *end) {
   struct dxmt_ios_cmdbuf_gpu_times times;

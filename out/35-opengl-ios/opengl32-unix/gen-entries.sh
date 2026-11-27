@@ -11,25 +11,45 @@
 # is covered by construction. The header is the one make_opengl wrote (both halves of opengl32
 # come from one generator run, Part A3). Fails when the enum isn't found or doesn't end at
 # funcs_count.
+#
+# Clarification 14: then, between #ifdef OPENGL_IOS_TEB_FIRST and #endif, one line per entry
+# whose parameter block (struct <name>_params) starts with TEB *teb,
+#   OPENGL_IOS_TEB_FIRST( unix_<name>, <name> )
+# and OPENGL_IOS_TEB_FIRST_COUNT. opengl_ios_tables.c makes the table the 64-bit entries use to
+# give a block that arrives with a NULL teb the thread's, and checks every line at compile time
+# (the member is a TEB * at offset 0). Fails when no entry has one.
 
 set -eu
 [ $# -eq 2 ] || { echo "usage: $0 <unixlib.h> <out header>" >&2; exit 2; }
 
 tmp="$2.tmp"
 tr -d '\r' < "$1" | awk '
+    # struct <name>_params, then "{", then its first member
+    /^struct [A-Za-z0-9_]+_params$/ { st = $2; sub(/_params$/, "", st); state = 1; next }
+    state == 1 && /^\{/ { state = 2; next }
+    state == 2 { if ($0 ~ /^ *TEB \*teb;/) teb[st] = 1; state = 0 }
     /^enum unix_funcs$/ { in_enum = 1; next }
     in_enum && /^\{/ { next }
     in_enum && /^ *funcs_count/ { done = 1; in_enum = 0; next }
     in_enum && /^ *unix_[A-Za-z0-9_]+,/ {
         name = $1; sub(/,$/, "", name)
         printf "OPENGL_IOS_ENTRY( %s )\n", name
-        n++
+        entry[n++] = name
         next
     }
     in_enum && /^\};/ { in_enum = 0 }
     END {
         if (!done || !n) { print "gen-entries.sh: enum unix_funcs ... funcs_count not found" > "/dev/stderr"; exit 1 }
         printf "#define OPENGL_IOS_ENTRY_COUNT %d\n", n
+        print "#ifdef OPENGL_IOS_TEB_FIRST"
+        for (i = 0; i < n; i++)
+        {
+            short_name = entry[i]; sub(/^unix_/, "", short_name)
+            if (short_name in teb) { printf "OPENGL_IOS_TEB_FIRST( %s, %s )\n", entry[i], short_name; t++ }
+        }
+        print "#endif"
+        if (!t) { print "gen-entries.sh: no parameter block starts with TEB *teb" > "/dev/stderr"; exit 1 }
+        printf "#define OPENGL_IOS_TEB_FIRST_COUNT %d\n", t
     }
 ' > "$tmp"
 {

@@ -10,6 +10,7 @@
 #pragma once
 
 #include "d3d11_call_list.h"
+#include "d3d11_draw_skip.hpp" // spec 05 item 92
 
 #include <algorithm>
 #include <atomic>
@@ -133,6 +134,8 @@ struct D11Work {
   /* the children's IUnknown calls made while a counted context or device call ran on the same
      thread, by D11O_Child_QueryInterface, _AddRef, _Release order */
   uint32_t child_inside[3] = {};
+  /* spec 05 item 92: draws counted but skipped before the encoder, by DrawSkip */
+  uint32_t draws_skipped[unsigned(DrawSkip::Count)] = {};
 };
 
 /* Item 83: a child call's index in D11Work::child_inside */
@@ -256,11 +259,22 @@ FormatD11Report(const D11Period &p, size_t top = kD11ReportTop) {
   }
 
   auto pp = [&](uint64_t n) { return per_present(double(n)); };
-  lines.push_back("d3d11 work per Present: " + pp(w.draws) + " draws (" + pp(w.draws_indirect) + " indirect), " +
-                  pp(w.dispatches) + " dispatches, maps " + pp(w.map_discard) + " discard / " +
-                  pp(w.map_no_overwrite) + " no-overwrite / " + pp(w.map_other) + " other, " + pp(w.updates) +
-                  " updates, " + pp(w.copies) + " copies, " + pp(w.clears) + " clears, " + pp(w.command_lists) +
-                  " command lists");
+  std::string work = "d3d11 work per Present: " + pp(w.draws) + " draws (" + pp(w.draws_indirect) + " indirect), " +
+                     pp(w.dispatches) + " dispatches, maps " + pp(w.map_discard) + " discard / " +
+                     pp(w.map_no_overwrite) + " no-overwrite / " + pp(w.map_other) + " other, " + pp(w.updates) +
+                     " updates, " + pp(w.copies) + " copies, " + pp(w.clears) + " clears, " + pp(w.command_lists) +
+                     " command lists";
+  /* spec 05 item 92: the draws that never reached an encoder, when there were any */
+  uint64_t skipped = 0;
+  for (uint32_t n : w.draws_skipped)
+    skipped += n;
+  if (skipped) {
+    work += "; " + pp(skipped) + " draws skipped (";
+    for (unsigned r = 0; r < unsigned(DrawSkip::Count); r++)
+      work += std::string(r ? ", " : "") + pp(w.draws_skipped[r]) + " " + kDrawSkipNames[r];
+    work += ")";
+  }
+  lines.push_back(std::move(work));
 
   auto kb = [&](uint64_t bytes) { return per_present(double(bytes) / 1024.0); };
   const unsigned slice = unsigned(DiscardOutcome::NextSlice), pooled = unsigned(DiscardOutcome::Pooled),

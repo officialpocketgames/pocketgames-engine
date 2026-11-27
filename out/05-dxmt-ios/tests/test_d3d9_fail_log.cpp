@@ -249,6 +249,50 @@ TestRepeats() {
                       "(last: level 4999)");
 }
 
+/* Clarification 8: the shader version token, and the shader creates' own log. */
+void
+TestShaderLog() {
+  CHECK(ShaderVersionToken(true, 0xFFFE0200u) == "vs_2_0");
+  CHECK(ShaderVersionToken(true, 0xFFFF0300u) == "ps_3_0");
+  CHECK(ShaderVersionToken(true, 0xFFFE0101u) == "vs_1_1");
+  CHECK(ShaderVersionToken(true, 0xFFFF0104u) == "ps_1_4");
+  CHECK(ShaderVersionToken(true, 0x43425844u) == "0x43425844"); // DXBC, not a D3D9 shader
+  CHECK(ShaderVersionToken(false, 0) == "none");
+
+  constexpr uint64_t s = 1'000'000'000ull;
+  const char *ps = "IDirect3DDevice9::CreatePixelShader";
+  ShaderFailLog log;
+  // every failure in full, alike or not, up to 10
+  std::vector<std::string> lines;
+  for (unsigned i = 0; i < kShaderFailLines; i++) {
+    lines.push_back(log.take(ps, kInvalidCall, false, i % 2 ? "ps_3_0" : "ps_2_0", 1 * s));
+    CHECK(!lines.back().empty());
+  }
+  CHECK(lines[0] == "[d3d9] IDirect3DDevice9::CreatePixelShader failed: D3DERR_INVALIDCALL; version ps_2_0");
+  CHECK(lines[1] == "[d3d9] IDirect3DDevice9::CreatePixelShader failed: D3DERR_INVALIDCALL; version ps_3_0");
+  CHECK(!log.pending());
+  // then counted, the last kept; the line 10 s after the first counted one
+  CHECK(log.take(ps, kInvalidCall, false, "ps_3_0", 2 * s).empty());
+  CHECK(log.take(ps, kOutOfVideoMemory, false, "ps_2_0", 3 * s).empty());
+  CHECK(log.take(ps, 0, true, "ps_3_0", 4 * s).empty()); // a null out-pointer
+  CHECK(log.pending());
+  CHECK(log.repeatLine(11 * s).empty());
+  CHECK(log.repeatLine(12 * s) ==
+        "[d3d9] IDirect3DDevice9::CreatePixelShader failed 3 more times (last: S_OK with a null out-pointer, version "
+        "ps_3_0)");
+  CHECK(!log.pending());
+  CHECK(log.repeatLine(30 * s).empty());
+  // the count starts again with the next failure
+  CHECK(log.take(ps, kInvalidCall, false, "ps_3_0", 40 * s).empty());
+  CHECK(log.repeatLine(49 * s).empty());
+  CHECK(log.repeatLine(50 * s) ==
+        "[d3d9] IDirect3DDevice9::CreatePixelShader failed 1 more times (last: D3DERR_INVALIDCALL, version ps_3_0)");
+  // the vertex shaders' log is its own
+  ShaderFailLog vs;
+  CHECK(vs.take("IDirect3DDevice9::CreateVertexShader", kInvalidCall, false, "vs_3_0", 1 * s) ==
+        "[d3d9] IDirect3DDevice9::CreateVertexShader failed: D3DERR_INVALIDCALL; version vs_3_0");
+}
+
 } // namespace
 
 int
@@ -258,5 +302,6 @@ main() {
   TestLimits();
   TestTextureDetail();
   TestRepeats();
+  TestShaderLog();
   return TestSummary("test_d3d9_fail_log");
 }

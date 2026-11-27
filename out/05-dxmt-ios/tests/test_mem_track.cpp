@@ -104,6 +104,12 @@ NSObject_release(obj_handle_t obj) {
   }
 }
 
+/* spec 05 item 91: a shared allocation gives its share key back (none are made here) */
+bool
+WMTShareRelease(uint32_t) {
+  return false;
+}
+
 void
 MTLResidencySet_addAllocations(obj_handle_t, const obj_handle_t *, uint64_t) {}
 void

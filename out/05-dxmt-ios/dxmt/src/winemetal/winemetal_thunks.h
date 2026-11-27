@@ -410,6 +410,17 @@ enum dxmt_ios_control_op {
                                               STATUS_NOT_IMPLEMENTED where the SDK lacks it */
   DXMT_IOS_CONTROL_MEMORY_WARNINGS = 10,   /* ret = memory warnings so far (the first call starts
                                               counting) */
+  /* spec 05 item 91: the share table (winemetal/unix/dxmt_share_table.h), iOS only; no pointers.
+     A shared texture is registered and opened through MTLDevice_newSharedTexture, whose
+     WMTTextureInfo::mach_port carries the key on iOS. */
+  DXMT_IOS_CONTROL_SHARE_EVENT = 11,       /* ptr = an MTLSharedEvent; ret = its key (the table
+                                              retains it; the caller is its first user), 0 if the
+                                              table is full */
+  DXMT_IOS_CONTROL_OPEN_SHARED_EVENT = 12, /* ptr = a key; ret = the event, +1 for the caller (one
+                                              more user); 0 and STATUS_NOT_FOUND if no entry has the
+                                              key, STATUS_OBJECT_TYPE_MISMATCH if it isn't an event */
+  DXMT_IOS_CONTROL_SHARE_RELEASE = 13,     /* ptr = a key; a user is gone; ret = 1 if it was the
+                                              last (the entry is freed) */
 };
 
 struct dxmt_ios_cmdbuf_gpu_times {

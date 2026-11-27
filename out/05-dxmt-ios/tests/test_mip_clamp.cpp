@@ -296,10 +296,114 @@ TestBoxFilterEdgesAndChannels() {
   CHECK_EQ(out2[1], 3);  // (1+2+3+4+2)/4 = 3
 }
 
+/* ---- Spec 05 item 94: the clamp by DXMT's own texture total -------------------- */
+
+void
+TestTotalBias() {
+  // the totals that trigger each level
+  CHECK_EQ(TotalBias(0), 0u);
+  CHECK_EQ(TotalBias(1536 * MB), 0u); // over 1.5 GB, not at it
+  CHECK_EQ(TotalBias(1536 * MB + 1), 1u);
+  CHECK_EQ(TotalBias(3072 * MB), 1u);
+  CHECK_EQ(TotalBias(3072 * MB + 1), 2u);
+  CHECK_EQ(TotalBias(4007 * MB), 2u);
+  CHECK(TotalClampLine(1600 * MB, 1) == "[d3d11] mip clamp: texture total 1600.0 MB; new sampled textures drop 1 top level");
+  CHECK(TotalClampLine(3100 * MB, 2) == "[d3d11] mip clamp: texture total 3100.0 MB; new sampled textures drop 2 top levels");
+}
+
+void
+TestTotalRuleKinds() {
+  TotalRuleTexture sampled;
+  sampled.type_ok = true;
+  sampled.mips = 10;
+  sampled.usage = 0;    // DEFAULT
+  sampled.bind = 0x8;   // SHADER_RESOURCE
+  CHECK(TotalRuleCandidate(sampled));
+  TotalRuleTexture immutable = sampled;
+  immutable.usage = 1;
+  CHECK(TotalRuleCandidate(immutable));
+  // never: render targets, depth, UAVs (any other bind flag), dynamic, staging, CPU access,
+  // shared, one mip, another type
+  TotalRuleTexture t = sampled;
+  t.bind = 0x8 | 0x20; // + RENDER_TARGET
+  CHECK(!TotalRuleCandidate(t));
+  t.bind = 0x8 | 0x40; // + DEPTH_STENCIL
+  CHECK(!TotalRuleCandidate(t));
+  t.bind = 0x8 | 0x80; // + UNORDERED_ACCESS
+  CHECK(!TotalRuleCandidate(t));
+  t.bind = 0; // nothing bound
+  CHECK(!TotalRuleCandidate(t));
+  t = sampled;
+  t.usage = 2; // DYNAMIC
+  CHECK(!TotalRuleCandidate(t));
+  t.usage = 3; // STAGING
+  CHECK(!TotalRuleCandidate(t));
+  t = sampled;
+  t.cpu = 0x10000; // CPU_ACCESS_WRITE
+  CHECK(!TotalRuleCandidate(t));
+  t = sampled;
+  t.shared = true;
+  CHECK(!TotalRuleCandidate(t));
+  t = sampled;
+  t.mips = 1;
+  CHECK(!TotalRuleCandidate(t));
+  t = sampled;
+  t.type_ok = false; // 1D, 3D, multisample
+  CHECK(!TotalRuleCandidate(t));
+}
+
+void
+TestChooseBiasAny() {
+  // any format: at least one level left, no 4x4 rule
+  CHECK_EQ(ChooseBiasAny(10, 1), 1u);
+  CHECK_EQ(ChooseBiasAny(10, 2), 2u);
+  CHECK_EQ(ChooseBiasAny(2, 2), 1u);
+  CHECK_EQ(ChooseBiasAny(1, 2), 0u);
+  CHECK_EQ(ChooseBiasAny(0, 1), 0u);
+  // where BC's rule would refuse (a 6x6 top), any format still drops it
+  CHECK_EQ(ChooseBias(12, 12, 2, 1), 0u);
+  CHECK_EQ(ChooseBiasAny(2, 1), 1u);
+  // the bytes saved: dropping 1 level saves about 3 times what is left, 2 levels 15 times
+  CHECK_EQ(ClampSavedBytes(4 * MB, 1), 12 * MB);
+  CHECK_EQ(ClampSavedBytes(1 * MB, 2), 15 * MB);
+  CHECK_EQ(ClampSavedBytes(4 * MB, 0), 0u);
+}
+
+void
+TestAutoClampSwitch() {
+  CHECK(AutoClampSwitch(true, nullptr));   // default on, both bitnesses
+  CHECK(AutoClampSwitch(true, ""));
+  CHECK(!AutoClampSwitch(true, "0"));      // DXMT_MIP_CLAMP_AUTO=0
+  CHECK(AutoClampSwitch(true, "1"));
+  CHECK(AutoClampSwitch(true, "00"));      // only "0" turns it off
+  CHECK(!AutoClampSwitch(false, nullptr)); // d3d11.mipClampAuto = false
+  CHECK(!AutoClampSwitch(false, "1"));     // the variable can't turn it on past the config
+}
+
+/* A created texture keeps its clamp: the bias comes from the total when it is made; a later
+   total, higher or lower, gives new textures their own and never reaches made ones. */
+void
+TestClampKeptAtCreation() {
+  uint64_t total = 1600 * MB;
+  const uint32_t made_early = ChooseBiasAny(10, TotalBias(total)); // made at 1.6 GB
+  total = 3200 * MB;
+  const uint32_t made_later = ChooseBiasAny(10, TotalBias(total));
+  total = 1000 * MB;                                                 // textures released
+  const uint32_t made_last = ChooseBiasAny(10, TotalBias(total));
+  CHECK_EQ(made_early, 1u);
+  CHECK_EQ(made_later, 2u);
+  CHECK_EQ(made_last, 0u);
+}
+
 } // namespace
 
 int
 main() {
+  TestTotalBias();
+  TestTotalRuleKinds();
+  TestChooseBiasAny();
+  TestAutoClampSwitch();
+  TestClampKeptAtCreation();
   TestChooseBias();
   TestIsAutoCandidate();
   TestShouldRequery();

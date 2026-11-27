@@ -8,7 +8,10 @@
 // staging failures seen; the staging bound).
 // Changed for MYIOSDECK (spec 05 item 90: the memory ledger's scopes and ring names).
 // Changed for MYIOSDECK (spec 06 round 3: a command block that can't be had is never written through).
+// Changed for MYIOSDECK (spec 06 round 4: a backlog of executed command lists commits; lists in chunks
+// and commits counted).
 #include "config/config.hpp"
+#include "dxmt_cmdlist_backlog.hpp" // MYIOSDECK spec 06 round 4
 #include "d3d11_fence.hpp"
 #include "d3d11_private.h"
 #include "d3d11_query.hpp"
@@ -106,6 +109,23 @@ std::pair<BufferAllocation *, uint32_t>
 ImmediateContextBase::GetDynamicBufferAllocation(Rc<DynamicBuffer> &dynamic) {
   return {dynamic->immediateName().ptr(), dynamic->immediateSuballocation()};
 }
+
+/* MYIOSDECK spec 06 round 4 (item 4): an executed command list as its chunk holds it, counted as
+   waiting in a chunk until the chunk lets it go (after the GPU has finished it); then the list
+   goes back to its pool, with its blocks, once the program has released it too */
+struct ChunkHeldCommandList {
+  Com<MTLD3D11CommandList, false> list;
+
+  explicit ChunkHeldCommandList(Com<MTLD3D11CommandList, false> &&held) : list(std::move(held)) {
+    guest_memory::ProcessLedger().countList(guest_memory::ListCount::Waiting, 1);
+  }
+  ChunkHeldCommandList(ChunkHeldCommandList &&move) : list(std::move(move.list)) {}
+  ChunkHeldCommandList(const ChunkHeldCommandList &) = delete;
+  ~ChunkHeldCommandList() {
+    if (list.ptr())
+      guest_memory::ProcessLedger().countList(guest_memory::ListCount::Waiting, -1);
+  }
+};
 
 class MTLD3D11ImmediateContext : public ImmediateContextBase {
 public:
@@ -722,6 +742,7 @@ public:
 
     Com<MTLD3D11CommandList, false> cmdlist = static_cast<MTLD3D11CommandList *>(pCommandList);
     auto seq_id = ctx_state.cmd_queue.CurrentSeqId();
+    const uint64_t list_bytes = cmdlist->commandBytes(); // MYIOSDECK spec 06 round 4: for the backlog
 
     promote_flush = cmdlist->promote_flush;
 
@@ -764,10 +785,11 @@ public:
       used_dynamic.texture->updateImmediateName(seq_id, Rc(used_dynamic.allocation), true);
     }
 
-    EmitOP([cmdlist = std::move(cmdlist), query_list = std::move(query_list)](ArgumentEncodingContext &enc) {
+    EmitOP([held = ChunkHeldCommandList(std::move(cmdlist)),
+            query_list = std::move(query_list)](ArgumentEncodingContext &enc) {
       // Finished command list should clean up the encoding context
       enc.pushDeferredVisibilityQuerys(query_list.data());
-      cmdlist->Execute(enc);
+      held.list->Execute(enc);
       enc.popDeferredVisibilityQuerys();
     });
 
@@ -775,6 +797,17 @@ public:
       RestoreEncodingContextState();
     else
       ResetD3D11ContextState();
+
+    /* MYIOSDECK spec 06 round 4 (item 4): a list's blocks come back only when it is recycled, after
+       the chunk that executed it was committed and finished. Past 8 lists or 16 MB since the last
+       commit, commit now (as a flush does), so lists recycle without a Present. */
+    if (backlog_.executed(list_bytes)) {
+      std::string line = backlog_.takeFirstLine();
+      if (!line.empty())
+        Logger::info(line);
+      promote_flush = true;
+      InvalidateCurrentPass(); // commits: Commit() starts the next count
+    }
   }
 
   HRESULT
@@ -805,6 +838,8 @@ public:
   void
   Commit() override {
     promote_flush = false;
+    backlog_.committed(); // MYIOSDECK spec 06 round 4
+    guest_memory::ProcessLedger().countList(guest_memory::ListCount::Commits, 1);
     NotePassEndedByCommit(); // spec 05 clarification 63
     D3D11_ASSERT(cmdbuf_state == CommandBufferState::Idle);
     discard_tracker_.onCommit(ctx_state.cmd_queue.CurrentSeqId()); // MYIOSDECK: dynamic-buffer discard
@@ -863,6 +898,8 @@ private:
       uint64_t(std::max<int32_t>(Config::getInstance().getOption<int32_t>("d3d11.dynamicCommitMB", 32), 0)) << 20,
       uint64_t(std::max<int32_t>(Config::getInstance().getOption<int32_t>("d3d11.dynamicInflightMB", 96), 0)) << 20
   };
+  /* MYIOSDECK spec 06 round 4 (item 4): the lists and bytes executed since the last commit */
+  CommandListBacklog backlog_;
 };
 
 std::unique_ptr<MTLD3D11DeviceContextBase>

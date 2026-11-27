@@ -8,7 +8,7 @@
 #   run-host-tests.sh [<configured Wine 11.4 build dir>]
 #
 # Groups:
-#   pure      always: test_audio_pure, test_wg_pure, test_vconv, test_openal, check-openal-exports.sh
+#   pure      always: test_audio_pure, test_wg_pure, test_vconv, test_vp_output, test_openal, check-openal-exports.sh
 #   ffmpeg    test_wma_params (against FFmpeg's own decoder): needs a host FFmpeg, which is
 #             built once from refs/ffmpeg-7.1.1 by build-host-ffmpeg.sh into $FFMPEG_HOST
 #             (default ~/.cache/myiosdeck/ffmpeg-7.1.1-host)
@@ -90,6 +90,10 @@ compile test_wg_pure "$T/test_wg_pure.c" $INC && \
 # spec 14 round 5 item 6: raw video conversion (the plan, with the plain C operations)
 compile wg_vconv_ops_c "$T/wg_vconv_ops_c.c" $INC
 compile test_vconv "$T/test_vconv.c" $INC && run_test test_vconv "" test_vconv wg_vconv wg_vconv_ops_c wg_parser_pure
+# spec 14 round 6 item 7: the video processor's output samples (PE side, plain C part)
+compile vp_output "$H/pe/dlls/winegstreamer/vp_output.c" -I"$H/pe/dlls/winegstreamer"
+compile test_vp_output "$T/test_vp_output.c" $INC -I"$H/pe/dlls/winegstreamer" && \
+  run_test test_vp_output "" test_vp_output vp_output
 # spec 14 round 4: openal32's unix side against a fake OpenAL Soft, and its export list
 OAINC="-I$H/openal-unix -I$H/pe/dlls/openal32"
 compile openal_unix "$H/openal-unix/openal_unix.c" $INC $OAINC

@@ -6,6 +6,8 @@
 // what ReportSchedule says is due: the status line every 10 s and at once on a memory warning
 // or a newly passed whole GB of footprint; the 10 largest records and the 5 busiest creation
 // sites the first time DXMT's own total passes 1, 2 and 3 GB.
+// Spec 05 item 94: with them, the textures by format and by size; and in PE builds a creating
+// call's site is the first return address outside DXMT's own module (a stack walk, WalkToCaller).
 #include "dxmt_mem_report.hpp"
 
 #include "dxmt_allocation.hpp"
@@ -83,6 +85,38 @@ SiteName(uint64_t site) {
   return text;
 }
 
+#if defined(_WIN32) && !defined(DXMT_NATIVE)
+/* Spec 05 item 94: a creating call forwarded inside DXMT gave a return address inside DXMT's own
+   module (every texture of one game was put on one d3d11.dll address). When the address is in
+   this module, walk the stack to the first return address outside it. */
+uint64_t
+WalkToCaller(uint64_t return_address) {
+  static const std::pair<uint64_t, uint64_t> range = [] {
+    std::pair<uint64_t, uint64_t> r{0, 0};
+    HMODULE self = nullptr;
+    if (GetModuleHandleExA(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            reinterpret_cast<LPCSTR>(&WalkToCaller), &self
+        ) &&
+        self) {
+      auto base = reinterpret_cast<const uint8_t *>(self);
+      auto dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
+      auto nt = reinterpret_cast<const IMAGE_NT_HEADERS *>(base + dos->e_lfanew);
+      r = {uint64_t(uintptr_t(base)), uint64_t(uintptr_t(base)) + nt->OptionalHeader.SizeOfImage};
+    }
+    return r;
+  }();
+  if (!range.first || (return_address && (return_address < range.first || return_address >= range.second)))
+    return return_address; // outside already (or the module unknown): as given
+  void *frames[32];
+  USHORT count = RtlCaptureStackBackTrace(1, 32, frames, nullptr);
+  uint64_t values[32];
+  for (USHORT i = 0; i < count; i++)
+    values[i] = uint64_t(uintptr_t(frames[i]));
+  return FirstFrameOutside(values, count, range.first, range.second, return_address);
+}
+#endif
+
 void
 SleepTick() {
 #if defined(_WIN32) && !defined(DXMT_NATIVE)
@@ -123,6 +157,7 @@ Tick(ReportSchedule &schedule) {
     for (unsigned i = 0; i < largest.size(); i++)
       Logger::info(LargestLine(i + 1, largest[i], FormatName));
     Logger::info(SitesLine(ledger.topSites(5, now), SiteName));
+    Logger::info(GroupsLine(ledger.textureGroups(8), FormatName)); // spec 05 item 94
   }
 }
 
@@ -138,6 +173,9 @@ StartReport() {
     Logger::info("[dxmt-mem] lines off (DXMT_MEM_LOG=0); the ledger still counts");
     return;
   }
+#if defined(_WIN32) && !defined(DXMT_NATIVE)
+  SetSiteWalk(WalkToCaller); // spec 05 item 94
+#endif
   dxmt::thread report([] {
     env::setThreadName("dxmt-mem-report");
     ReportSchedule schedule;

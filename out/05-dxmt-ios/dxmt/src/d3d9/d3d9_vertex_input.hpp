@@ -368,14 +368,41 @@ DeclarationLine(unsigned number, const D3DVERTEXELEMENT9 *elements, size_t count
   return line;
 }
 
+/* Spec 07 clarification 9: the vertex shader input register a declaration element feeds: the
+   first input dcl with the element's usage and usage index (the caller matches POSITIONT as
+   POSITION), -1 for none. Usage and index are compared as numbers, whatever they are: an element
+   at TEXCOORD6 feeds dcl_texcoord6 as COLOR0 feeds dcl_color0, and its format comes from its type
+   alone (to_mtl_attr_format). `dcls` is DxsoShaderMetadata::dcls (a template so this header
+   needn't include the decoder). */
+template <typename BoundDcls>
+inline int
+VsInputRegister(const BoundDcls &dcls, uint32_t usage, uint32_t usage_index) {
+  for (const auto &d : dcls) {
+    using RegisterType = decltype(d.bound_to.type);
+    if (d.bound_to.type == RegisterType::Input && static_cast<uint32_t>(d.dcl.usage) == usage &&
+        d.dcl.usage_index == usage_index)
+      return static_cast<int>(d.bound_to.num);
+  }
+  return -1;
+}
+
 /* Each distinct declaration once, at most kMaxLogged: the number to log it under, or 0 when it
-   was logged already or the limit is reached. Compares the elements up to the terminator. */
+   was logged already or the limit is reached. Compares the elements up to the terminator.
+   Spec 07 clarification 9: number() gives any declaration its number, the same for every
+   declaration with the same elements (the frame trace's draw lines print it); the first
+   kMaxLogged distinct ones are the logged ones, and numbering stops at kMaxNumbered (0 after). */
 class DeclarationLog {
 public:
   static constexpr unsigned kMaxLogged = 64;
+  static constexpr unsigned kMaxNumbered = 4096;
 
-  unsigned
-  take(const D3DVERTEXELEMENT9 *elements, size_t count) {
+  struct Numbered {
+    unsigned number; // 0: past kMaxNumbered
+    bool log;        // first seen, and within kMaxLogged: log it now
+  };
+
+  Numbered
+  number(const D3DVERTEXELEMENT9 *elements, size_t count) {
     std::vector<uint8_t> key;
     for (size_t i = 0; i < count && elements[i].Stream != 0xFF; i++) {
       const D3DVERTEXELEMENT9 &e = elements[i];
@@ -384,10 +411,19 @@ public:
       key.insert(key.end(), bytes, bytes + 8);
     }
     std::lock_guard<std::mutex> lock(mutex_);
-    if (std::find(seen_.begin(), seen_.end(), key) != seen_.end() || seen_.size() == kMaxLogged)
-      return 0;
+    auto found = std::find(seen_.begin(), seen_.end(), key);
+    if (found != seen_.end())
+      return {unsigned(found - seen_.begin()) + 1, false};
+    if (seen_.size() == kMaxNumbered)
+      return {0, false};
     seen_.push_back(std::move(key));
-    return unsigned(seen_.size());
+    return {unsigned(seen_.size()), seen_.size() <= kMaxLogged};
+  }
+
+  unsigned
+  take(const D3DVERTEXELEMENT9 *elements, size_t count) {
+    Numbered numbered = number(elements, count);
+    return numbered.log ? numbered.number : 0;
   }
 
 private:

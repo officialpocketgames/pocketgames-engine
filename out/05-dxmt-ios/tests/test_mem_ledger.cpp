@@ -521,6 +521,103 @@ TestScopes() {
   CHECK_EQ(Global().totals(NowMs(), FakeWaiting).waiting_count, 0u);
 }
 
+/* Spec 05 item 94: the texture total without the lock, the clamps in the status line, the
+   groups by format and size, and the site walk past DXMT's own module. */
+uint64_t g_walk_seen = 0;
+uint64_t
+FakeWalk(uint64_t return_address) {
+  g_walk_seen = return_address;
+  return 0x7000;
+}
+
+void
+TestItem94() {
+  Ledger ledger;
+  // only textures (rt/ds and sampled) count toward the texture total
+  Info rt = TextureOf(Kind::RtDs, 100 * MB);
+  rt.format = 70;
+  Info small = TextureOf(Kind::Texture, 2 * MB);
+  small.format = 70;
+  Info big = TextureOf(Kind::Texture, 300 * MB);
+  big.format = 130;
+  big.width = 4096;
+  big.height = 2048;
+  Info mid = TextureOf(Kind::Texture, 40 * MB);
+  mid.format = 130;
+  mid.width = 2048;
+  mid.height = 1024;
+  uint64_t id_rt = ledger.add(rt, nullptr, nullptr, 1000);
+  uint64_t id_small = ledger.add(small, nullptr, nullptr, 1000);
+  uint64_t id_big = ledger.add(big, nullptr, nullptr, 1000);
+  uint64_t id_mid = ledger.add(mid, nullptr, nullptr, 1000);
+  uint64_t id_buf = ledger.add(BufferOf(Kind::Buffer, 500 * MB), nullptr, nullptr, 1000);
+  uint64_t id_stage = ledger.add(BufferOf(Kind::Staging, 64 * MB), nullptr, nullptr, 1000);
+  CHECK_EQ(ledger.textureLiveBytes(), 442 * MB);
+  ledger.remove(id_rt, 1100);
+  ledger.remove(id_buf, 1100);
+  CHECK_EQ(ledger.textureLiveBytes(), 342 * MB);
+
+  // the groups: by format, the most bytes first; by size, the larger side
+  TextureGroups groups = ledger.textureGroups(8);
+  CHECK_EQ(groups.formats.size(), 2u);
+  if (groups.formats.size() == 2) {
+    CHECK_EQ(groups.formats[0].key, 130u);
+    CHECK_EQ(groups.formats[0].count, 2u);
+    CHECK_EQ(groups.formats[0].bytes, 340 * MB);
+    CHECK_EQ(groups.formats[1].key, 70u);
+  }
+  CHECK_EQ(groups.sizes[0].count, 1u); // 256x256
+  CHECK_EQ(groups.sizes[1].count, 0u);
+  CHECK_EQ(groups.sizes[2].count, 1u); // 2048x1024
+  CHECK_EQ(groups.sizes[3].count, 1u); // 4096x2048
+  CHECK(GroupsLine(groups, FakeFormatName) ==
+        "[dxmt-mem] textures by format: format130 2 (340.0 MB), RGBA8Unorm 1 (2.0 MB); by size (larger side): <=256 1 "
+        "(2.0 MB), <=1024 0 (0.0 MB), <=2048 1 (40.0 MB), >2048 1 (300.0 MB)");
+  CHECK_EQ(ledger.textureGroups(1).formats.size(), 1u);
+  CHECK_EQ(SizeClassOf(256, 256), 0u);
+  CHECK_EQ(SizeClassOf(257, 16), 1u);
+  CHECK_EQ(SizeClassOf(16, 1024), 1u);
+  CHECK_EQ(SizeClassOf(2049, 1), 3u);
+
+  // the clamps: counted with what they saved, and in the status line once there is one
+  Totals before = ledger.totals(1200, nullptr);
+  CHECK_EQ(before.clamp_count, 0u);
+  CHECK(!Contains(StatusLine(before, nullptr), "mip clamp"));
+  ledger.noteMipClamp(12 * MB);
+  ledger.noteMipClamp(30 * MB);
+  Totals after = ledger.totals(1200, nullptr);
+  CHECK_EQ(after.clamp_count, 2u);
+  CHECK_EQ(after.clamp_saved_bytes, 42 * MB);
+  CHECK(Contains(StatusLine(after, nullptr), "; mip clamp 2 textures (42 MB saved)"));
+  for (uint64_t id : {id_small, id_big, id_mid, id_stage})
+    ledger.remove(id, 1300);
+  CHECK_EQ(ledger.textureLiveBytes(), 0u);
+
+  // the site walk: the first return address outside the module
+  const uint64_t frames[] = {0x10001000, 0x10002000, 0x10003000, 0x00401234, 0x00402000};
+  CHECK_EQ(FirstFrameOutside(frames, 5, 0x10000000, 0x10100000, 0x10002000), 0x00401234u);
+  CHECK_EQ(FirstFrameOutside(frames, 3, 0x10000000, 0x10100000, 0x10002000), 0x10002000u); // none: as given
+  const uint64_t with_null[] = {0, 0x10001000, 0x20000000};
+  CHECK_EQ(FirstFrameOutside(with_null, 3, 0x10000000, 0x10100000, 0x1), 0x20000000u); // 0 skipped
+  CHECK_EQ(FirstFrameOutside(frames, 0, 0x10000000, 0x10100000, 0x99), 0x99u);
+  // an outermost scope takes its site through the walk; without one, as given
+  SetSiteWalk(FakeWalk);
+  {
+    Scope scope(11, 0, 0x8, 0, 0, reinterpret_cast<const void *>(uintptr_t(0x10002000)));
+    Info info = TextureOf(Kind::Texture, MB);
+    ApplyScope(info);
+    CHECK_EQ(info.site, 0x7000u);
+    CHECK_EQ(g_walk_seen, 0x10002000u);
+  }
+  SetSiteWalk(nullptr);
+  {
+    Scope scope(11, 0, 0x8, 0, 0, reinterpret_cast<const void *>(uintptr_t(0x10002000)));
+    Info info = TextureOf(Kind::Texture, MB);
+    ApplyScope(info);
+    CHECK_EQ(info.site, 0x10002000u);
+  }
+}
+
 } // namespace
 
 int
@@ -533,5 +630,6 @@ main() {
   TestLines();
   TestSchedule();
   TestScopes();
+  TestItem94();
   return TestSummary("test_mem_ledger");
 }

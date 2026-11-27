@@ -11,7 +11,11 @@
 //     guard page (a touch ends the test with SIGSEGV), and nothing upstream runs;
 //   - with OpenGL on, every entry reaches its upstream entry inside the pool, with its block;
 //   - E1/E2: the counts, the report at a swap 10 s after the first counted call, the line's
-//     form and top list, the reset; the report's format on its own (16 busiest, ties).
+//     form and top list, the reset; the report's format on its own (16 busiest, ties);
+//   - clarification 14: a 64-bit block whose teb is NULL reaches its handler with the thread's
+//     TEB, logged once per process (a process without a slot: once); a non-NULL teb passes
+//     through; thread_attach's NULL argument becomes the TEB; 32-bit calls unchanged; the table
+//     of TEB-first entries (every entry but the three setup ones).
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -38,8 +42,15 @@ static int checks, failures;
 
 static unsigned int upstream_calls[2], pools;
 static void *upstream_args;
+static TEB *seen_teb;   /* the first pointer of a 64-bit block as its handler saw it */
 
-static NTSTATUS fake_upstream64( void *args ) { upstream_calls[0]++; upstream_args = args; return 0x1234; }
+static NTSTATUS fake_upstream64( void *args )
+{
+    upstream_calls[0]++;
+    upstream_args = args;
+    if (args) memcpy( &seen_teb, args, sizeof(seen_teb) );
+    return 0x1234;
+}
 static NTSTATUS fake_upstream32( void *args ) { upstream_calls[1]++; upstream_args = args; return 0x4321; }
 
 const unixlib_entry_t opengl32_upstream_funcs[funcs_count] = { [0 ... funcs_count - 1] = fake_upstream64 };
@@ -87,6 +98,18 @@ NTSTATUS opengl_ios_off_call( unsigned int index )
 extern uint64_t (*opengl_ios_clock)( void );
 static uint64_t fake_now;
 static uint64_t fake_clock( void ) { return fake_now; }
+
+/* clarification 14: the thread's TEB (ntdll.so's NtCurrentTeb for a unix library, which the host
+ * test doesn't link), and the per-process flag of the no-TEB line */
+static TEB fake_teb, other_teb;
+struct _TEB * WINAPI NtCurrentTeb( void ) { return &fake_teb; }
+static _Atomic int no_teb_flags[2];
+static int fake_proc, fake_no_slot;
+
+_Atomic int *opengl_ios_no_teb_flag( void )
+{
+    return fake_no_slot ? NULL : &no_teb_flags[fake_proc];
+}
 
 #define SEC 1000000000ull
 
@@ -144,6 +167,7 @@ static void test_on( void )
     char block[64];
     unsigned int i, wrong = 0;
 
+    memset( block, 0x5a, sizeof(block) );   /* a non-NULL teb: blocks pass through as they are */
     attach_on = 1;
     pools = upstream_calls[0] = upstream_calls[1] = 0;
     CHECK( opengl32_unix_call_funcs[unix_process_attach]( block ) == 0x1234 );
@@ -171,6 +195,7 @@ static void test_stats( void )
     char block[16];
     unsigned int i, before;
 
+    memset( block, 0x5a, sizeof(block) );   /* a non-NULL teb: no clarification 14 line */
     opengl_ios_clock = fake_clock;
     attach_on = 1;
     opengl32_unix_call_funcs[unix_process_attach]( block );
@@ -205,6 +230,88 @@ static void test_stats( void )
     fake_now = 40 * SEC;
     opengl32_unix_call_funcs[unix_wglSwapBuffers]( block );
     CHECK( lines == before + 2 );
+}
+
+/* clarification 14: a 64-bit block that starts with TEB *teb and arrives with it NULL */
+static void test_no_teb( void )
+{
+    static const char line[] = "[opengl] 64-bit GL call wglMakeCurrent arrived with no TEB; using the thread's";
+    struct wglMakeCurrent_params p;
+    struct glVertex3f_params v;
+    unsigned char w[32];
+    unsigned int i, firsts = 0, before, touched = 0;
+
+    attach_on = 1;
+    opengl32_unix_call_funcs[unix_process_attach]( NULL );
+    CHECK( opengl_ios_thread_get() == 1 );
+
+    /* wglMakeCurrent with teb NULL reaches its handler with the thread's TEB; logged once */
+    memset( &p, 0, sizeof(p) );
+    p.hDc = (HDC)0x10;
+    p.newContext = (HGLRC)0x20;
+    before = lines;
+    seen_teb = NULL;
+    CHECK( opengl32_unix_call_funcs[unix_wglMakeCurrent]( &p ) == 0x1234 );
+    CHECK( seen_teb == &fake_teb && p.teb == &fake_teb && upstream_args == &p );
+    CHECK( p.hDc == (HDC)0x10 && p.newContext == (HGLRC)0x20 );
+    CHECK( lines == before + 1 && !strcmp( last_line, line ) );
+
+    /* again, and another entry of the same process: filled, not logged again */
+    p.teb = NULL;
+    seen_teb = NULL;
+    CHECK( opengl32_unix_call_funcs[unix_wglMakeCurrent]( &p ) == 0x1234 && seen_teb == &fake_teb );
+    memset( &v, 0, sizeof(v) );
+    v.x = 1.5f;
+    CHECK( opengl32_unix_call_funcs[unix_glVertex3f]( &v ) == 0x1234 && v.teb == &fake_teb && v.x == 1.5f );
+    CHECK( lines == before + 1 );
+
+    /* a non-NULL teb passes through */
+    p.teb = &other_teb;
+    CHECK( opengl32_unix_call_funcs[unix_wglMakeCurrent]( &p ) == 0x1234 );
+    CHECK( seen_teb == &other_teb && p.teb == &other_teb && lines == before + 1 );
+
+    /* another process logs its own line, once */
+    fake_proc = 1;
+    p.teb = NULL;
+    CHECK( opengl32_unix_call_funcs[unix_wglMakeCurrent]( &p ) == 0x1234 && p.teb == &fake_teb );
+    CHECK( lines == before + 2 && !strcmp( last_line, line ) );
+    p.teb = NULL;
+    opengl32_unix_call_funcs[unix_wglMakeCurrent]( &p );
+    CHECK( lines == before + 2 );
+    fake_proc = 0;
+
+    /* a process without a slot: once for the app */
+    fake_no_slot = 1;
+    v.teb = NULL;
+    opengl32_unix_call_funcs[unix_glVertex3f]( &v );
+    v.teb = NULL;
+    opengl32_unix_call_funcs[unix_glVertex3f]( &v );
+    CHECK( v.teb == &fake_teb && lines == before + 3 );
+    CHECK( strstr( last_line, "call glVertex3f arrived with no TEB" ) != NULL );
+    fake_no_slot = 0;
+
+    /* thread_attach's argument is the TEB itself; process_detach carries none */
+    upstream_args = NULL;
+    CHECK( opengl32_unix_call_funcs[unix_thread_attach]( NULL ) == 0x1234 && upstream_args == &fake_teb );
+    CHECK( opengl32_unix_call_funcs[unix_thread_attach]( &other_teb ) == 0x1234 && upstream_args == &other_teb );
+    CHECK( opengl32_unix_call_funcs[unix_process_detach]( NULL ) == 0x1234 && upstream_args == NULL );
+
+    /* 32-bit calls unchanged: a zero block stays zero, a NULL argument stays NULL, no line */
+    memset( w, 0, sizeof(w) );
+    before = lines;
+    CHECK( opengl32_unix_call_wow64_funcs[unix_wglMakeCurrent]( w ) == 0x4321 && upstream_args == w );
+    for (i = 0; i < sizeof(w); i++) touched |= w[i];
+    CHECK( !touched );
+    CHECK( opengl32_unix_call_wow64_funcs[unix_thread_attach]( NULL ) == 0x4321 && upstream_args == NULL );
+    CHECK( lines == before );
+
+    /* the table: every entry but the three setup ones starts with TEB *teb */
+    for (i = 0; i < funcs_count; i++) firsts += opengl_ios_teb_first[i];
+    CHECK( firsts == funcs_count - 3 );
+    CHECK( opengl_ios_teb_first[unix_wglMakeCurrent] && opengl_ios_teb_first[unix_glVertex3f] &&
+           opengl_ios_teb_first[unix_get_pixel_formats] && opengl_ios_teb_first[unix_wglSwapBuffers] );
+    CHECK( !opengl_ios_teb_first[unix_process_attach] && !opengl_ios_teb_first[unix_thread_attach] &&
+           !opengl_ios_teb_first[unix_process_detach] );
 }
 
 static void test_format( void )
@@ -249,6 +356,7 @@ int main( void )
     }
     test_on();
     test_stats();
+    test_no_teb();
     test_format();
     printf( "test_opengl_ios: %d checks, %d failures (%u entries)\n", checks, failures, (unsigned int)funcs_count );
     return failures != 0;

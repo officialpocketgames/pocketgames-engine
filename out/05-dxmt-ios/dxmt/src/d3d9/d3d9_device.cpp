@@ -22,6 +22,7 @@
 #include "d3d9_fvf.hpp"
 #include "d3d9_ia_element.hpp"
 #include "d3d9_vertex_input.hpp" // MYIOSDECK spec 07 clarification 6
+#include "d3d9_frame_trace.hpp"  // MYIOSDECK spec 07 clarification 9
 #include "d3d9_interface.hpp"
 #include "d3d9_matrix.hpp"
 #include "d3d9_point_size.hpp"
@@ -7883,6 +7884,14 @@ MTLD3D9Device::QueueBatchedDraw(BatchedDraw &&draw) {
   // in a heavy draw scene, clustered such that effectively every draw
   // rebuilt the snapshot under COW). wined3d CS shape.
 
+  // MYIOSDECK spec 07 clarification 9: in a traced frame (spec 05 clarification 21's schedule, as
+  // the Direct3D 11 context decides it), the draw's lines from the state it is queued with; the
+  // chunk walker hands them to the encoder in the draw's render pass
+  if (dxmt::FrameTraceSwitch() && dxmt::FrameTraced(m_dxmtQueue->CurrentFrameSeq())) {
+    m_pendingTraceLines.push_back(TraceDrawLines(draw));
+    draw.trace_lines = static_cast<uint32_t>(m_pendingTraceLines.size());
+  }
+
   // Push to the arrival-order op stream FIRST so the index field
   // points at the slot we're about to occupy in m_pendingDraws.
   m_pendingOps.push_back({PendingOpRef::Draw, static_cast<uint32_t>(m_pendingDraws.size())});
@@ -7894,6 +7903,77 @@ MTLD3D9Device::QueueBatchedDraw(BatchedDraw &&draw) {
   // that needs this.
   if (m_renamedBytesSinceCommit >= kRenameBytesBeforeImplicitCommit)
     forceFlushAndCommit();
+}
+
+/* MYIOSDECK spec 07 clarification 9: what d3d9_frame_trace.hpp prints for the draw, read from the
+   device's state on the calling thread as the draw is queued */
+std::string
+MTLD3D9Device::TraceDrawLines(const BatchedDraw &draw) {
+  static_assert(D3D9_MAX_TEXTURE_UNITS == d9trace::kSamplerSlots, "the trace's sampler slots are the device's");
+  static_assert(sizeof(m_renderStates) / sizeof(m_renderStates[0]) == d9trace::kRenderStateCount, "");
+  static_assert(D3D9_MAX_VS_CONST_B == d9trace::kBoolConsts && D3D9_MAX_PS_CONST_B == d9trace::kBoolConsts, "");
+  static_assert(D3D9_MAX_VS_CONST_I == d9trace::kIntConsts && D3D9_MAX_PS_CONST_I == d9trace::kIntConsts, "");
+  static_assert(sizeof(BOOL) == sizeof(int32_t) && sizeof(m_vsConstantsI[0][0]) == sizeof(int32_t), "");
+  d9trace::TraceDraw t;
+  t.indexed = draw.type == BatchedDraw::kIndexed;
+  t.up = draw.override_vb_buffer != 0;
+  t.primitive = static_cast<uint32_t>(draw.primitive_type);
+  t.count = draw.vertex_or_index_count;
+  t.start = draw.start_vertex_or_index;
+  t.base = draw.base_vertex;
+  // EmitDrawCommand_d9's rule: stream 0's INDEXEDDATA count, indexed draws only
+  if (t.indexed && (m_streamFreq[0] & D3DSTREAMSOURCE_INDEXEDDATA))
+    t.instances = std::max<uint32_t>(m_streamFreq[0] & 0x007FFFFFu, 1u);
+
+  MTLD3D9VertexDeclaration *decl = m_vertexDeclaration.ptr();
+  t.decl = decl ? decl->traceNumber() : 0;
+  // a POSITIONT declaration runs the fixed-function pre-transform whatever shader is bound
+  MTLD3D9VertexShader *vs = (decl && decl->hasPositionT()) ? nullptr : m_vertexShader.ptr();
+  MTLD3D9PixelShader *ps = m_pixelShader.ptr();
+  if (vs)
+    t.vs = {true, vs->bytecodeHash(), static_cast<uint32_t>(vs->bytecode()[0])};
+  if (ps)
+    t.ps = {true, ps->bytecodeHash(), static_cast<uint32_t>(ps->bytecode()[0])};
+
+  for (unsigned slot = 0; slot < D3D9_MAX_TEXTURE_UNITS; slot++) {
+    MTLD3D9CommonTexture *texture = m_textures[slot].ptr();
+    if (!texture)
+      continue;
+    d9trace::TraceTexture entry;
+    entry.slot = slot;
+    entry.bound = true;
+    entry.format = static_cast<uint32_t>(texture->d3dFormat());
+    entry.type = static_cast<uint32_t>(texture->commonTextureType());
+    const Rc<dxmt::Texture> &backing = texture->dxmtTexture();
+    entry.width = backing->width();
+    entry.height = backing->height();
+    entry.depth = backing->depth();
+    entry.levels = backing->mipLevelCount();
+    t.textures.push_back(entry);
+  }
+  // the slots the shaders declare samplers for: a pixel shader from model 2 on declares every one
+  // it samples (ps_1_x declares none, and the fixed-function stages none either)
+  auto add_samplers = [&t](const DxsoShaderMetadata &metadata, unsigned first) {
+    for (const auto &d : metadata.dcls)
+      if (d.bound_to.type == DxsoRegisterType::Sampler && first + d.bound_to.num < d9trace::kSamplerSlots)
+        t.sampled |= 1u << (first + d.bound_to.num);
+  };
+  if (ps && ps->metadata().major >= 2) {
+    t.sampled_known = true;
+    add_samplers(ps->metadata(), 0);
+  }
+  if (vs)
+    add_samplers(vs->metadata(), d9trace::kPixelSamplerSlots);
+
+  uint32_t render_states[d9trace::kRenderStateCount];
+  for (unsigned i = 0; i < d9trace::kRenderStateCount; i++)
+    render_states[i] = static_cast<uint32_t>(m_renderStates[i]);
+  t.rs = render_states;
+  t.vs_b = reinterpret_cast<const int32_t *>(m_vsConstantsB);
+  t.ps_b = reinterpret_cast<const int32_t *>(m_psConstantsB);
+  t.vs_i = m_vsConstantsI;
+  t.ps_i = m_psConstantsI;
+  return d9trace::DrawLines(t);
 }
 
 void
@@ -9341,14 +9421,10 @@ MTLD3D9Device::ResolveClusterState(
         }
         break;
       }
-    } else
-      for (const auto &d : vs->metadata().dcls) {
-        if (d.bound_to.type == DxsoRegisterType::Input && static_cast<uint32_t>(d.dcl.usage) == match_usage &&
-            d.dcl.usage_index == e.UsageIndex) {
-          vs_reg = static_cast<int>(d.bound_to.num);
-          break;
-        }
-      }
+    } else {
+      // MYIOSDECK spec 07 clarification 9: moved to d3d9_vertex_input.hpp, as it was, for the test
+      vs_reg = VsInputRegister(vs->metadata().dcls, match_usage, e.UsageIndex);
+    }
     if (vs_reg < 0)
       continue;
     // Flag the draw only once the POSITIONT element actually feeds a VS input,
@@ -10770,9 +10846,12 @@ MTLD3D9Device::FlushDrawBatch() {
   d9ios::ShrinkPendingVector(m_pendingBlits);
   d9ios::ShrinkPendingVector(m_pendingRefOps);
   auto *chunk = m_dxmtQueue->CurrentChunk();
+  // MYIOSDECK spec 07 clarification 9: a traced frame's draw lines go along (empty otherwise)
+  std::vector<std::string> trace_lines = std::move(m_pendingTraceLines);
+  m_pendingTraceLines.clear();
   chunk->emitcc([this, ops = std::move(m_pendingOps), draws = std::move(m_pendingDraws),
                  blits = std::move(m_pendingBlits), ref_ops = std::move(m_pendingRefOps), chunk_seq,
-                 chunk_coherent_id](ArgumentEncodingContext &ctx) mutable {
+                 chunk_coherent_id, trace_lines = std::move(trace_lines)](ArgumentEncodingContext &ctx) mutable {
     // Single chunk-level autorelease pool. Wine's encode worker has
     // no outer NSAutoreleasePool; one pool here covers every autoreleased
     // Metal temporary produced by
@@ -10832,6 +10911,8 @@ MTLD3D9Device::FlushDrawBatch() {
           // reset was missing.
           res = D9ResolvedDraw{};
           if (!this->ResolveBatchedDrawForChunk(bd, res, chunk_seq, chunk_coherent_id, const_cache, resolve_cache)) {
+            if (bd.trace_lines)
+              ctx.traceDrawDropped(); // MYIOSDECK spec 07 clarification 9: it keeps its number
             continue;
           }
         }
@@ -10855,6 +10936,8 @@ MTLD3D9Device::FlushDrawBatch() {
           }
           res.resolved_pso = res.resolved_pso_task->state().handle;
           if (res.resolved_pso == 0) {
+            if (bd.trace_lines)
+              ctx.traceDrawDropped(); // MYIOSDECK spec 07 clarification 9
             continue; // link failed: skip
           }
         }
@@ -10875,6 +10958,9 @@ MTLD3D9Device::FlushDrawBatch() {
           // initial range and resolves to 0 no matter what it covers.
           ctx.bumpVisibilityResultOffset();
           EmitDrawCommand_d9(ctx, bd, res);
+          // MYIOSDECK spec 07 clarification 9: the draw's lines, in its render pass
+          if (bd.trace_lines && bd.trace_lines <= trace_lines.size())
+            ctx.traceDraw(std::move(trace_lines[bd.trace_lines - 1]), false);
         }
         // Snapshot the attachment identity for the next draw's pass test.
         std::memcpy(prev_attachments.resolved_rt_handles, res.resolved_rt_handles, sizeof(res.resolved_rt_handles));
@@ -11775,7 +11861,7 @@ MTLD3D9Device::GetFVF(DWORD *pFVF) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreateVertexShader(const DWORD *pFunction, IDirect3DVertexShader9 **ppShader) {
   D9_CALL(IDirect3DDevice9, CreateVertexShader);
-  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
+  return D9_CHECKED_SHADER_BEGIN { // MYIOSDECK spec 07 clarifications 5 and 8
   D9DeviceLock lock = LockDevice();
   if (!ppShader)
     return D3DERR_INVALIDCALL;
@@ -11812,8 +11898,8 @@ MTLD3D9Device::CreateVertexShader(const DWORD *pFunction, IDirect3DVertexShader9
   auto module = getOrCreateVertexShaderModule(pFunction, dwords, std::move(*metadata));
   *ppShader = ::dxmt::ref<IDirect3DVertexShader9>(new MTLD3D9VertexShader(this, std::move(module)));
   return D3D_OK;
-  } D9_CHECKED_END(IDirect3DDevice9, CreateVertexShader, ppShader && !*ppShader,
-                   "version " + (pFunction ? d9fail::Hex(pFunction[0]) : std::string("none"))); // MYIOSDECK spec 07 clarification 5
+  } D9_CHECKED_SHADER_END(IDirect3DDevice9, CreateVertexShader, false, ppShader && !*ppShader,
+                          d9fail::ShaderVersionToken(pFunction != nullptr, pFunction ? uint32_t(pFunction[0]) : 0)); // MYIOSDECK spec 07 clarifications 5 and 8
 }
 
 // SetVertexShader / GetVertexShader: same priv-pin shape as the
@@ -12242,7 +12328,7 @@ MTLD3D9Device::GetIndices(IDirect3DIndexBuffer9 **ppIndexData) {
 HRESULT STDMETHODCALLTYPE
 MTLD3D9Device::CreatePixelShader(const DWORD *pFunction, IDirect3DPixelShader9 **ppShader) {
   D9_CALL(IDirect3DDevice9, CreatePixelShader);
-  return D9_CHECKED_BEGIN { // MYIOSDECK spec 07 clarification 5
+  return D9_CHECKED_SHADER_BEGIN { // MYIOSDECK spec 07 clarifications 5 and 8
   D9DeviceLock lock = LockDevice();
   if (!ppShader)
     return D3DERR_INVALIDCALL;
@@ -12266,8 +12352,8 @@ MTLD3D9Device::CreatePixelShader(const DWORD *pFunction, IDirect3DPixelShader9 *
   auto module = getOrCreatePixelShaderModule(pFunction, dwords, std::move(*metadata));
   *ppShader = ::dxmt::ref<IDirect3DPixelShader9>(new MTLD3D9PixelShader(this, std::move(module)));
   return D3D_OK;
-  } D9_CHECKED_END(IDirect3DDevice9, CreatePixelShader, ppShader && !*ppShader,
-                   "version " + (pFunction ? d9fail::Hex(pFunction[0]) : std::string("none"))); // MYIOSDECK spec 07 clarification 5
+  } D9_CHECKED_SHADER_END(IDirect3DDevice9, CreatePixelShader, true, ppShader && !*ppShader,
+                          d9fail::ShaderVersionToken(pFunction != nullptr, pFunction ? uint32_t(pFunction[0]) : 0)); // MYIOSDECK spec 07 clarifications 5 and 8
 }
 
 HRESULT STDMETHODCALLTYPE

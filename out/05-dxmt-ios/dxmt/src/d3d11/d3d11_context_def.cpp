@@ -3,9 +3,13 @@
 // Also changed for MYIOSDECK (spec 06 round 2: a discard with no guest memory fails with E_OUTOFMEMORY).
 // Changed for MYIOSDECK (spec 05 item 90: the memory ledger's scopes and ring names).
 // Changed for MYIOSDECK (spec 06 round 3: a command block that can't be had is never written through).
+// Changed for MYIOSDECK (spec 06 round 4: FinishCommandList's failure logged, its wait past 1 GB of
+// command memory in 32-bit; the lists made and pooled counted).
 #include "d3d11_device.hpp"
 #include "d3d11_private.h"
 #include "d3d11_context_impl.cpp"
+#include "dxmt_cmdlist_backlog.hpp" // MYIOSDECK spec 06 round 4
+#include "util_guest_memory.hpp"    // MYIOSDECK spec 06 round 4
 #include "dxmt_buffer.hpp"
 #include "dxmt_command_queue.hpp"
 #include "dxmt_dynamic.hpp"
@@ -443,6 +447,12 @@ public:
     /* MYIOSDECK spec 06 round 3 (item 2): a command block couldn't be had while the list was
        recorded, and part of it was dropped: no list. The recording starts again from empty. */
     if (unlikely(ctx_state.current_cmdlist->outOfMemory())) {
+      /* MYIOSDECK spec 06 round 4 (item 4): the first one logged (silent before) */
+      static std::atomic<bool> logged{false};
+      if (!logged.exchange(true)) {
+        Logger::warn(FinishOutOfMemoryLine(guest_memory::ProcessLedger().bytesOf(guest_memory::Use::Commands)));
+        Logger::warn(guest_memory::ReportLine(guest_memory::ProcessLedger().snapshot()));
+      }
       ctx_state.current_cmdlist->Reset();
       if (ppCommandList)
         *ppCommandList = nullptr;
@@ -461,7 +471,25 @@ public:
     else
       ResetD3D11ContextState();
 
+    WaitForCommandMemory(); // MYIOSDECK spec 06 round 4
     return S_OK;
+  }
+
+  /* MYIOSDECK spec 06 round 4 (item 4): in a 32-bit process past 1 GB of command memory, wait
+     for the oldest committed chunk to finish (the lists it holds go back with their blocks)
+     before recording more. Nothing to wait for when every committed chunk has finished. */
+  void
+  WaitForCommandMemory() {
+    const uint64_t commands = guest_memory::ProcessLedger().bytesOf(guest_memory::Use::Commands);
+    if (!CommandMemoryWaitDue(guest_memory::kGuestWindowHeap, commands))
+      return;
+    auto &queue = device->GetDXMTDevice().queue();
+    const uint64_t oldest = OldestUnfinishedChunk(queue.CoherentSeqId(), queue.CurrentSeqId());
+    static std::atomic<bool> logged{false};
+    if (!logged.exchange(true))
+      Logger::info(CommandWaitLine(commands));
+    if (oldest)
+      queue.WaitCPUFence(oldest);
   }
 
   D3D11_DEVICE_CONTEXT_TYPE 
@@ -519,13 +547,16 @@ public:
   MTLD3D11CommandListPool(MTLD3D11Device *device) : device(device){};
 
   ~MTLD3D11CommandListPool(){
-
+    // MYIOSDECK spec 06 round 4: the device's lists go with it
+    guest_memory::ProcessLedger().countList(guest_memory::ListCount::Made, -int64_t(instances.size()));
+    guest_memory::ProcessLedger().countList(guest_memory::ListCount::Pooled, -int64_t(free_commandlist.size()));
   };
 
   void
   RecycleCommandList(ID3D11CommandList *cmdlist) override {
     std::unique_lock<dxmt::mutex> lock(mutex);
     free_commandlist.push_back((MTLD3D11CommandList *)cmdlist);
+    guest_memory::ProcessLedger().countList(guest_memory::ListCount::Pooled, 1); // MYIOSDECK spec 06 round 4
   };
 
   void
@@ -534,11 +565,13 @@ public:
     if (!free_commandlist.empty()) {
       free_commandlist.back()->QueryInterface(IID_PPV_ARGS(ppCommandList));
       free_commandlist.pop_back();
+      guest_memory::ProcessLedger().countList(guest_memory::ListCount::Pooled, -1); // MYIOSDECK spec 06 round 4
       return;
     }
     auto instance = std::make_unique<MTLD3D11CommandList>(device, this, 0);
     *ppCommandList = ref(instance.get());
     instances.push_back(std::move(instance));
+    guest_memory::ProcessLedger().countList(guest_memory::ListCount::Made, 1); // MYIOSDECK spec 06 round 4
     return;
   };
 

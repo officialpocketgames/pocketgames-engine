@@ -33,6 +33,8 @@ $cxx $flags -I"$src/airconv" -I"$src/winemetal/unix" -o "$build/test_dxso_args32
 $cxx $flags -I"$src/d3d9" -o "$build/test_d3d9_policy" "$here/test_d3d9_policy.cpp"
 # Spec 07 clarification 5: the failed-call lines.
 $cxx $flags -I"$src/d3d9" -o "$build/test_d3d9_fail_log" "$here/test_d3d9_fail_log.cpp"
+# Spec 07 clarification 8: the Direct3D 9 adapter identity and PG_D3D9_ADAPTER.
+$cxx $flags -I"$src/d3d9" -o "$build/test_d3d9_adapter" "$here/test_d3d9_adapter.cpp"
 # Spec 07 clarification 3: the call-statistics table and report, and the lists checked
 # against d3d9.h's vtables (C, so d3d9.h declares each vtable as a struct).
 $cxx $flags -I"$src/d3d9" -o "$build/test_d3d9_call_stats" "$here/test_d3d9_call_stats.cpp"
@@ -77,6 +79,16 @@ $cxx $flags -pthread -I"$src/dxmt" -o "$build/test_mem_ledger" "$here/test_mem_l
   "$src/dxmt/dxmt_mem_ledger.cpp"
 $cxx $flags -pthread $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/airconv" \
   -o "$build/test_mem_track" "$here/test_mem_track.cpp" "$src/dxmt/dxmt_buffer.cpp" "$src/dxmt/dxmt_texture.cpp" \
+  "$src/dxmt/dxmt_allocation.cpp" "$src/dxmt/dxmt_mem_ledger.cpp" "$src/dxmt/dxmt_bc_emulation.cpp" \
+  "$src/dxmt/dxmt_bc_decode.cpp" "$src/util/util_guest_memory.cpp" "$src/util/util_bloom.cpp"
+# Spec 05 item 91: the app's share table in C, as winemetal_unix.c uses it; DXMT's texture code
+# sharing and opening through it against fake Metal, the share names, the lines and their 10 s
+# counts, and the keyed mutex; check-no-mach-port-selectors.sh on objects made here.
+$cc -std=c11 -O1 -Wall -Wextra -Werror -I"$src/winemetal/unix" -o "$build/test_share_table" \
+  "$here/test_share_table.c"
+$cxx $flags -pthread $native_flags -I"$src/dxmt" -I"$src/util" -I"$src/winemetal" -I"$src/winemetal/unix" \
+  -I"$src/airconv" -I"$src/d3d11" -I"$src/dxgi" \
+  -o "$build/test_share" "$here/test_share.cpp" "$src/d3d11/d3d11_share.cpp" "$src/dxmt/dxmt_texture.cpp" \
   "$src/dxmt/dxmt_allocation.cpp" "$src/dxmt/dxmt_mem_ledger.cpp" "$src/dxmt/dxmt_bc_emulation.cpp" \
   "$src/dxmt/dxmt_bc_decode.cpp" "$src/util/util_guest_memory.cpp" "$src/util/util_bloom.cpp"
 # Spec 05 clarification 12: when the shader cache's lookups are logged, and what a cache
@@ -125,6 +137,10 @@ $cxx $flags $native_flags -I"$src/d3d11" -I"$src/dxmt" -o "$build/test_d3d11_cut
 # declaration line.
 $cxx $flags $native_flags -I"$src/d3d9" -I"$src/airconv" -o "$build/test_d3d9_vertex_input" \
   "$here/test_d3d9_vertex_input.cpp"
+# Spec 07 clarification 9: UBYTE4N and D3DCOLOR elements at TEXCOORD6/7 through the DXSO decoder's
+# dcls, and the Direct3D 9 draw's frame-trace lines.
+$cxx $flags $native_flags -I"$src/d3d9" -I"$src/airconv" -o "$build/test_d3d9_frame_trace" \
+  "$here/test_d3d9_frame_trace.cpp"
 # Spec 05 round 18: a polled Direct3D 11 query parks (items 80-83).
 $cxx $flags -pthread -I"$src/dxmt" -I"$src/util" -I"$src/d3d11" -o "$build/test_d3d11_query_park" \
   "$here/test_d3d11_query_park.cpp"
@@ -166,7 +182,9 @@ status=0
 "$build/test_dxso_args32" || status=1
 "$build/test_d3d9_policy" || status=1
 "$build/test_d3d9_fail_log" || status=1
+"$build/test_d3d9_adapter" || status=1
 "$build/test_d3d9_vertex_input" || status=1
+"$build/test_d3d9_frame_trace" || status=1
 "$build/test_d3d9_call_stats" || status=1
 "$build/test_log_cap" || status=1
 "$build/test_d3d9_call_list" || status=1
@@ -184,6 +202,10 @@ sh "$here/check-d3d9-call-sites.sh" "$src/d3d9" || status=1
 "$build/test_bytecode_check" || status=1
 "$build/test_mem_ledger" || status=1
 "$build/test_mem_track" || status=1
+"$build/test_share_table" || status=1
+"$build/test_share" || status=1
+sh "$here/check-no-mach-port-selectors.sh" --self-test "$build" || status=1
+sh "$here/check-ios-sources-mach-ports.sh" "$src/winemetal/unix" || status=1
 "$build/test_shader_cache_log" || status=1
 "$build/test_shader_fixes" || status=1
 "$build/test_format_support2" || status=1

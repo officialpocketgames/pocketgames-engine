@@ -5,8 +5,12 @@
 // it lives (DXMT makes no Metal heaps), and the [dxmt-mem] lines that say what holds the memory.
 // Plain C++ with no Metal or Win32 in it, so the host tests run it as it is.
 // dxmt_mem_track.hpp fills records from DXMT's types; dxmt_mem_report.cpp writes the lines.
+// Spec 05 item 94: the live texture total without the lock (the automatic mip clamp's trigger),
+// the clamps and the bytes they saved in the status line, the textures grouped by format and by
+// size, and the creation site as the first return address outside DXMT's own module.
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <string>
@@ -83,7 +87,39 @@ struct Totals {
   /* BC textures stored uncompressed, live */
   uint64_t bc_count = 0;
   uint64_t bc_bytes = 0;
+  /* spec 05 item 94: textures the automatic clamp made smaller, and about how much it saved */
+  uint64_t clamp_count = 0;
+  uint64_t clamp_saved_bytes = 0;
 };
+
+/* Spec 05 item 94: the live textures (rt/ds and sampled) grouped by format and by size class,
+   the class being the larger side: up to 256, 1024, 2048, larger */
+struct GroupBytes {
+  uint32_t key = 0; // a format, or a size class
+  uint64_t count = 0;
+  uint64_t bytes = 0;
+};
+constexpr unsigned kSizeClasses = 4;
+inline const char *const kSizeClassNames[kSizeClasses] = {"<=256", "<=1024", "<=2048", ">2048"};
+inline unsigned
+SizeClassOf(uint32_t width, uint32_t height) {
+  uint32_t side = width > height ? width : height;
+  return side <= 256 ? 0 : side <= 1024 ? 1 : side <= 2048 ? 2 : 3;
+}
+struct TextureGroups {
+  std::vector<GroupBytes> formats; // the most bytes first
+  GroupBytes sizes[kSizeClasses];
+};
+
+/* Spec 05 item 94: the first of `frames` (return addresses, innermost first) outside
+   [begin, end), the module the creating call is in; `fallback` when there is none */
+inline uint64_t
+FirstFrameOutside(const uint64_t *frames, unsigned count, uint64_t begin, uint64_t end, uint64_t fallback) {
+  for (unsigned i = 0; i < count; i++)
+    if (frames[i] && (frames[i] < begin || frames[i] >= end))
+      return frames[i];
+  return fallback;
+}
 
 struct SiteBytes {
   uint64_t site = 0; // 0: made outside a Direct3D call; kOtherSites: past the per-second table
@@ -125,7 +161,22 @@ public:
   uint64_t liveBytes() const;
   uint64_t liveCount() const;
 
+  /* Spec 05 item 94: the live textures' bytes (rt/ds and sampled), read without the lock */
+  uint64_t
+  textureLiveBytes() const {
+    return texture_live_.load(std::memory_order_relaxed);
+  }
+
+  /* Spec 05 item 94: a texture the automatic clamp made smaller, by about `saved` bytes */
+  void noteMipClamp(uint64_t saved);
+
+  /* Spec 05 item 94: the live textures by format (the `top_formats` with the most bytes) and by
+     size class */
+  TextureGroups textureGroups(unsigned top_formats) const;
+
 private:
+  std::atomic<uint64_t> texture_live_{0}; // spec 05 item 94
+  uint64_t clamp_count_ = 0, clamp_saved_ = 0;
   struct Record {
     Info info;
     const void *owner;
@@ -181,6 +232,12 @@ private:
 
 /* Fills info's Direct3D fields and site from this thread's Scope, where info has none. */
 void ApplyScope(Info &info);
+
+/* Spec 05 item 94: what an outermost Scope makes of the caller's return address: the creating
+   call may have been forwarded inside DXMT, so the report (PE builds) walks the stack to the
+   first return address outside DXMT's own module. Null (the default): the address as given. */
+using SiteWalkFn = uint64_t (*)(uint64_t return_address);
+void SetSiteWalk(SiteWalkFn walk);
 
 /* The scope of a Direct3D 11 resource creation with description `desc` (may be null), and of a
    call without one; the site is the caller's return address. */
@@ -250,6 +307,10 @@ using SiteNameFn = std::string (*)(uint64_t site);
 
 /* `[dxmt-mem] top creation sites, last 10 s: <site> <MB> (<n>), ...` */
 std::string SitesLine(const std::vector<SiteBytes> &sites, SiteNameFn site_name);
+
+/* Spec 05 item 94: `[dxmt-mem] textures by format: <format> <n> (<MB>), ...; by size (larger
+   side): <=256 <n> (<MB>), <=1024 ..., <=2048 ..., >2048 ...` */
+std::string GroupsLine(const TextureGroups &groups, FormatNameFn format_name);
 
 /* Direct3D 11's usage and bind flags as words ("DEFAULT", "SRV|RT"); Direct3D 9's usage and
    pool. Part of LargestLine; exposed for the tests. */

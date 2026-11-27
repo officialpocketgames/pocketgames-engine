@@ -38,6 +38,8 @@ constexpr uint64_t kFrameDumpMaxTextureBytes = 16ull << 20;
 constexpr uint64_t kFrameDumpMaxTotalBytes = 256ull << 20;
 /* first-write copies may take at most this much of the 256 MB (QUESTIONS.md) */
 constexpr uint64_t kFrameDumpMaxFirstBytes = 64ull << 20;
+/* spec 05 item 93: what the passes that write the swap-chain buffer read, outside the 256 MB */
+constexpr uint64_t kFrameDumpMaxReadBytes = 32ull << 20;
 constexpr const char kFrameDumpRoot[] = "C:\\users\\Public\\pg-dumps";
 
 constexpr bool
@@ -381,10 +383,12 @@ public:
   }
 
   /* Spec 05 clarification 50: whether one more vertex-shader buffer read-back of `bytes` may be
-     made this frame: at most 300, each out of the first-write share. Counts it either way. */
+     made this frame: at most 300, each out of the first-write share. Counts it either way.
+     Spec 05 item 93: a draw into the swap-chain buffer (`presented`) isn't held to the 300, only
+     to the share; the frame's last passes are what turns its image black or not. */
   bool
-  takeSrvReadback(uint64_t bytes) {
-    if (srv_readbacks_ >= kFrameTraceMaxSrvReadbacks || !takeShare(bytes)) {
+  takeSrvReadback(uint64_t bytes, bool presented = false) {
+    if ((!presented && srv_readbacks_ >= kFrameTraceMaxSrvReadbacks) || !takeShare(bytes)) {
       srv_skipped_++;
       return false;
     }
@@ -393,15 +397,61 @@ public:
   }
 
   /* Spec 05 clarification 58: the same for a vertex-shader constant buffer's copy of `bytes`
-     (at most 4096): 300 a frame, counted apart from the views', out of the same share. */
+     (at most 4096): 300 a frame, counted apart from the views', out of the same share (item 93:
+     past the 300 for a draw into the swap-chain buffer). */
   bool
-  takeCbReadback(uint64_t bytes) {
-    if (cb_readbacks_ >= kFrameTraceMaxCbReadbacks || !takeShare(bytes)) {
+  takeCbReadback(uint64_t bytes, bool presented = false) {
+    if ((!presented && cb_readbacks_ >= kFrameTraceMaxCbReadbacks) || !takeShare(bytes)) {
       cb_skipped_++;
       return false;
     }
     cb_readbacks_++;
     return true;
+  }
+
+  /* Spec 05 item 93: a texture a pass that writes the swap-chain buffer reads (the frame's last
+     passes: a tone map's lookup table, an exposure texture), copied from a share of its own,
+     kFrameDumpMaxReadBytes outside the 256 MB, so the written textures before it can't use it up.
+     Each subresource once; one over 16 MB, or past the share, is refused. */
+  bool
+  takeRead(const FrameDumpKey &key, uint64_t bytes) {
+    if (reads_.count(key))
+      return false;
+    reads_[key] = true;
+    if (bytes > kFrameDumpMaxTextureBytes || read_bytes_ + bytes > kFrameDumpMaxReadBytes) {
+      read_refused_++;
+      return false;
+    }
+    read_bytes_ += bytes;
+    read_files_++;
+    return true;
+  }
+
+  /* whether the subresource was already taken (or refused) as a presented pass's read */
+  bool
+  readSeen(const FrameDumpKey &key) const {
+    return reads_.count(key) != 0;
+  }
+
+  /* a read that isn't dumped for its format or type: seen, not counted */
+  void
+  markRead(const FrameDumpKey &key) {
+    reads_[key] = false;
+  }
+
+  unsigned
+  readFiles() const {
+    return read_files_;
+  }
+
+  unsigned
+  readRefused() const {
+    return read_refused_;
+  }
+
+  uint64_t
+  readBytes() const {
+    return read_bytes_;
   }
 
   unsigned
@@ -429,9 +479,16 @@ public:
   summary() const {
     char mb[32];
     std::snprintf(mb, sizeof(mb), "%.1f", double(last_bytes_ + first_bytes_) / double(1 << 20));
-    return "dump: " + std::to_string(files_) + " files (" + std::to_string(first_files_) +
-           " with a first-write copy), " + mb + " MB; " + std::to_string(refused_) +
-           " subresources left out (budget)";
+    std::string line = "dump: " + std::to_string(files_) + " files (" + std::to_string(first_files_) +
+                       " with a first-write copy), " + mb + " MB; " + std::to_string(refused_) +
+                       " subresources left out (budget)";
+    if (read_files_ || read_refused_) { // spec 05 item 93
+      char read_mb[32];
+      std::snprintf(read_mb, sizeof(read_mb), "%.1f", double(read_bytes_) / double(1 << 20));
+      line += "; read by the presented passes: " + std::to_string(read_files_) + " files, " + read_mb + " MB, " +
+              std::to_string(read_refused_) + " left out";
+    }
+    return line;
   }
 
   uint64_t lastBytes() const { return last_bytes_; }
@@ -456,7 +513,20 @@ private:
   unsigned files_ = 0;
   unsigned first_files_ = 0;
   unsigned refused_ = 0;
+  std::map<FrameDumpKey, bool> reads_; // spec 05 item 93
+  uint64_t read_bytes_ = 0;
+  unsigned read_files_ = 0;
+  unsigned read_refused_ = 0;
 };
+
+/* Spec 05 item 93: a presented pass's read is named as the written file would be, with -read */
+inline std::string
+FrameDumpReadName(const std::string &name) {
+  const std::string raw = ".raw";
+  if (name.size() > raw.size() && name.compare(name.size() - raw.size(), raw.size(), raw) == 0)
+    return name.substr(0, name.size() - raw.size()) + "-read" + raw;
+  return name + "-read";
+}
 
 /* One read-back buffer of the dump (placed on `host`), written to `directory\name` by the
    finish thread once the frame's command buffers have completed (WriteFrameDumpFile,

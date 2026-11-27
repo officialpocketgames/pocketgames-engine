@@ -56,6 +56,8 @@ Ledger::add(const Info &info, const void *owner, const void *group, uint64_t now
   if (group)
     groups_[group].push_back(id);
   live_bytes_ += info.bytes;
+  if (info.kind == Kind::RtDs || info.kind == Kind::Texture) // spec 05 item 94
+    texture_live_.fetch_add(info.bytes, std::memory_order_relaxed);
 
   Second &s = secondFor(now_ms);
   s.created_count++;
@@ -87,6 +89,8 @@ Ledger::remove(uint64_t id, uint64_t now_ms) {
   if (it == records_.end())
     return;
   uint64_t bytes = it->second.info.bytes;
+  if (it->second.info.kind == Kind::RtDs || it->second.info.kind == Kind::Texture) // spec 05 item 94
+    texture_live_.fetch_sub(bytes, std::memory_order_relaxed);
   if (const void *group = it->second.group) {
     auto g = groups_.find(group);
     if (g != groups_.end()) {
@@ -154,7 +158,54 @@ Ledger::totals(uint64_t now_ms, WaitingFn waiting) const {
     t.released_count += s.released_count;
     t.released_bytes += s.released_bytes;
   }
+  t.clamp_count = clamp_count_; // spec 05 item 94
+  t.clamp_saved_bytes = clamp_saved_;
   return t;
+}
+
+void
+Ledger::noteMipClamp(uint64_t saved) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  clamp_count_++;
+  clamp_saved_ += saved;
+}
+
+TextureGroups
+Ledger::textureGroups(unsigned top_formats) const {
+  TextureGroups groups;
+  for (unsigned c = 0; c < kSizeClasses; c++)
+    groups.sizes[c].key = c;
+  std::vector<GroupBytes> formats;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto &[id, record] : records_) {
+      const Info &info = record.info;
+      if (info.kind != Kind::RtDs && info.kind != Kind::Texture)
+        continue;
+      GroupBytes &size = groups.sizes[SizeClassOf(info.width, info.height)];
+      size.count++;
+      size.bytes += info.bytes;
+      GroupBytes *format = nullptr;
+      for (auto &f : formats)
+        if (f.key == info.format) {
+          format = &f;
+          break;
+        }
+      if (!format) {
+        formats.push_back(GroupBytes{info.format, 0, 0});
+        format = &formats.back();
+      }
+      format->count++;
+      format->bytes += info.bytes;
+    }
+  }
+  std::stable_sort(formats.begin(), formats.end(), [](const GroupBytes &a, const GroupBytes &b) {
+    return a.bytes > b.bytes;
+  });
+  if (formats.size() > top_formats)
+    formats.resize(top_formats);
+  groups.formats = std::move(formats);
+  return groups;
 }
 
 std::vector<Info>
@@ -247,20 +298,35 @@ struct ScopeState {
 };
 thread_local ScopeState t_scope;
 thread_local bool t_in_scope = false;
+std::atomic<SiteWalkFn> g_site_walk{nullptr}; // spec 05 item 94
+
+/* the site an outermost scope records */
+uint64_t
+SiteOf(const void *return_address) {
+  uint64_t site = uint64_t(uintptr_t(return_address));
+  if (SiteWalkFn walk = g_site_walk.load(std::memory_order_relaxed))
+    return walk(site);
+  return site;
+}
 } // namespace
+
+void
+SetSiteWalk(SiteWalkFn walk) {
+  g_site_walk.store(walk, std::memory_order_relaxed);
+}
 
 Scope::Scope(uint8_t api, uint32_t usage, uint32_t bind, uint32_t cpu, uint32_t misc, const void *site) :
     outermost_(!t_in_scope) {
   if (!outermost_)
     return;
-  t_scope = ScopeState{api, usage, bind, cpu, misc, uint64_t(uintptr_t(site)), nullptr};
+  t_scope = ScopeState{api, usage, bind, cpu, misc, SiteOf(site), nullptr};
   t_in_scope = true;
 }
 
 Scope::Scope(uint8_t api, const char *call, const void *site) : outermost_(!t_in_scope) {
   if (!outermost_)
     return;
-  t_scope = ScopeState{api, 0, 0, 0, 0, uint64_t(uintptr_t(site)), call};
+  t_scope = ScopeState{api, 0, 0, 0, 0, SiteOf(site), call};
   t_in_scope = true;
 }
 
@@ -469,6 +535,8 @@ StatusLine(const Totals &t, const uint64_t *graphics_footprint) {
   );
   if (graphics_footprint)
     Append(out, "; graphics footprint %" PRIu64 " MB", WholeMb(*graphics_footprint));
+  if (t.clamp_count) // spec 05 item 94
+    Append(out, "; mip clamp %" PRIu64 " textures (%" PRIu64 " MB saved)", t.clamp_count, WholeMb(t.clamp_saved_bytes));
   return out;
 }
 
@@ -560,6 +628,25 @@ SitesLine(const std::vector<SiteBytes> &sites, SiteNameFn site_name) {
       Append(out, "0x%" PRIx64, s.site);
     Append(out, " %s (%" PRIu64 ")", Mb1(s.bytes).c_str(), s.count);
   }
+  return out;
+}
+
+std::string
+GroupsLine(const TextureGroups &groups, FormatNameFn format_name) {
+  std::string out = "[dxmt-mem] textures by format:";
+  if (groups.formats.empty())
+    out += " none";
+  bool first = true;
+  for (const auto &f : groups.formats) {
+    out += first ? " " : ", ";
+    first = false;
+    out += format_name ? format_name(f.key) : std::to_string(f.key);
+    Append(out, " %" PRIu64 " (%s)", f.count, Mb1(f.bytes).c_str());
+  }
+  out += "; by size (larger side):";
+  for (unsigned c = 0; c < kSizeClasses; c++)
+    Append(out, "%s %s %" PRIu64 " (%s)", c ? "," : "", kSizeClassNames[c], groups.sizes[c].count,
+           Mb1(groups.sizes[c].bytes).c_str());
   return out;
 }
 

@@ -22,6 +22,10 @@
 //   mode old: one slice per allocation, no implicit commit, no in-flight cap
 //             (the code before this change; memory is aliased so it fits)
 //   --check: fewer cycles, exit non-zero if a bound or a check fails
+//
+// Spec 06 round 4 (item 4), with --check: a deferred list's ring with 64 KB first blocks that
+// double, 2,000 lists executed before any Present under the backlog's commits, and the wait at
+// the command-memory mark (dxmt_cmdlist_backlog.hpp), all on DXMT's own RingBumpState.
 
 #include "dxmt_buffer.hpp"
 #include "dxmt_dynamic.hpp"
@@ -30,6 +34,7 @@
 #include "wsi_platform.hpp"
 #include "util_guest_memory.hpp"
 #include "dxmt_ring_bump_allocator.hpp"
+#include "dxmt_cmdlist_backlog.hpp" // spec 06 round 4
 
 #include <chrono>
 #include <cstdio>
@@ -673,6 +678,204 @@ CheckCommandBlocks() {
   return failures;
 }
 
+/* Spec 06 round 4 (item 4): a deferred list's blocks start at 64 KB in a 32-bit process and
+   double to 2 MB; 2,000 lists executed with no Present stay small because the backlog commits;
+   past the command-memory mark FinishCommandList waits for the oldest committed chunk. */
+int
+CheckDeferredListBacklog() {
+  int failures = 0;
+  auto fail = [&](const char *what) {
+    std::printf("FAIL deferred list backlog: %s\n", what);
+    failures++;
+  };
+  constexpr uint64_t kKB = 1024, kMB = 1ull << 20;
+  using ListRing = RingBumpState<HostBufferBlockAllocator, kStagingBlockSizeForDeferredContext, dxmt::null_mutex>;
+  const bool was_guest = g_host_blocks_in_guest;
+  g_host_blocks_in_guest = true;
+  HostBlockPool::releaseKept();
+  guest_memory::Ledger &ledger = guest_memory::ProcessLedger();
+  auto commands = [&]() { return ledger.bytesOf(guest_memory::Use::Commands); };
+  const uint64_t commands_before = commands();
+
+  // the sizes: 64 KB first in 32-bit, doubling to 2 MB; 64-bit keeps 2 MB
+  if (DeferredFirstBlockSize(true) != 64 * kKB || DeferredFirstBlockSize(false) != 2 * kMB)
+    fail("the first block sizes");
+  {
+    ListRing ring{HostBufferBlockAllocator{}};
+    ring.growFrom(DeferredFirstBlockSize(true));
+    ring.allocate(1, 0, 100, 16);
+    if (ring.blockBytes() != 64 * kKB)
+      fail("a small list holds more than 64 KB");
+    const uint64_t expected[] = {64, 128, 256, 512, 1024, 2048, 2048};
+    uint64_t total = 0;
+    bool doubled = true;
+    for (uint64_t want : expected) {
+      total += want * kKB;
+      // fill the latest block, then one byte more makes the next
+      while (ring.blockBytes() < total)
+        ring.allocate(1, 0, 4 * kKB, 16);
+      doubled &= ring.blockBytes() == total;
+    }
+    if (!doubled)
+      fail("the blocks don't double from 64 KB to 2 MB");
+    ring.free_blocks(~0ull);
+    ring.restartGrowth();
+    // a request larger than the next block gets a block of its own size; the growth goes on
+    ring.allocate(1, 0, 16, 16);                    // 64 KB
+    ring.allocate(1, 0, 3 * kMB, 16);               // its own 3 MB block
+    if (ring.blockBytes() != 64 * kKB + 3 * kMB || ring.blockCount() != 2)
+      fail("a large request didn't get its own block");
+    if (ring.nextBlockSize() != 256 * kKB)
+      fail("the growth stopped after a large request");
+    ring.free_blocks(~0ull);
+    ListRing fixed{HostBufferBlockAllocator{}};
+    fixed.growFrom(DeferredFirstBlockSize(false));
+    fixed.allocate(1, 0, 100, 16);
+    if (fixed.blockBytes() != 2 * kMB)
+      fail("a 64-bit list's first block isn't 2 MB");
+    fixed.free_blocks(~0ull);
+  }
+
+  struct List {
+    ListRing ring{HostBufferBlockAllocator{}};
+    uint64_t seq = 0;
+    List() { ring.growFrom(DeferredFirstBlockSize(true)); }
+  };
+  std::vector<std::unique_ptr<List>> idle;
+  std::deque<std::unique_ptr<List>> in_flight;
+  auto recycle = [&](uint64_t coherent) { // a released list goes back once its chunk has finished
+    while (!in_flight.empty() && in_flight.front()->seq <= coherent) {
+      in_flight.front()->ring.free_blocks(~0ull);
+      in_flight.front()->ring.restartGrowth();
+      idle.push_back(std::move(in_flight.front()));
+      in_flight.pop_front();
+    }
+  };
+  auto record = [&](List &list, size_t bytes, unsigned salt) {
+    for (size_t recorded = 0; recorded < bytes;) {
+      size_t n = 256 + (recorded * 7919u + salt) % 4096; // commands of 0.25-4.25 KB
+      auto [block, offset] = list.ring.allocate(1, 0, n, 16);
+      if (!block.ptr)
+        return false;
+      std::memset(static_cast<char *>(block.ptr) + offset, int(salt), n);
+      recorded += n;
+    }
+    return true;
+  };
+
+  // 2,000 lists of 60-250 KB, finished and executed before any Present: the backlog commits
+  {
+    Model m(true);
+    m.gpu_lag = 3; // the GPU finishes a chunk three commits after it
+    CommandListBacklog backlog;
+    uint64_t peak = 0, made = 0, backlog_commits = 0;
+    std::string first_line;
+    for (unsigned i = 0; i < 2000; i++) {
+      recycle(m.coherent_seq);
+      std::unique_ptr<List> list;
+      if (idle.empty()) {
+        list = std::make_unique<List>();
+        made++;
+      } else {
+        list = std::move(idle.back());
+        idle.pop_back();
+      }
+      if (!record(*list, 60 * kKB + (i * 37 % 190) * kKB, i)) {
+        fail("a command got no memory");
+        break;
+      }
+      // ExecuteCommandList: the chunk holds it; past the backlog, commit as a flush does
+      const uint64_t bytes = list->ring.blockBytes();
+      list->seq = m.current_seq;
+      in_flight.push_back(std::move(list));
+      if (backlog.executed(bytes)) {
+        std::string line = backlog.takeFirstLine();
+        if (!line.empty())
+          first_line = line;
+        backlog_commits++;
+        m.commit();
+        backlog.committed();
+      }
+      peak = std::max(peak, commands() - commands_before);
+    }
+    std::printf("deferred list backlog: 2000 lists with no Present: peak %.1f MiB of command memory, %llu lists "
+                "made, %llu backlog commits; first line: %s\n",
+                peak / 1048576.0, (unsigned long long)made, (unsigned long long)backlog_commits, first_line.c_str());
+    if (peak > 200 * kMB)
+      fail("command memory above 200 MB");
+    if (made > 100)
+      fail("lists weren't recycled");
+    if (backlog_commits < 2000 / (kBacklogLists + 1))
+      fail("too few backlog commits");
+    if (first_line.rfind("[d3d11] command list backlog: 9 lists, ", 0) != 0 ||
+        first_line.find(" MB since the last commit; committing") == std::string::npos)
+      fail("the first backlog line");
+    m.commit();
+    while (!m.committed.empty())
+      m.finishOne();
+    recycle(~0ull);
+    if (!in_flight.empty())
+      fail("lists left in chunks");
+  }
+
+  // the wait: past the mark (here 32 MB for 1 GB), FinishCommandList waits for the oldest
+  // committed chunk, whose lists then come back
+  {
+    constexpr uint64_t kMark = 32 * kMB;
+    Model m(true);
+    m.gpu_lag = 1u << 30; // the GPU finishes only what is waited for
+    CommandListBacklog backlog;
+    uint64_t peak = 0, waits = 0;
+    for (unsigned i = 0; i < 600; i++) {
+      recycle(m.coherent_seq);
+      std::unique_ptr<List> list;
+      if (idle.empty()) {
+        list = std::make_unique<List>();
+      } else {
+        list = std::move(idle.back());
+        idle.pop_back();
+      }
+      if (!record(*list, 900 * kKB, i)) {
+        fail("a command got no memory (the wait)");
+        break;
+      }
+      // FinishCommandList: past the mark, wait for the oldest committed chunk
+      if (CommandMemoryWaitDue(true, commands() - commands_before, kMark)) {
+        if (uint64_t oldest = OldestUnfinishedChunk(m.coherent_seq, m.current_seq)) {
+          m.waitFor(oldest);
+          waits++;
+        }
+      }
+      const uint64_t bytes = list->ring.blockBytes();
+      list->seq = m.current_seq;
+      in_flight.push_back(std::move(list));
+      if (backlog.executed(bytes)) {
+        m.commit();
+        backlog.committed();
+      }
+      peak = std::max(peak, commands() - commands_before);
+    }
+    std::printf("deferred list backlog: the wait at a %.0f MiB mark: peak %.1f MiB, %llu waits\n", kMark / 1048576.0,
+                peak / 1048576.0, (unsigned long long)waits);
+    if (!waits)
+      fail("no wait at the mark");
+    // the mark, one backlog's worth (16 MB plus a list), the free list (16 MB)
+    if (peak > kMark + kBacklogBytes + 2 * kMB + kHostBlockKeepBytes)
+      fail("command memory ran past the mark");
+    m.commit();
+    while (!m.committed.empty())
+      m.finishOne();
+    recycle(~0ull);
+  }
+
+  idle.clear();
+  HostBlockPool::releaseKept();
+  if (commands() != commands_before)
+    fail("command blocks left after every list went");
+  g_host_blocks_in_guest = was_guest;
+  return failures;
+}
+
 int
 main(int argc, char **argv) {
   bool check = false;
@@ -785,6 +988,8 @@ main(int argc, char **argv) {
     failures += CheckGuestWindow(); // spec 06 round 2
   if (new_mode)
     failures += CheckCommandBlocks(); // spec 06 round 3 (item 2)
+  if (new_mode)
+    failures += CheckDeferredListBacklog(); // spec 06 round 4 (item 4)
   std::printf("bench_dynamic_discard --check: %d failures\n", failures);
   return failures ? 1 : 0;
 }

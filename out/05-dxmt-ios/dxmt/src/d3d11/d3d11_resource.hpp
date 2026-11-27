@@ -2,6 +2,7 @@
 // Changed for MYIOSDECK (spec 05 clarification 10: an LGPL-2.1-or-later block from steamac's
 // DXMT patch 0013, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 // Also changed for MYIOSDECK (spec 05 clarification 63: QueryInterface counted).
+// Also changed for MYIOSDECK (spec 05 item 91: QueryExtraInterface, for a shared texture's keyed mutex).
 #include "dxmt_buffer.hpp"
 #include "dxmt_dynamic.hpp"
 #include "dxmt_staging.hpp"
@@ -237,10 +238,20 @@ public:
     }
     /* end of LGPL block */
 
+    /* MYIOSDECK spec 05 item 91: what a kind of resource adds (a shared texture's keyed mutex) */
+    if (SUCCEEDED(QueryExtraInterface(riid, ppvObject)))
+      return S_OK;
+
     if (logQueryInterfaceError(__uuidof(typename tag::COM), riid)) {
       WARN("D3D11Resource(", tag::debug_name ,"): Unknown interface query ", str::format(riid));
     }
 
+    return E_NOINTERFACE;
+  }
+
+  /* MYIOSDECK spec 05 item 91: an interface QueryInterface doesn't know; *ppvObject is null */
+  virtual HRESULT
+  QueryExtraInterface(REFIID riid, void **ppvObject) {
     return E_NOINTERFACE;
   }
 

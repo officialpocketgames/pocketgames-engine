@@ -888,6 +888,9 @@ public:
     obj_handle_t override_ib_buffer = 0;
     uint64_t override_ib_offset = 0;
     D3DFORMAT override_ib_format = D3DFMT_UNKNOWN;
+    // MYIOSDECK spec 07 clarification 9: in a traced frame, the draw's trace lines in the batch's
+    // m_pendingTraceLines, from 1; 0 for none
+    uint32_t trace_lines = 0;
     // Pending-clear does not ride on the BatchedDraw; it's emitted as
     // a standalone Clear chunk by flushOpenWork's drainPendingClear and
     // folded into the first surviving Render encoder by the dxmt_context
@@ -1061,6 +1064,8 @@ private:
   // FlushDrawBatch + chunk->emitcc pattern; see PendingOpRef comment
   // above for the design alignment with d3d11 EmitOP / wined3d CS.
   void QueueBatchedDraw(BatchedDraw &&draw);
+  // MYIOSDECK spec 07 clarification 9: the draw's frame-trace lines from the device's state now
+  std::string TraceDrawLines(const BatchedDraw &draw);
   void QueueBlitOp(PendingBlitOp &&op);
   // Software-VP draw gate. Returns true when the currently bound vertex
   // shader references the extended constant file (c256..) while the device is
@@ -1133,6 +1138,9 @@ private:
   std::vector<BatchedDraw> m_pendingDraws;
   std::vector<PendingBlitOp> m_pendingBlits;
   std::vector<PendingRefOp> m_pendingRefOps;
+  // MYIOSDECK spec 07 clarification 9: the traced draws' lines (BatchedDraw::trace_lines), moved
+  // into the chunk lambda with the draws; empty outside a traced frame
+  std::vector<std::string> m_pendingTraceLines;
   // High-water of each queue, so the capacity restored after a flush is the
   // largest batch seen rather than the last one. Batches are flushed per
   // render-target pass, so their sizes alternate between a handful of draws and

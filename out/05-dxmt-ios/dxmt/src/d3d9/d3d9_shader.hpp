@@ -104,6 +104,12 @@ public:
   metadata() const {
     return m_metadata;
   }
+  // MYIOSDECK spec 07 clarification 9: bytecode_hash of the bytecode (as in the compile dumps'
+  // names), for the frame trace's draw lines
+  uint64_t
+  bytecodeHash() const {
+    return m_hash;
+  }
   MTLD3D9Device *
   device() const {
     return m_device;
@@ -118,6 +124,7 @@ private:
   MTLD3D9Device *m_device;
   std::vector<DWORD> m_bytecode;
   DxsoShaderMetadata m_metadata;
+  uint64_t m_hash = 0; // MYIOSDECK spec 07 clarification 9
   // Variant cache: (layout fingerprint, point-size injection bit) -> compile
   // task. Owns the tasks; the per-draw caller borrows a non-owning pointer
   // (the cache outlives the draw). Cleared when the module dies. Point-size
@@ -159,6 +166,12 @@ public:
   metadata() const {
     return m_metadata;
   }
+  // MYIOSDECK spec 07 clarification 9: bytecode_hash of the bytecode (as in the compile dumps'
+  // names), for the frame trace's draw lines
+  uint64_t
+  bytecodeHash() const {
+    return m_hash;
+  }
   MTLD3D9Device *
   device() const {
     return m_device;
@@ -180,6 +193,7 @@ private:
   MTLD3D9Device *m_device;
   std::vector<DWORD> m_bytecode;
   DxsoShaderMetadata m_metadata;
+  uint64_t m_hash = 0; // MYIOSDECK spec 07 clarification 9
   // Keyed by FNV-1a hash of (alpha_test_func, kinds[0..15], and the other
   // bounded axes); the alpha ref + bump-env ride the uniform, not the key.
   std::unordered_map<uint64_t, std::unique_ptr<D3D9CompiledFunction>> m_variantCache;
@@ -233,6 +247,10 @@ public:
   metadata() const {
     return m_module->metadata();
   }
+  uint64_t
+  bytecodeHash() const {
+    return m_module->bytecodeHash();
+  }
   D3D9CompiledFunction *
   getVariantTask(const ::DXSO_SHADER_IA_INPUT_LAYOUT_DATA &layout, bool inject_point_size = false) {
     return m_module->getVariantTask(layout, inject_point_size);
@@ -277,6 +295,10 @@ public:
   const DxsoShaderMetadata &
   metadata() const {
     return m_module->metadata();
+  }
+  uint64_t
+  bytecodeHash() const {
+    return m_module->bytecodeHash();
   }
   D3D9CompiledFunction *
   getVariantTask(

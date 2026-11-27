@@ -5,6 +5,8 @@
 // after a traced dispatch; 30: state lines; 44-58: draw lines, bindings, read-backs, the serialize switch;
 // 63-73: call statistics and the round-17 cuts).
 // Also changed for MYIOSDECK (spec 06 round 2: the staging bound hook, dropped staging updates).
+// Also changed for MYIOSDECK (spec 06 round 4: a deferred list's blocks grow from 64 KB in 32-bit; its bytes).
+// Also changed for MYIOSDECK (spec 05 item 92: a draw with no vertex shader is skipped; skipped draws counted).
 // Upstream: DXMT a3a6e8f, MIT (see LICENSE).
 
 /**
@@ -4882,6 +4884,18 @@ public:
 #pragma region CommandEncoder Maintain State
 
   bool promote_flush = false;
+  /* MYIOSDECK spec 05 item 92: why the draw being prepared is skipped, when it is */
+  DrawSkip draw_skip_ = DrawSkip::InvalidState;
+
+  /* MYIOSDECK spec 05 item 92: a counted draw that won't reach an encoder: counted by reason in
+     the call statistics and the process's tally; the first without a vertex shader logged */
+  DrawCallStatus
+  SkipDraw(DrawSkip reason) {
+    D11_WORK(work_.draws_skipped[unsigned(reason)]++);
+    if (ProcessDrawSkips().note(reason))
+      Logger::warn(kNoVertexShaderLine);
+    return DrawCallStatus::Invalid;
+  }
 
   /**
   Render pass can be invalidated by reasons:
@@ -5355,6 +5369,7 @@ public:
 
     D11_WORK(work_.pipeline_lookups++); // spec 05 clarification 63
     if (FAILED(device->CreateTessellationMeshPipeline(&pipelineDesc, &pipeline))) {
+      draw_skip_ = DrawSkip::PipelineFailed; // MYIOSDECK spec 05 item 92
       return DrawCallStatus::Invalid;
     }
 
@@ -5442,6 +5457,13 @@ public:
   template <bool IndexedDraw>
   DrawCallStatus
   FinalizeCurrentRenderPipeline() {
+    /* MYIOSDECK spec 05 item 92: with no vertex shader bound (its compile failed, say) there is
+       no pipeline to make; building one read the null shader (MTLCompiledGraphicsPipeline's
+       constructor, and the geometry and tessellation ones the same). The draw is skipped. */
+    if (!state_.ShaderStages[PipelineStage::Vertex].Shader) {
+      draw_skip_ = DrawSkip::NoVertexShader;
+      return DrawCallStatus::Invalid;
+    }
     if (state_.ShaderStages[PipelineStage::Hull].Shader) {
       return FinalizeTessellationRenderPipeline<IndexedDraw>();
     }
@@ -5493,10 +5515,11 @@ public:
     DrawCallStatus status;
     if constexpr (IndexedDraw) {
       if (!state_.InputAssembler.IndexBuffer)
-        return DrawCallStatus::Invalid;
+        return SkipDraw(DrawSkip::InvalidState); // MYIOSDECK spec 05 item 92: counted, with its reason
     }
+    draw_skip_ = DrawSkip::InvalidState; // the finalizers say otherwise when they know
     if (status = FinalizeCurrentRenderPipeline<IndexedDraw>(); status == DrawCallStatus::Invalid) {
-      return status;
+      return SkipDraw(draw_skip_);
     }
     UpdateVertexBuffer();
     UpdateSOTargets();
@@ -5557,7 +5580,7 @@ public:
     if (dirty_state.any(DirtyState::Viewport)) {
       auto viewports = AllocateCommandData<WMTViewport>(state_.Rasterizer.NumViewports);
       if (unlikely(state_.Rasterizer.NumViewports && !viewports.data()))
-        return DrawCallStatus::Invalid; // MYIOSDECK spec 06 round 3: no command memory
+        return SkipDraw(DrawSkip::InvalidState); // MYIOSDECK spec 06 round 3: no command memory (item 92: counted)
       for (unsigned i = 0; i < state_.Rasterizer.NumViewports; i++) {
         auto &d3dViewport = state_.Rasterizer.viewports[i];
         viewports[i] = {d3dViewport.TopLeftX, d3dViewport.TopLeftY, d3dViewport.Width,
@@ -5579,7 +5602,7 @@ public:
                                       : state_.OutputMerger.RenderTargetHeight;
       auto scissors = AllocateCommandData<WMTScissorRect>(state_.Rasterizer.NumViewports);
       if (unlikely(state_.Rasterizer.NumViewports && !scissors.data()))
-        return DrawCallStatus::Invalid; // MYIOSDECK spec 06 round 3: no command memory
+        return SkipDraw(DrawSkip::InvalidState); // MYIOSDECK spec 06 round 3: no command memory (item 92: counted)
       for (unsigned i = 0; i < state_.Rasterizer.NumViewports; i++) {
         if (allow_scissor) {
           if (i < state_.Rasterizer.NumScissorRects) {
@@ -5844,12 +5867,19 @@ public:
     if (buffers.empty() && cbs.empty())
       return;
     SwitchToBlitEncoder(CommandBufferState::BlitEncoderActive);
+    // MYIOSDECK spec 05 item 93: the draw's first render target, so the encoder can tell a draw
+    // into the swap-chain buffer (whose read-backs aren't held to the 300-a-frame cap)
+    Rc<Texture> target = state_.OutputMerger.NumRTVs && state_.OutputMerger.RTVs[0]
+                             ? state_.OutputMerger.RTVs[0]->texture()
+                             : Rc<Texture>();
     if (!buffers.empty())
-      EmitOP([buffers = std::move(buffers)](ArgumentEncodingContext &enc) mutable {
-        enc.traceSrvReadback(std::move(buffers));
+      EmitOP([buffers = std::move(buffers), target](ArgumentEncodingContext &enc) mutable {
+        enc.traceSrvReadback(std::move(buffers), target.ptr());
       });
     if (!cbs.empty())
-      EmitOP([cbs = std::move(cbs)](ArgumentEncodingContext &enc) mutable { enc.traceCbReadback(std::move(cbs)); });
+      EmitOP([cbs = std::move(cbs), target](ArgumentEncodingContext &enc) mutable {
+        enc.traceCbReadback(std::move(cbs), target.ptr());
+      });
   }
 
   /* spec 05 clarification 50: a draw that PreDraw turned down still takes its number, so a
@@ -6532,7 +6562,11 @@ public:
                                        WMTResourceHazardTrackingModeUntracked | WMTResourceStorageModeManaged, false,
                          "deferred context staging" // MYIOSDECK spec 05 item 90
       }),
-      cpu_command_allocator({}) {};
+      cpu_command_allocator({}) {
+    /* MYIOSDECK spec 06 round 4 (item 4): 64 KB first blocks, doubling, in a 32-bit process */
+    staging_allocator.growFrom(DeferredFirstBlockSize(kI386Build));
+    cpu_command_allocator.growFrom(DeferredFirstBlockSize(kI386Build));
+  };
 
   ~MTLD3D11CommandList() {
     Reset();
@@ -6565,10 +6599,19 @@ public:
     list.reset();
     staging_allocator.free_blocks(~0uLL);
     cpu_command_allocator.free_blocks(~0uLL); // MYIOSDECK spec 06 round 3: the blocks go to the free list
+    staging_allocator.restartGrowth();        // MYIOSDECK spec 06 round 4: the next recording starts small
+    cpu_command_allocator.restartGrowth();
 
     promote_flush = false;
     out_of_memory_ = false; // MYIOSDECK spec 06 round 3
   };
+
+  /* MYIOSDECK spec 06 round 4 (item 4): the command memory this list holds, for the immediate
+     context's backlog */
+  uint64_t
+  commandBytes() {
+    return cpu_command_allocator.blockBytes() + staging_allocator.blockBytes();
+  }
 
   /* MYIOSDECK spec 06 round 3 (item 2): a command block couldn't be had while this list was
      recorded; what couldn't be recorded was dropped, and FinishCommandList returns E_OUTOFMEMORY */

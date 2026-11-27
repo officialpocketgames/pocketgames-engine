@@ -3,7 +3,8 @@
 # Copyright (c) 2026 the MYIOSDECK author
 #
 # Spec 05 Part A: compile the unix half of DXMT (winemetal's unix side, the
-# airconv shader converter and the DXBC parser) for iOS arm64.
+# airconv shader converter and the DXBC parser) for iOS arm64. Spec 05 item 91:
+# then check that the unix side's objects name no mach-port sharing selector.
 #
 # usage: build-ios.sh <dxmt-tree> <llvm-build-dir> <llvm-src-dir> <out-dir>
 #
@@ -30,6 +31,7 @@ abspath() {
   (cd "$1" 2>/dev/null && pwd) || { echo "no such directory: $1" >&2; exit 2; }
 }
 
+HERE=$(abspath "$(dirname "$0")") || exit 2 # out/05-dxmt-ios (its tests/ has the checks)
 TREE=$(abspath "$1") || exit 2
 LLVM_BUILD=$(abspath "$2") || exit 2
 LLVM_SRC=$(abspath "$3") || exit 2
@@ -120,6 +122,16 @@ for src in src/winemetal/unix/winemetal_unix.c src/winemetal/unix/cache.c src/wi
       -I"$TREE/src/winemetal" -I"$TREE/src/airconv" $INC_DXMT \
       -c "$TREE/$src" -o "$OBJ/$(obj_name "$src")"
 done
+
+# Spec 05 item 91: the App Store build references none of the mach-port sharing selectors
+UNIX_OBJS=""
+for src in src/winemetal/unix/winemetal_unix.c src/winemetal/unix/cache.c src/winemetal/unix/ios_support.m; do
+  [ -f "$OBJ/$(obj_name "$src")" ] && UNIX_OBJS="$UNIX_OBJS $OBJ/$(obj_name "$src")"
+done
+if [ -n "$UNIX_OBJS" ]; then
+  # shellcheck disable=SC2086
+  run_step "no mach-port selectors" "mach_port_selectors" sh "$HERE/tests/check-no-mach-port-selectors.sh" $UNIX_OBJS
+fi
 
 # --- airconv: the library sources of upstream's src/airconv/meson.build (not the CLI)
 

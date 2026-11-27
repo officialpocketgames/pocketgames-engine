@@ -15,6 +15,8 @@
 #include "autostart.h"
 #include "compile_failure_log.h"
 #include "compile_failure_dump.h"
+#include "load_drawable_guard.h"
+#include "format_check_log.h"
 
 /* nsi_fallback.h's pending requests work on a fake OVERLAPPED and fake events */
 struct fake_event
@@ -578,6 +580,74 @@ static void test_compile_dump_sm1(void)
     CHECK( compile_dump_hash( &info ) != 0 );
 }
 
+/* ---- wined3d: load_drawable's re-entry guard (A23) ---- */
+
+static void test_load_drawable_guard(void)
+{
+    static struct load_drawable_guard guard;
+    static int textures[LOAD_DRAWABLE_GUARD_MAX + 2];  /* only their addresses count */
+    unsigned int i;
+
+    /* the cycle: an outer call, then the same texture, sub-resource and thread again */
+    memset( &guard, 0, sizeof(guard) );
+    CHECK_EQ_U( load_drawable_guard_enter( &guard, &textures[0], 0, 7 ), LOAD_DRAWABLE_ENTERED );
+    CHECK_EQ_U( load_drawable_guard_enter( &guard, &textures[0], 0, 7 ), LOAD_DRAWABLE_REENTERED );
+    /* another sub-resource, texture or thread isn't a re-entry */
+    CHECK_EQ_U( load_drawable_guard_enter( &guard, &textures[0], 1, 7 ), LOAD_DRAWABLE_ENTERED );
+    CHECK_EQ_U( load_drawable_guard_enter( &guard, &textures[1], 0, 7 ), LOAD_DRAWABLE_ENTERED );
+    CHECK_EQ_U( load_drawable_guard_enter( &guard, &textures[0], 0, 8 ), LOAD_DRAWABLE_ENTERED );
+    CHECK_EQ_U( guard.count, 4 );
+    /* leaving out of order (another thread's call ends first) keeps the others */
+    load_drawable_guard_leave( &guard, &textures[0], 0, 7 );
+    CHECK_EQ_U( guard.count, 3 );
+    CHECK_EQ_U( load_drawable_guard_enter( &guard, &textures[0], 0, 8 ), LOAD_DRAWABLE_REENTERED );
+    CHECK_EQ_U( load_drawable_guard_enter( &guard, &textures[0], 0, 7 ), LOAD_DRAWABLE_ENTERED );
+    load_drawable_guard_leave( &guard, &textures[0], 0, 7 );
+    load_drawable_guard_leave( &guard, &textures[0], 1, 7 );
+    load_drawable_guard_leave( &guard, &textures[1], 0, 7 );
+    load_drawable_guard_leave( &guard, &textures[0], 0, 8 );
+    CHECK_EQ_U( guard.count, 0 );
+    /* leaving what isn't there changes nothing */
+    load_drawable_guard_leave( &guard, &textures[0], 0, 7 );
+    CHECK_EQ_U( guard.count, 0 );
+
+    /* a full table: a new call goes on untracked, a running one is still caught */
+    for (i = 0; i < LOAD_DRAWABLE_GUARD_MAX; ++i)
+        CHECK_EQ_U( load_drawable_guard_enter( &guard, &textures[i], 0, 1 ), LOAD_DRAWABLE_ENTERED );
+    CHECK_EQ_U( load_drawable_guard_enter( &guard, &textures[LOAD_DRAWABLE_GUARD_MAX], 0, 1 ),
+                LOAD_DRAWABLE_UNTRACKED );
+    CHECK_EQ_U( load_drawable_guard_enter( &guard, &textures[3], 0, 1 ), LOAD_DRAWABLE_REENTERED );
+
+    CHECK( !strcmp( LOAD_DRAWABLE_REENTERED_MESSAGE,
+                    "[wined3d] load_drawable re-entered for the same sub-resource; frame not shown\n" ) );
+}
+
+/* ---- wined3d: formats not FBO attachable, logged once each (A23) ---- */
+
+static void test_format_check_log(void)
+{
+    static struct format_check_log log;
+    char line[256];
+    unsigned int i, logged = 0;
+
+    /* once per format, whatever the resource types and repeats */
+    CHECK( format_check_log_first( &log, 21 ) );
+    CHECK( !format_check_log_first( &log, 21 ) );
+    CHECK( format_check_log_first( &log, 22 ) );
+    CHECK( !format_check_log_first( &log, 21 ) );
+    CHECK_EQ_U( log.count, 2 );
+    /* the table full: nothing more is logged */
+    for (i = 100; i < 100 + 2 * FORMAT_CHECK_LOG_MAX; ++i)
+        logged += format_check_log_first( &log, i );
+    CHECK_EQ_U( logged, FORMAT_CHECK_LOG_MAX - 2 );
+    CHECK( !format_check_log_first( &log, 22 ) );
+
+    snprintf( line, sizeof(line), FORMAT_CHECK_LOG_FORMAT, "WINED3DFMT_B5G6R5_UNORM", 0x8d62u, 1u,
+              "GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT", "GL_INVALID_OPERATION" );
+    CHECK( !strcmp( line, "[wined3d] format WINED3DFMT_B5G6R5_UNORM (GL internal format 0x8d62) is not FBO "
+                    "attachable, resource type 1: GL_FRAMEBUFFER_INCOMPLETE_ATTACHMENT, GL error GL_INVALID_OPERATION\n" ) );
+}
+
 int main(void)
 {
     test_tick();
@@ -590,6 +660,8 @@ int main(void)
     test_compile_failure_log();
     test_compile_failure_dump();
     test_compile_dump_sm1();
+    test_load_drawable_guard();
+    test_format_check_log();
     if (failures)
     {
         fprintf( stderr, "test_part_a: %d failure(s)\n", failures );

@@ -1,4 +1,4 @@
-/* Changed for MYIOSDECK (spec 05 B8, E2, H6, clarifications 10, 20 and 25, item 90; spec 07: LGPL-2.1-or-later blocks
+/* Changed for MYIOSDECK (spec 05 B8, E2, H6, clarifications 10, 20 and 25, items 90 and 91; spec 07: LGPL-2.1-or-later blocks
    from dxmt-d3d9 v0.4-d3d9, marked inline, see LICENSE-NOTES.md). Upstream: DXMT a3a6e8f, MIT (see LICENSE). */
 #ifndef _WINEMETAL_H
 #define _WINEMETAL_H
@@ -509,7 +509,9 @@ struct WMTTextureInfo {
   /* MYIOSDECK spec 05 item 90 (was `reserved`): out, the made texture's allocatedSize in KB
      (rounded up; 0 for a texture made on a buffer, whose memory is the buffer's) */
   uint32_t allocated_kb;
-  mach_port_t mach_port; // in/out
+  /* in/out. MYIOSDECK spec 05 item 91: on iOS, MTLDevice_newSharedTexture's share-table key
+     instead (0 in: register a new texture, the key comes out; a key in: open that texture) */
+  mach_port_t mach_port;
   uint64_t gpu_resource_id; // out
 };
 
@@ -1927,6 +1929,18 @@ WINEMETAL_API bool WMTQueryAvailableMemory(uint64_t *bytes);
 WINEMETAL_API bool WMTQueryFootprint(uint64_t *bytes);
 WINEMETAL_API bool WMTQueryGraphicsFootprint(uint64_t *bytes);
 WINEMETAL_API bool WMTQueryMemoryWarnings(uint64_t *count);
+
+/* Spec 05 item 91, H6 ops 11-13 (iOS; no pointers): the app's share table, where a shared
+   fence's MTLSharedEvent is kept under a key (a shared texture's goes in through
+   MTLDevice_newSharedTexture, whose WMTTextureInfo::mach_port carries the key on iOS).
+   - WMTShareEvent: the event's key (the table retains it; the caller is its first user), 0 if
+     the table is full or there is no table (macOS).
+   - WMTOpenSharedEvent: the event of `key`, +1 for the caller and one more user; 0 if no entry
+     has the key, and then *wrong_kind (if given) says whether the key is a texture's.
+   - WMTShareRelease: a user of `key` is gone; true if it was the last (the entry is freed). */
+WINEMETAL_API uint32_t WMTShareEvent(obj_handle_t event);
+WINEMETAL_API obj_handle_t WMTOpenSharedEvent(uint32_t key, bool *wrong_kind);
+WINEMETAL_API bool WMTShareRelease(uint32_t key);
 
 /* H6 op 3: a command buffer's GPUStartTime and GPUEndTime (seconds). */
 WINEMETAL_API bool MTLCommandBuffer_getGPUTimes(obj_handle_t cmdbuf, double *start, double *end);

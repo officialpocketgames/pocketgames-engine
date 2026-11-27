@@ -480,12 +480,96 @@ static void ios_WindowPosChanged( HWND hwnd, HWND insert_after, HWND owner_hint,
         pgios_pWindowPosChanged( hwnd, insert_after, owner_hint, swp_flags, new_rects, surface );
 }
 
-/* ---------------------------------------------------------------- E6: foreground */
+/* ---------------------------------------------------------------- E6 and item 15: foreground */
+
+static __thread const char *foreground_reason;   /* the next change's reason, on this thread */
+static __thread int foreground_peeking;           /* our own reads aren't the program's */
+
+const char *w32ios_foreground_reason( const char *reason, BOOL force )
+{
+    const char *old = foreground_reason;
+
+    if (force || !old) foreground_reason = reason;
+    return old;
+}
+
+static HWND foreground_peek( void )
+{
+    HWND hwnd;
+
+    foreground_peeking++;
+    hwnd = NtUserGetForegroundWindow();
+    foreground_peeking--;
+    return hwnd;
+}
+
+void w32ios_foreground_asked( HWND hwnd )
+{
+    if (hwnd || foreground_peeking) return;
+    if (InterlockedExchange( &w32ios_proc_current()->foreground_none_logged, 1 )) return;
+    w32ios_log( "foreground asked by pid %u: none", (unsigned int)GetCurrentProcessId() );
+}
+
+void w32ios_foreground_changed( HWND hwnd, BOOL mouse, BOOL internal )
+{
+    DWORD pid = 0;
+
+    if (hwnd) NtUserGetWindowThread( hwnd, &pid );
+    w32ios_log( "foreground -> %p pid %u (%s)", hwnd, (unsigned int)pid,
+                w32ios_foreground_reason_name( foreground_reason, mouse, internal ) );
+}
+
+/* the foreground window's process still runs (TRUE when that can't be told) */
+static BOOL foreground_owner_running( HWND foreground )
+{
+    OBJECT_ATTRIBUTES attr = { sizeof(attr) };
+    CLIENT_ID cid = { 0 };
+    PROCESS_BASIC_INFORMATION info;
+    HANDLE handle;
+    NTSTATUS status;
+    DWORD pid = 0;
+
+    if (!NtUserGetWindowThread( foreground, &pid ) || !pid) return FALSE;   /* the window is gone */
+    if (pid == GetCurrentProcessId()) return TRUE;
+    cid.UniqueProcess = ULongToHandle( pid );
+    if (NtOpenProcess( &handle, PROCESS_QUERY_LIMITED_INFORMATION, &attr, &cid )) return FALSE;
+    status = NtQueryInformationProcess( handle, ProcessBasicInformation, &info, sizeof(info), NULL );
+    NtClose( handle );
+    return status || info.ExitStatus == STATUS_PENDING;
+}
+
+/* Item 15: upstream gives a shown window the foreground only when it's shown without
+ * SWP_NOACTIVATE; a window manager would do it otherwise, and iOS has none. Called by
+ * set_window_pos after its own activation, on the window's thread, with no lock held. The
+ * server can't refuse an internal change, and the activation messages (WM_NCACTIVATE,
+ * WM_ACTIVATEAPP, WM_ACTIVATE, WM_SETFOCUS) are upstream's set_active_window's. */
+void w32ios_window_shown( HWND hwnd )
+{
+    const char *old;
+    RECT rect = { 0 };
+    HWND foreground;
+    int qualifies;
+
+    if (!foreground_fix_enabled()) return;
+    get_window_rect( hwnd, &rect, get_thread_dpi() );
+    qualifies = w32ios_first_show_qualifies( NtUserGetAncestor( hwnd, GA_ROOT ) == hwnd,
+                                             get_window_long( hwnd, GWL_STYLE ), get_window_long( hwnd, GWL_EXSTYLE ),
+                                             get_window_relative( hwnd, GW_OWNER ) != 0,
+                                             rect.right - rect.left, rect.bottom - rect.top );
+    if (!qualifies) return;
+    foreground = foreground_peek();
+    if (!w32ios_first_show_due( TRUE, qualifies, !foreground || !foreground_owner_running( foreground ) ))
+        return;
+    old = w32ios_foreground_reason( "first shown", TRUE );
+    set_foreground_window( hwnd, FALSE, TRUE );
+    w32ios_foreground_reason( old, TRUE );
+}
 
 void w32ios_foreground_fix( void )
 {
     struct w32ios_proc *proc;
     HWND foreground, best = 0, *list;
+    const char *old;
     DWORD pid, now = NtGetTickCount();
     LONGLONG best_area = 0;
     RECT rect;
@@ -497,7 +581,7 @@ void w32ios_foreground_fix( void )
     proc->foreground_fix_done = TRUE;
     proc->foreground_fix_time = now;
 
-    if ((foreground = NtUserGetForegroundWindow()) && NtUserGetWindowThread( foreground, &pid ) &&
+    if ((foreground = foreground_peek()) && NtUserGetWindowThread( foreground, &pid ) &&
         pid == GetCurrentProcessId())
         return;
 
@@ -523,7 +607,9 @@ void w32ios_foreground_fix( void )
     {
         w32ios_log_verbose( "process %04x reads a controller: window %p made foreground (was %p)",
                             (unsigned int)GetCurrentProcessId(), best, foreground );
+        old = w32ios_foreground_reason( "controller", TRUE );
         NtUserSetForegroundWindow( best );
+        w32ios_foreground_reason( old, TRUE );
     }
 }
 

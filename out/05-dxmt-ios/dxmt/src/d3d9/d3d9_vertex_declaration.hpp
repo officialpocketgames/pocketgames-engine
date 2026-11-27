@@ -71,8 +71,15 @@ public:
   setFvf(DWORD fvf) {
     m_fvf = fvf;
   }
+  // MYIOSDECK spec 07 clarification 9: the number of the `[d3d9] vertex declaration <n>` line for
+  // these elements (clarification 6), 0 past the numbering's limit
+  unsigned
+  traceNumber() const {
+    return m_traceNumber;
+  }
 
 private:
+  unsigned m_traceNumber = 0;
   MTLD3D9Device *m_device;
   // Includes the D3DDECL_END terminator at the back, matching wined3d
   // dlls/d3d9/vertexdeclaration.c (element_count =

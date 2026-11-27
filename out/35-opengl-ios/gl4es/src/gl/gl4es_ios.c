@@ -18,7 +18,9 @@
 
 #include "framebuffers.h"
 #include "gl4es.h"
+#include "gl4es_ios_pixels.h"
 #include "glstate.h"
+#include "loader.h"
 #include "matvec.h"
 #include "pixel.h"
 #include "math/eval.h"
@@ -171,12 +173,49 @@ void gl4es_ios_state_destroy( void *state )
 
 static pthread_once_t init_once = PTHREAD_ONCE_INIT;
 
+int gl4es_ios_es_major = 2;
+
+/* Item 15: every GLES function gl4es calls is looked up through gles_getProcAddress (LOAD_GLES,
+ * loader.c's proc_address), which pgl sets. gl4es gives GLES's glTexImage2D the format itself as
+ * the internal format, ES 2.0's rule; ES 3.0 has no unsized RED or RG, so on ES 3 the lookup of
+ * glTexImage2D answers with ios_tex_image_2d, which passes the sized R8 or RG8 instead
+ * (gl4es_ios_gles_internal). Both pointers are set once, before gl4es initialises. */
+static void *(APIENTRY_GL4ES *ios_next_proc)( const char *name );
+static glTexImage2D_PTR ios_gles_tex_image_2d;
+
+static void APIENTRY_GLES ios_tex_image_2d( GLenum target, GLint level, GLint internal, GLsizei width,
+                                            GLsizei height, GLint border, GLenum format, GLenum type,
+                                            const GLvoid *data )
+{
+    internal = (GLint)gl4es_ios_gles_internal( gl4es_ios_es_major, (unsigned int)internal, format, type );
+    ios_gles_tex_image_2d( target, level, internal, width, height, border, format, type, data );
+}
+
+static void *APIENTRY_GL4ES ios_proc( const char *name )
+{
+    if (!strcmp( name, "glTexImage2D" )) return (void *)ios_tex_image_2d;
+    return ios_next_proc( name );
+}
+
 static void initialize_once( void )
 {
     float matrix[16] = { 0 };
     unsigned char pixel[4] = { 0 };
 
+    if ((ios_next_proc = gles_getProcAddress) &&
+        (ios_gles_tex_image_2d = (glTexImage2D_PTR)ios_next_proc( "glTexImage2D" )))
+        set_getprocaddress( ios_proc );
+
     initialize_gl4es();   /* the fixed configuration is in init.c (GL4ES_IOS) */
+
+    /* item 15: the ES version of pgl's contexts (its bootstrap context is current); on ES 3,
+     * R and RG textures are core (ES 3.0), whether or not GLES lists GL_EXT_texture_rg, so
+     * gl4es keeps R8/RG8 as RED/RG and lists GL_ARB_texture_rg */
+    {
+        LOAD_GLES(glGetString);
+        gl4es_ios_es_major = gl4es_ios_es_major_of( gles_glGetString ? (const char *)gles_glGetString( GL_VERSION ) : NULL );
+    }
+    if (gl4es_ios_es_major >= 3) hardext.rgtex = 1;
 
     /* gl4es builds these read-only tables on first use; build them now, while one thread runs,
      * so that they are app-wide and fixed afterwards (C3.1) */

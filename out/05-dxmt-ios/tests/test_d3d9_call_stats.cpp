@@ -28,6 +28,14 @@ namespace {
 
 constexpr uint64_t kSecond = 1000ull * 1000 * 1000;
 
+/* spec 07 clarification 9: the constants' line of a period with Presents in which none of them
+   was called */
+const std::string kNoConstants =
+    "d3d9 calls, constants: IDirect3DDevice9::SetVertexShaderConstantB 0/s (0.0/Present), "
+    "IDirect3DDevice9::SetVertexShaderConstantI 0/s (0.0/Present), "
+    "IDirect3DDevice9::SetPixelShaderConstantB 0/s (0.0/Present), "
+    "IDirect3DDevice9::SetPixelShaderConstantI 0/s (0.0/Present)";
+
 #define CHECK_STR(a, b)                                                                                                \
   do {                                                                                                                 \
     g_checks++;                                                                                                        \
@@ -261,7 +269,8 @@ TestPeriodAndReset() {
       report, "d3d9 calls: 1350/s, 27/s from other threads, 25.0 per Present (54/s)\n"
               "d3d9 calls, top 1-4: IDirect3DDevice9::SetRenderState 1080/s (20.0/Present), "
               "IDirect3DDevice9::DrawIndexedPrimitive 216/s (4.0/Present), "
-              "IDirect3DDevice9::Present 54/s (1.0/Present), d3d9::Direct3DCreate9 0/s (0.0/Present)"
+              "IDirect3DDevice9::Present 54/s (1.0/Present), d3d9::Direct3DCreate9 0/s (0.0/Present)\n" +
+                  kNoConstants
   );
 
   // Reset: every counter starts again, the new period at the report.
@@ -283,7 +292,8 @@ TestPeriodAndReset() {
       loading, "d3d9 calls: 200/s, 0/s from other threads, 2401.0 per Present (0/s)\n"
                "d3d9 calls, top 1-3: IDirect3DTexture9::LockRect 100/s (1200.0/Present), "
                "IDirect3DTexture9::UnlockRect 100/s (1200.0/Present), "
-               "IDirect3DDevice9::Present 0/s (1.0/Present)"
+               "IDirect3DDevice9::Present 0/s (1.0/Present)\n" +
+                   kNoConstants
   );
 
   // A period whose report-triggering Present was the previous period's last call
@@ -291,7 +301,8 @@ TestPeriodAndReset() {
   const std::string quiet = Present(t, D9C_IDirect3DDevice9Ex_PresentEx, t0 + 40 * kSecond);
   CHECK_STR(
       quiet, "d3d9 calls: 0/s, 0/s from other threads, 1.0 per Present (0/s)\n"
-             "d3d9 calls, top 1-1: IDirect3DSwapChain9::Present 0/s (1.0/Present)"
+             "d3d9 calls, top 1-1: IDirect3DSwapChain9::Present 0/s (1.0/Present)\n" +
+                 kNoConstants
   );
 
   // No Present in a whole period: takeReport called for it directly (as at a
@@ -302,10 +313,59 @@ TestPeriodAndReset() {
   CHECK_STR(
       Lines(q.takeReport(35 * kSecond)),
       "d3d9 calls: 10/s, 0/s from other threads, no Present\n"
-      "d3d9 calls, top 1-1: IDirect3DDevice9::CreateTexture 10/s"
+      "d3d9 calls, top 1-1: IDirect3DDevice9::CreateTexture 10/s\n"
+      "d3d9 calls, constants: IDirect3DDevice9::SetVertexShaderConstantB 0/s, "
+      "IDirect3DDevice9::SetVertexShaderConstantI 0/s, IDirect3DDevice9::SetPixelShaderConstantB 0/s, "
+      "IDirect3DDevice9::SetPixelShaderConstantI 0/s"
   );
   CHECK_EQ(q.countOf(D9C_IDirect3DDevice9_CreateTexture), 0);
   CHECK_EQ(q.periodStart(), 35 * kSecond);
+}
+
+/* Spec 07 clarification 9: the bool and int constant setters on their own line last, in a fixed
+   order, called or not, with the same figures as the top lines; FormatCallReport without them
+   gives no such line. */
+void
+TestConstantCalls() {
+  CHECK_EQ(kD9ConstantCallCount, 4);
+  CHECK_STR(kD9CallNames[kD9ConstantCalls[0]], "IDirect3DDevice9::SetVertexShaderConstantB");
+  CHECK_STR(kD9CallNames[kD9ConstantCalls[1]], "IDirect3DDevice9::SetVertexShaderConstantI");
+  CHECK_STR(kD9CallNames[kD9ConstantCalls[2]], "IDirect3DDevice9::SetPixelShaderConstantB");
+  CHECK_STR(kD9CallNames[kD9ConstantCalls[3]], "IDirect3DDevice9::SetPixelShaderConstantI");
+
+  CallTable t;
+  t.startIfIdle(kSecond);
+  for (int frame = 0; frame < 600; frame++) {
+    Add(t, D9C_IDirect3DDevice9_SetPixelShaderConstantB, 3);
+    Add(t, D9C_IDirect3DDevice9_SetVertexShaderConstantI, 1);
+    Add(t, D9C_IDirect3DDevice9_SetPixelShaderConstantF, 40);
+    t.countPresent();
+  }
+  const auto lines = t.takeReport(11 * kSecond);
+  CHECK_EQ(lines.size(), 3); // summary, top 1-3, constants
+  CHECK_STR(
+      lines.back(), "d3d9 calls, constants: IDirect3DDevice9::SetVertexShaderConstantB 0/s (0.0/Present), "
+                    "IDirect3DDevice9::SetVertexShaderConstantI 60/s (1.0/Present), "
+                    "IDirect3DDevice9::SetPixelShaderConstantB 180/s (3.0/Present), "
+                    "IDirect3DDevice9::SetPixelShaderConstantI 0/s (0.0/Present)"
+  );
+  // the two called ones are in the top lines as well
+  CHECK(lines[1].find("IDirect3DDevice9::SetPixelShaderConstantB 180/s") != std::string::npos);
+  CHECK(lines.back().size() < 600);
+
+  // with the 16 busiest taken by other pairs, the constants' line still shows them
+  uint32_t counts[kD9CallCount] = {};
+  for (unsigned i = 0; i < 20; i++)
+    counts[D9C_IDirect3DDevice9_QueryInterface + i] = 1000 + i;
+  counts[D9C_IDirect3DDevice9_SetVertexShaderConstantB] = 10;
+  const auto busy = FormatCallReport(counts, kD9CallNames, kD9CallCount, 0, 10, 10 * kSecond, kReportTop,
+                                     kD9ConstantCalls, kD9ConstantCallCount);
+  CHECK_EQ(busy.size(), 6);
+  CHECK(busy[5].find("d3d9 calls, constants: IDirect3DDevice9::SetVertexShaderConstantB 1/s (1.0/Present), ") == 0);
+  for (size_t i = 1; i < 5; i++)
+    CHECK(busy[i].find("SetVertexShaderConstantB") == std::string::npos);
+  // without the list, no line
+  CHECK_EQ(FormatCallReport(counts, kD9CallNames, kD9CallCount, 0, 10, 10 * kSecond).size(), 5);
 }
 
 } // namespace
@@ -317,5 +377,6 @@ main() {
   TestRankingTiesAndTop();
   TestLongReport();
   TestPeriodAndReset();
+  TestConstantCalls();
   return TestSummary("test_d3d9_call_stats");
 }

@@ -21,6 +21,11 @@
 
 #define GL4ES_IOS_TLS __thread
 
+// Spec 35 item 15: the major version of the GLES contexts pgl creates (2, or 3 with PG_GL_ES3=1),
+// read from GL_VERSION when gl4es initialises (gl4es_ios.c). gl4es's own hardext.esversion stays
+// 2 (C3.2), so this is where the ES 3 back end is told apart.
+extern int gl4es_ios_es_major;
+
 int gl4es_ios_vfprintf( FILE *fp, const char *fmt, va_list args );
 int gl4es_ios_fprintf( FILE *fp, const char *fmt, ... ) __attribute__((format(printf, 2, 3)));
 int gl4es_ios_printf( const char *fmt, ... ) __attribute__((format(printf, 1, 2)));
